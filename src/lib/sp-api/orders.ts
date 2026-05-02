@@ -43,7 +43,7 @@ export async function syncOrders(
       } else {
         params.CreatedAfter = startDate;
         if (endDate) params.CreatedBefore = endDate;
-        params.OrderStatuses = 'Unshipped,PartiallyShipped,Shipped';
+        params.OrderStatuses = 'Pending,Unshipped,PartiallyShipped,Shipped';
       }
 
       const response = await spApiRequest(credentials, '/orders/v0/orders', params, 8);
@@ -60,17 +60,21 @@ export async function syncOrders(
           const status = order.OrderStatus;
           const channel = order.FulfillmentChannel === 'AFN' ? 'FBA' : 'MFN';
           const isEstimated = (order.OrderStatus === 'Pending' || order.OrderStatus === 'Unshipped') ? 1 : 0;
+          // shipped_at: when status is Shipped or PartiallyShipped, LastUpdateDate is when it shipped.
+          // Don't overwrite a previously-recorded shipped_at on subsequent syncs (keep first-seen ship time).
+          const shippedAt = (status === 'Shipped' || status === 'PartiallyShipped') ? (order.LastUpdateDate || null) : null;
 
-          // Upsert order
+          // Upsert order. Preserve shipped_at once set: COALESCE keeps existing value if not null.
           db.prepare(`
-            INSERT INTO orders (order_id, purchase_date, status, marketplace, fulfillment_channel, is_estimated, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders (order_id, purchase_date, status, marketplace, fulfillment_channel, is_estimated, shipped_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_id) DO UPDATE SET
               purchase_date = excluded.purchase_date,
               status = excluded.status,
               fulfillment_channel = excluded.fulfillment_channel,
-              is_estimated = excluded.is_estimated
-          `).run(orderId, purchaseDate, status, 'amazon', channel, isEstimated, now);
+              is_estimated = excluded.is_estimated,
+              shipped_at = COALESCE(orders.shipped_at, excluded.shipped_at)
+          `).run(orderId, purchaseDate, status, 'amazon', channel, isEstimated, shippedAt, now);
 
           // Update sales tax state from shipping address
           const shipState = order.ShippingAddress?.StateOrRegion;

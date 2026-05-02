@@ -31,6 +31,10 @@ interface DashboardData {
   worstProducts: { name: string; asin: string; category: string; revenue: number; unitsSold: number; cogs: number; fees?: number }[];
   expenseBreakdown: { category: string; total: number }[];
   inventoryValue: { totalValue: number; totalUnits: number };
+  inFlight?: {
+    pending: { orders: number; revenueReported: number; revenueEstimate: number; avgOrderValue: number };
+    shippedNotPosted: { orders: number; revenue: number; cogs: number; projectedProfit: number; earliestRelease: string | null; latestRelease: string | null };
+  };
 }
 
 const CHART_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#f97316'];
@@ -67,6 +71,9 @@ export default function Dashboard() {
   const [dayRefunds, setDayRefunds] = useState<any[]>([]);
   const [dayDetailsLoading, setDayDetailsLoading] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
+  const [showInFlight, setShowInFlight] = useState(false);
+  const [inFlightItems, setInFlightItems] = useState<any[]>([]);
+  const [inFlightLoading, setInFlightLoading] = useState(false);
   const { dateRange, setDateRange, marketplace, setMarketplace, marketplaceParam, dateBasis, setDateBasis, dateBasisParam } = useFilters();
 
   // Cash balance is independent of date range / marketplace filter — always
@@ -243,6 +250,126 @@ export default function Dashboard() {
           format="currency"
         />
       </div>
+
+      {/* In-flight: orders earned but not yet in Cash-basis P&L */}
+      {data.inFlight && (data.inFlight.pending.orders > 0 || data.inFlight.shippedNotPosted.orders > 0) && (
+        <div className="mb-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-[11px] uppercase tracking-wider text-text-tertiary">Pending (estimated)</div>
+              <div className="text-[10px] text-text-tertiary">{data.inFlight.pending.orders} orders</div>
+            </div>
+            <div className="text-2xl font-mono text-accent">
+              ~{formatCurrency(data.inFlight.pending.revenueEstimate)}
+            </div>
+            <div className="text-xs text-text-tertiary mt-1">
+              {data.inFlight.pending.orders} × {formatCurrency(data.inFlight.pending.avgOrderValue)} (30d AOV).
+              Amazon withholds line items until payment clears.
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              const next = !showInFlight;
+              setShowInFlight(next);
+              if (next && inFlightItems.length === 0) {
+                setInFlightLoading(true);
+                fetch(`/api/data/in-flight-orders?marketplace=${marketplace === 'all' ? 'amazon' : marketplace}`)
+                  .then(r => r.json())
+                  .then(j => { setInFlightItems(j.items || []); setInFlightLoading(false); })
+                  .catch(() => setInFlightLoading(false));
+              }
+            }}
+            className="bg-bg-surface border border-border-subtle rounded-lg p-4 text-left hover:border-border-default transition-colors cursor-pointer"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-[11px] uppercase tracking-wider text-text-tertiary">Held under Delivery Date Policy</div>
+              <div className="text-[10px] text-text-tertiary">{data.inFlight.shippedNotPosted.orders} orders ›</div>
+            </div>
+            <div className="text-2xl font-mono text-warning">
+              {formatCurrency(data.inFlight.shippedNotPosted.revenue)}
+            </div>
+            <div className="text-xs text-text-tertiary mt-1">
+              ≈ {formatCurrency(data.inFlight.shippedNotPosted.projectedProfit)} projected profit
+              {data.inFlight.shippedNotPosted.earliestRelease && data.inFlight.shippedNotPosted.latestRelease && (
+                <> · releases {new Date(data.inFlight.shippedNotPosted.earliestRelease).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}–{new Date(data.inFlight.shippedNotPosted.latestRelease).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</>
+              )}
+            </div>
+          </button>
+          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+            <div className="text-[11px] uppercase tracking-wider text-text-tertiary mb-1">Total expected to post</div>
+            <div className="text-2xl font-mono text-text-primary">
+              {formatCurrency(data.inFlight.pending.revenueEstimate + data.inFlight.shippedNotPosted.revenue)}
+            </div>
+            <div className="text-xs text-text-tertiary mt-1">
+              Revenue not yet in Cash view; will appear as orders settle
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Inline drill: per-order list of orders held under DDP */}
+      {showInFlight && (
+        <div className="bg-bg-surface border border-border-subtle rounded-lg overflow-hidden mb-6">
+          <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-text-primary">Orders Held under Delivery Date Policy</span>
+              <span className="text-xs text-text-tertiary">{inFlightItems.length} orders · sorted by release date</span>
+            </div>
+            <button onClick={() => setShowInFlight(false)} className="text-xs text-text-tertiary hover:text-text-secondary">✕ Close</button>
+          </div>
+          {inFlightLoading ? (
+            <div className="p-4 text-sm text-text-tertiary">Loading...</div>
+          ) : inFlightItems.length === 0 ? (
+            <div className="p-4 text-sm text-text-tertiary">No orders held.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="bg-bg-elevated">
+                    <th className="px-4 py-2 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle">Product</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-32">Order</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-20">FC</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-24">Shipped</th>
+                    <th className="px-4 py-2 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-32">Est. Release</th>
+                    <th className="px-4 py-2 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-14">Qty</th>
+                    <th className="px-4 py-2 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-24">Revenue</th>
+                    <th className="px-4 py-2 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle w-24">Proj. Profit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {inFlightItems.map((item, i) => (
+                    <tr key={`${item.orderId}-${item.sku}-${i}`} className="border-b border-border-subtle/50 hover:bg-bg-hover transition-colors">
+                      <td className="px-4 py-2 text-sm">
+                        <div className="text-text-primary font-medium truncate max-w-[280px]">{item.productName}</div>
+                        <div className="text-[11px] text-text-tertiary font-mono">{item.sku || item.asin}</div>
+                      </td>
+                      <td className="px-4 py-2 text-[11px] font-mono text-text-tertiary">{item.orderId}</td>
+                      <td className="px-4 py-2 text-[11px] text-text-secondary">{item.fulfillment}</td>
+                      <td className="px-4 py-2 text-xs text-text-secondary">
+                        {item.shippedAt ? new Date(item.shippedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '—'}
+                      </td>
+                      <td className="px-4 py-2 text-xs">
+                        <span className={item.daysUntilRelease === 0 ? 'text-positive font-medium' : 'text-text-secondary'}>
+                          {new Date(item.expectedRelease).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                        </span>
+                        <span className="text-text-tertiary ml-1">
+                          ({item.daysUntilRelease === 0 ? 'releasing' : `${item.daysUntilRelease}d`})
+                        </span>
+                      </td>
+                      <td className="px-4 py-2 text-right text-sm font-mono text-text-secondary">{item.quantity}</td>
+                      <td className="px-4 py-2 text-right text-sm font-mono text-text-primary">{formatCurrency(item.revenue)}</td>
+                      <td className={`px-4 py-2 text-right text-sm font-mono font-medium ${item.projectedProfit >= 0 ? 'text-positive' : 'text-negative'}`}>
+                        {formatCurrency(item.projectedProfit)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Amazon DD+7 cash balance — held vs pending */}
       {cashBalance?.latest && (

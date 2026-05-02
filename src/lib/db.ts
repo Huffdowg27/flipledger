@@ -56,8 +56,10 @@ export function initializeDatabase() {
       marketplace TEXT DEFAULT 'amazon',
       fulfillment_channel TEXT NOT NULL,
       is_estimated INTEGER DEFAULT 1,
+      shipped_at TEXT,
       created_at TEXT NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_orders_shipped_at ON orders(shipped_at);
 
     CREATE TABLE IF NOT EXISTS order_items (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

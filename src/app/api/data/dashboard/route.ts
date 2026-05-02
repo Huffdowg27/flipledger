@@ -299,6 +299,68 @@ export async function GET(request: NextRequest) {
     const roi = totalCogs > 0 ? (totalProfit / totalCogs) * 100 : 0;
     const prevRoi = prevCogs > 0 ? (prevProfit / prevCogs) * 100 : 0;
 
+    // ─── In-flight: orders not yet recognized in P&L (regardless of dateBasis) ──
+    // pending = customer placed but not shipped (Pending/Unshipped)
+    // shipped = shipped but Financial Events ShipmentEvent hasn't posted yet (cash-basis lag)
+    const pendingMF = marketplace ? `AND o.marketplace = '${marketplace}'` : `AND o.marketplace = 'amazon'`;
+    const pendingData = db.prepare(`
+      SELECT
+        COUNT(DISTINCT o.order_id) as orders,
+        COALESCE(SUM(oi.total_price + COALESCE(oi.shipping_charged, 0)), 0) as revenue
+      FROM orders o
+      LEFT JOIN order_items oi ON oi.order_id = o.order_id
+      WHERE o.status IN ('Pending', 'Unshipped') ${pendingMF}
+    `).get() as any;
+
+    // Limit to last 14 days — older shipped-no-event orders are stuck anomalies, not actionable.
+    // Amazon's Delivery Date Policy holds funds ~7-10 days from ship (≈ delivery + 7-day cushion).
+    const recentCutoff = new Date(Date.now() - 14 * 86400000).toISOString();
+    const shippedNotPostedData = db.prepare(`
+      SELECT
+        COUNT(DISTINCT o.order_id) as orders,
+        COALESCE(SUM(oi.price_per_unit * oi.quantity + COALESCE(oi.shipping_charged, 0)), 0) as revenue,
+        COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0) as cogs,
+        MIN(COALESCE(o.shipped_at, o.purchase_date)) as earliestShip,
+        MAX(COALESCE(o.shipped_at, o.purchase_date)) as latestShip
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      LEFT JOIN ${FE_POSTED} fe ON fe.order_id = o.order_id
+      WHERE o.status IN ('Shipped', 'PartiallyShipped')
+        AND fe.order_id IS NULL
+        AND o.purchase_date >= ?
+        ${pendingMF}
+    `).get(recentCutoff) as any;
+
+    // Amazon's Delivery Date Policy: funds release ~10 days after ship (typical observed window 8-10 days)
+    const DDP_DAYS = 10;
+    const earliestRelease = shippedNotPostedData.earliestShip
+      ? new Date(new Date(shippedNotPostedData.earliestShip).getTime() + DDP_DAYS * 86400000).toISOString()
+      : null;
+    const latestRelease = shippedNotPostedData.latestShip
+      ? new Date(new Date(shippedNotPostedData.latestShip).getTime() + DDP_DAYS * 86400000).toISOString()
+      : null;
+
+    // Trailing 30d Amazon AOV — used to estimate pending order revenue (Amazon doesn't
+    // return order_items or OrderTotal for Pending status until buyer payment clears)
+    const aovCutoff = new Date(Date.now() - 30 * 86400000).toISOString();
+    const aovData = db.prepare(`
+      SELECT
+        COALESCE(SUM(oi.price_per_unit * oi.quantity + COALESCE(oi.shipping_charged, 0)), 0) AS revenue,
+        COUNT(DISTINCT o.order_id) AS orders
+      FROM orders o
+      JOIN order_items oi ON oi.order_id = o.order_id
+      WHERE o.purchase_date >= ?
+        AND o.status IN ('Shipped', 'PartiallyShipped')
+        ${pendingMF}
+    `).get(aovCutoff) as any;
+    const avgOrderValueCents = aovData.orders > 0 ? Math.round(aovData.revenue / aovData.orders) : 0;
+    const pendingEstimateCents = pendingData.orders * avgOrderValueCents;
+
+    // Projected profit on the shipped-not-posted cohort: revenue - cogs - estimated fees @ 13% - estimated MFN ship
+    // Historical Amazon all-in fee rate is ~12.6%, round to 13% for forecast conservatism.
+    const shippedNotPostedFees = Math.round(shippedNotPostedData.revenue * 0.13);
+    const shippedNotPostedProfit = shippedNotPostedData.revenue - shippedNotPostedData.cogs - shippedNotPostedFees;
+
     db.close();
 
     return NextResponse.json({
@@ -308,6 +370,22 @@ export async function GET(request: NextRequest) {
         totalCogs, totalFees: allFees, roi,
         serviceFees: serviceFeeData.totalFees,
         prevRevenue, prevProfit, prevUnits: prevSalesData.totalUnits, prevRoi,
+      },
+      inFlight: {
+        pending: {
+          orders: pendingData.orders,
+          revenueReported: pendingData.revenue,
+          revenueEstimate: pendingEstimateCents,
+          avgOrderValue: avgOrderValueCents,
+        },
+        shippedNotPosted: {
+          orders: shippedNotPostedData.orders,
+          revenue: shippedNotPostedData.revenue,
+          cogs: shippedNotPostedData.cogs,
+          projectedProfit: shippedNotPostedProfit,
+          earliestRelease,
+          latestRelease,
+        },
       },
       dailyRevenue: chartData,
       topProducts, worstProducts,
