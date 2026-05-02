@@ -472,40 +472,56 @@ export default function Dashboard() {
         {/* Expense Breakdown Donut */}
         <div className="bg-bg-surface border border-border-subtle rounded-lg p-5">
           <h3 className="text-sm font-medium text-text-secondary mb-4">Expense Breakdown</h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <PieChart>
-              <Pie
-                data={donutData}
-                cx="50%"
-                cy="45%"
-                innerRadius={55}
-                outerRadius={85}
-                paddingAngle={2}
-                dataKey="value"
-              >
-                {donutData.map((_, index) => (
-                  <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip
-                contentStyle={{
-                  backgroundColor: '#18181c',
-                  border: '1px solid #2a2a33',
-                  borderRadius: '8px',
-                  fontSize: '12px',
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
-                }}
-                formatter={(value) => [`$${Number(value).toFixed(2)}`, '']}
-              />
-              <Legend
-                layout="vertical"
-                verticalAlign="bottom"
-                wrapperStyle={{ fontSize: '10px', color: '#a0a0b0' }}
-                iconType="circle"
-                iconSize={6}
-              />
-            </PieChart>
-          </ResponsiveContainer>
+          <div className="flex items-center gap-4">
+            <div className="flex-shrink-0" style={{ width: 180, height: 180 }}>
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={donutData}
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={55}
+                    outerRadius={85}
+                    paddingAngle={2}
+                    dataKey="value"
+                  >
+                    {donutData.map((_, index) => (
+                      <Cell key={index} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: '#18181c',
+                      border: '1px solid #2a2a33',
+                      borderRadius: '8px',
+                      fontSize: '12px',
+                      boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
+                    }}
+                    formatter={(value) => [`$${Number(value).toFixed(2)}`, '']}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="flex-1 min-w-0 space-y-1.5 max-h-[200px] overflow-y-auto">
+              {(() => {
+                const total = donutData.reduce((s, d: any) => s + (d.value || 0), 0);
+                return donutData.map((d: any, i: number) => {
+                  const pct = total > 0 ? (d.value / total) * 100 : 0;
+                  return (
+                    <div key={i} className="flex items-center gap-2 text-xs">
+                      <span
+                        className="flex-shrink-0 w-2 h-2 rounded-full"
+                        style={{ backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
+                      />
+                      <span className="flex-1 min-w-0 truncate text-text-secondary">{d.name}</span>
+                      <span className="font-mono text-text-primary tabular-nums">${(d.value).toFixed(0)}</span>
+                      <span className="font-mono text-text-tertiary tabular-nums w-10 text-right">{pct.toFixed(0)}%</span>
+                    </div>
+                  );
+                });
+              })()}
+            </div>
+          </div>
         </div>
       </div>
 
