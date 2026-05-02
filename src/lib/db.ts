@@ -382,6 +382,26 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_reimbursement_candidates_eligible
       ON reimbursement_candidates(eligible_until);
 
+    -- Amazon DD+7 reserve balance history. Captured from settlement reports
+    -- whenever Amazon includes "Current Reserve Amount" / "Previous Reserve
+    -- Amount Balance" lines (classic Deferred Disbursement schedule). For
+    -- accounts on Express Payments / Faster Payouts, no reserve rows are
+    -- emitted, so this table stays empty and the dashboard card hides.
+    CREATE TABLE IF NOT EXISTS reserve_balance_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      marketplace TEXT NOT NULL DEFAULT 'amazon',
+      posted_date TEXT NOT NULL,
+      current_reserve_cents INTEGER NOT NULL DEFAULT 0,
+      previous_reserve_cents INTEGER NOT NULL DEFAULT 0,
+      settlement_id TEXT,
+      raw_data TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_reserve_balance_unique
+      ON reserve_balance_history(marketplace, posted_date, current_reserve_cents);
+    CREATE INDEX IF NOT EXISTS idx_reserve_balance_date
+      ON reserve_balance_history(posted_date);
+
     -- Best-Sellers-Rank snapshots from Catalog API. One row per
     -- (asin, captured_date) — daily granularity is enough.
     CREATE TABLE IF NOT EXISTS sales_rank_history (

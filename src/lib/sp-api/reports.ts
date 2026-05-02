@@ -160,6 +160,45 @@ function parseSettlementReport(content: string): number {
         if (result.changes > 0) updated++;
       }
 
+      // Reserve balance — Amazon's Deferred Disbursement +7 hold. Captured
+      // separately so we can show "Available vs Held" cash flow on the
+      // dashboard. Each settlement report includes a "Current Reserve Amount"
+      // (held now) and "Previous Reserve Amount Balance" (was held last cycle).
+      if (transactionType === 'other-transaction'
+          && (amountDescription === 'Current Reserve Amount' || amountDescription === 'Previous Reserve Amount Balance')) {
+        const reserveCents = Math.round(amount * 100);
+        let reserveDate = postedDate || new Date().toISOString();
+        if (/^\d{2}\.\d{2}\.\d{4}$/.test(reserveDate)) {
+          const [dd, mm, yyyy] = reserveDate.split('.');
+          reserveDate = `${yyyy}-${mm}-${dd}`;
+        }
+        // Upsert: each settlement should have one Current + one Previous row.
+        // Match on (marketplace, posted_date) and update whichever field this row is.
+        const existing = db.prepare(`
+          SELECT id FROM reserve_balance_history
+          WHERE marketplace = 'amazon' AND posted_date = ?
+        `).get(reserveDate) as { id?: number } | undefined;
+
+        if (existing?.id) {
+          if (amountDescription === 'Current Reserve Amount') {
+            db.prepare('UPDATE reserve_balance_history SET current_reserve_cents = ?, raw_data = ? WHERE id = ?').run(reserveCents, JSON.stringify({ amountDescription, amount }), existing.id);
+          } else {
+            db.prepare('UPDATE reserve_balance_history SET previous_reserve_cents = ?, raw_data = ? WHERE id = ?').run(reserveCents, JSON.stringify({ amountDescription, amount }), existing.id);
+          }
+        } else {
+          db.prepare(`
+            INSERT INTO reserve_balance_history (marketplace, posted_date, current_reserve_cents, previous_reserve_cents, raw_data, created_at)
+            VALUES ('amazon', ?, ?, ?, ?, datetime('now'))
+          `).run(
+            reserveDate,
+            amountDescription === 'Current Reserve Amount' ? reserveCents : 0,
+            amountDescription === 'Previous Reserve Amount Balance' ? reserveCents : 0,
+            JSON.stringify({ amountDescription, amount })
+          );
+        }
+        continue;
+      }
+
       // Service fees from settlement (storage, subscriptions, inbound, etc.)
       // These have proper posted dates that match when they were actually charged
       // transaction-type = 'other-transaction', amount-type varies ('other-transaction', 'FBA Inventory Reimbursement', etc.)

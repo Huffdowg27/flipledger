@@ -47,14 +47,36 @@ interface DayDetail {
   posted_date: string;
 }
 
+interface CashBalance {
+  latest: {
+    marketplace: string;
+    postedDate: string;
+    currentReserveCents: number;
+    previousReserveCents: number;
+    deltaCents: number;
+  } | null;
+  history: { postedDate: string; currentReserveCents: number; previousReserveCents: number }[];
+  pendingSinceLastReserveCents: number;
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
+  const [cashBalance, setCashBalance] = useState<CashBalance | null>(null);
   const [loading, setLoading] = useState(true);
   const [dayDetails, setDayDetails] = useState<DayDetail[]>([]);
   const [dayRefunds, setDayRefunds] = useState<any[]>([]);
   const [dayDetailsLoading, setDayDetailsLoading] = useState(false);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const { dateRange, setDateRange, marketplace, setMarketplace, marketplaceParam, dateBasis, setDateBasis, dateBasisParam } = useFilters();
+
+  // Cash balance is independent of date range / marketplace filter — always
+  // shows the latest snapshot from Amazon settlement reports.
+  useEffect(() => {
+    fetch('/api/data/cash-balance')
+      .then(r => r.json())
+      .then(setCashBalance)
+      .catch(() => {});
+  }, []);
 
   const fetchData = useCallback(async () => {
     setLoading(true);
@@ -221,6 +243,47 @@ export default function Dashboard() {
           format="currency"
         />
       </div>
+
+      {/* Amazon DD+7 cash balance — held vs pending */}
+      {cashBalance?.latest && (
+        <div className="mb-6 grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+            <div className="flex items-center justify-between mb-1">
+              <div className="text-[11px] uppercase tracking-wider text-text-tertiary">Held in DD+7</div>
+              <div className="text-[10px] text-text-tertiary">Amazon</div>
+            </div>
+            <div className="text-2xl font-mono text-warning">
+              {formatCurrency(cashBalance.latest.currentReserveCents)}
+            </div>
+            <div className="text-xs text-text-tertiary mt-1">
+              Reserve as of {new Date(cashBalance.latest.postedDate).toLocaleDateString()}
+              {cashBalance.latest.deltaCents !== 0 && (
+                <span className={cashBalance.latest.deltaCents > 0 ? ' text-warning' : ' text-positive'}>
+                  {' '}({cashBalance.latest.deltaCents > 0 ? '+' : ''}{formatCurrency(cashBalance.latest.deltaCents)} vs prev)
+                </span>
+              )}
+            </div>
+          </div>
+          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+            <div className="text-[11px] uppercase tracking-wider text-text-tertiary mb-1">Pending since last settlement</div>
+            <div className="text-2xl font-mono text-accent">
+              {formatCurrency(cashBalance.pendingSinceLastReserveCents)}
+            </div>
+            <div className="text-xs text-text-tertiary mt-1">
+              Sales settled since {new Date(cashBalance.latest.postedDate).toLocaleDateString()} — disburses next cycle
+            </div>
+          </div>
+          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+            <div className="text-[11px] uppercase tracking-wider text-text-tertiary mb-1">Total in transit</div>
+            <div className="text-2xl font-mono text-text-primary">
+              {formatCurrency(cashBalance.latest.currentReserveCents + cashBalance.pendingSinceLastReserveCents)}
+            </div>
+            <div className="text-xs text-text-tertiary mt-1">
+              Earned but not yet in your bank account
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Settlement fee note */}
       {stats.serviceFees > stats.totalRevenue * 0.3 && stats.serviceFees > 10000 && (
