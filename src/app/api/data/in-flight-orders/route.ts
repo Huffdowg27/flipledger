@@ -19,7 +19,10 @@ export async function GET(request: NextRequest) {
   try {
     const recentCutoff = new Date(Date.now() - 14 * 86400000).toISOString();
 
-    // Shipped, awaiting settlement (last 14 days, no ShipmentEvent yet)
+    // Shipped, awaiting settlement (last 14 days, no ShipmentEvent yet).
+    // Defense-in-depth: if cogs_per_unit is 0 (FIFO lot depleted), fall back to
+    // the latest inventory_ledger.buy_price for this SKU. Doesn't change historical P&L
+    // — this only affects the projection shown on the dashboard drill.
     const rows = db.prepare(`
       SELECT
         o.order_id,
@@ -29,8 +32,13 @@ export async function GET(request: NextRequest) {
         oi.asin,
         oi.sku,
         oi.quantity,
+        oi.price_per_unit,
+        oi.shipping_charged,
+        oi.shipping_cost,
+        oi.cogs_per_unit,
         (oi.price_per_unit * oi.quantity + COALESCE(oi.shipping_charged, 0)) AS revenue,
         (oi.cogs_per_unit * oi.quantity) AS cogs,
+        (SELECT buy_price FROM inventory_ledger il WHERE il.sku = oi.sku ORDER BY il.id DESC LIMIT 1) AS fallback_buy_price,
         COALESCE(p.name, li.product_name, oi.sku) AS product_name
       FROM orders o
       JOIN order_items oi ON oi.order_id = o.order_id
@@ -49,9 +57,20 @@ export async function GET(request: NextRequest) {
     const items = rows.map(r => {
       const shipBase = r.shipped_at || r.purchase_date;
       const expectedRelease = new Date(new Date(shipBase).getTime() + DDP_DAYS * 86400000).toISOString();
+      // COGS fallback: if FIFO returned 0 and we know the last buy_price for this SKU, use it.
+      let cogs = r.cogs;
+      let cogsSource: 'fifo' | 'fallback' | 'missing' = 'fifo';
+      if (cogs === 0 && r.fallback_buy_price > 0) {
+        cogs = r.fallback_buy_price * r.quantity;
+        cogsSource = 'fallback';
+      } else if (cogs === 0) {
+        cogsSource = 'missing';
+      }
+      // MFN orders: subtract out-of-pocket shipping if known
+      const mfnShipping = r.shipping_cost || 0;
       // Estimate fees at 13% of revenue (slightly above 12.6% historical for conservatism)
       const estimatedFees = Math.round(r.revenue * 0.13);
-      const projectedProfit = r.revenue - r.cogs - estimatedFees;
+      const projectedProfit = r.revenue - cogs - estimatedFees - mfnShipping;
       const daysHeld = Math.floor((Date.now() - new Date(shipBase).getTime()) / 86400000);
       const daysUntilRelease = Math.max(0, DDP_DAYS - daysHeld);
       return {
@@ -67,8 +86,10 @@ export async function GET(request: NextRequest) {
         daysHeld,
         daysUntilRelease,
         revenue: r.revenue,
-        cogs: r.cogs,
+        cogs,
+        cogsSource,
         estimatedFees,
+        mfnShipping,
         projectedProfit,
       };
     });
@@ -82,7 +103,10 @@ export async function GET(request: NextRequest) {
         revenue: items.reduce((s, i) => s + i.revenue, 0),
         cogs: items.reduce((s, i) => s + i.cogs, 0),
         estimatedFees: items.reduce((s, i) => s + i.estimatedFees, 0),
+        mfnShipping: items.reduce((s, i) => s + i.mfnShipping, 0),
         projectedProfit: items.reduce((s, i) => s + i.projectedProfit, 0),
+        itemsMissingCogs: items.filter(i => i.cogsSource === 'missing').length,
+        itemsCogsFallback: items.filter(i => i.cogsSource === 'fallback').length,
       },
     });
   } catch (error) {

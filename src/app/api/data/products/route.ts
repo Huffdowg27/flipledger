@@ -141,15 +141,29 @@ export async function POST(request: NextRequest) {
 
     // Upsert inventory ledger entry
     if (sku) {
-      const existing = db.prepare('SELECT id FROM inventory_ledger WHERE sku = ?').get(sku) as any;
+      const existing = db.prepare('SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE sku = ?').get(sku) as any;
       if (existing) {
+        // Make sure quantity covers all sold units. If the user entered COGS once
+        // when only N units had sold, FIFO depleted the lot. As more units sell,
+        // they get $0 COGS. Bump quantity (and quantity_remaining proportionally)
+        // so subsequent sales can FIFO against the same buy price.
+        const soldRow = db.prepare(`
+          SELECT COALESCE(SUM(oi.quantity), 0) as units_sold
+          FROM order_items oi
+          WHERE oi.sku = ?
+        `).get(sku) as { units_sold: number };
+        const unitsSold = soldRow?.units_sold || 0;
+        const desiredQty = Math.max(existing.quantity, unitsSold + 1);
+        const qtyDelta = desiredQty - existing.quantity;
         db.prepare(`
           UPDATE inventory_ledger SET
             buy_price = ?,
+            quantity = ?,
+            quantity_remaining = quantity_remaining + ?,
             supplier_id = COALESCE(?, supplier_id),
             date_purchased = COALESCE(?, date_purchased)
           WHERE sku = ?
-        `).run(buyPriceCents, supplierId, datePurchased, sku);
+        `).run(buyPriceCents, desiredQty, qtyDelta, supplierId, datePurchased, sku);
       } else {
         // New ledger row. If the user is back-filling COGS for a SKU that has
         // already been SOLD (common for eBay items that were never pre-entered),

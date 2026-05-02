@@ -341,7 +341,19 @@ export default function Dashboard() {
                   {inFlightItems.map((item, i) => (
                     <tr key={`${item.orderId}-${item.sku}-${i}`} className="border-b border-border-subtle/50 hover:bg-bg-hover transition-colors">
                       <td className="px-4 py-2 text-sm">
-                        <div className="text-text-primary font-medium truncate max-w-[280px]">{item.productName}</div>
+                        <div className="text-text-primary font-medium truncate max-w-[280px] flex items-center gap-2">
+                          {item.productName}
+                          {item.cogsSource === 'missing' && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-400" title="No COGS entered for this SKU yet">
+                              No COGS
+                            </span>
+                          )}
+                          {item.cogsSource === 'fallback' && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-blue-500/10 text-blue-400" title="COGS estimated from last known buy price (FIFO lot depleted)">
+                              Est. COGS
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[11px] text-text-tertiary font-mono">{item.sku || item.asin}</div>
                       </td>
                       <td className="px-4 py-2 text-[11px] font-mono text-text-tertiary">{item.orderId}</td>
