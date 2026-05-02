@@ -38,7 +38,8 @@ export function initializeDatabase() {
       image_url TEXT,
       marketplace TEXT DEFAULT 'amazon',
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      walmart_item_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS suppliers (
@@ -67,8 +68,11 @@ export function initializeDatabase() {
       price_per_unit INTEGER NOT NULL,
       total_price INTEGER NOT NULL,
       shipping_charged INTEGER DEFAULT 0,
-      shipping_cost INTEGER DEFAULT 0
+      shipping_cost INTEGER DEFAULT 0,
+      promotional_rebate INTEGER DEFAULT 0,
+      cogs_per_unit INTEGER DEFAULT 0
     );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_order_items_unique ON order_items(order_id, asin, sku);
 
     CREATE TABLE IF NOT EXISTS financial_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -91,7 +95,48 @@ export function initializeDatabase() {
       fee_type TEXT NOT NULL,
       fee_category TEXT,
       amount INTEGER NOT NULL,
-      posted_date TEXT NOT NULL
+      posted_date TEXT NOT NULL,
+      effective_date TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS live_inventory (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      sku TEXT,
+      marketplace TEXT NOT NULL DEFAULT 'amazon',
+      fulfillable_qty INTEGER NOT NULL DEFAULT 0,
+      inbound_qty INTEGER NOT NULL DEFAULT 0,
+      reserved_qty INTEGER NOT NULL DEFAULT 0,
+      unfulfillable_qty INTEGER NOT NULL DEFAULT 0,
+      total_qty INTEGER GENERATED ALWAYS AS (fulfillable_qty + inbound_qty + reserved_qty + unfulfillable_qty) STORED,
+      product_name TEXT,
+      last_updated TEXT NOT NULL,
+      inbound_working INTEGER DEFAULT 0,
+      inbound_shipped INTEGER DEFAULT 0,
+      inbound_receiving INTEGER DEFAULT 0,
+      reserved_customer_order INTEGER DEFAULT 0,
+      reserved_fc_transfer INTEGER DEFAULT 0,
+      reserved_fc_processing INTEGER DEFAULT 0,
+      list_price INTEGER DEFAULT 0,
+      walmart_item_id TEXT,
+      UNIQUE(asin, sku, marketplace)
+    );
+
+    CREATE TABLE IF NOT EXISTS inbound_cost_per_sku (
+      sku TEXT NOT NULL,
+      asin TEXT,
+      shipment_id TEXT NOT NULL,
+      inbound_cost_per_unit INTEGER NOT NULL,
+      units INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (sku, shipment_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS storage_fees_per_asin (
+      asin TEXT PRIMARY KEY,
+      monthly_fee INTEGER NOT NULL,
+      size_tier TEXT,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS inventory_ledger (

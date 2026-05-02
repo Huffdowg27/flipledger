@@ -9,34 +9,18 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { initializeDatabase } from './db';
 
 const DB_DIR = path.join(process.cwd(), 'data');
 if (!fs.existsSync(DB_DIR)) fs.mkdirSync(DB_DIR, { recursive: true });
 
+// Use the canonical schema from db.ts so seed never drifts behind the app's
+// migrations. This creates every table the app expects.
+initializeDatabase();
+
 const DB_PATH = path.join(DB_DIR, 'flipledger.db');
 const sqlite = new Database(DB_PATH);
 sqlite.pragma('journal_mode = WAL');
-
-// ─── Create Tables ──────────────────────────────────────────────────────────
-sqlite.exec(`
-  CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);
-  CREATE TABLE IF NOT EXISTS sync_log (id INTEGER PRIMARY KEY AUTOINCREMENT, sync_type TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, status TEXT NOT NULL DEFAULT 'running', error TEXT, records_fetched INTEGER DEFAULT 0);
-  CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, asin TEXT NOT NULL, sku TEXT, name TEXT, category TEXT, image_url TEXT, marketplace TEXT DEFAULT 'amazon', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS suppliers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL UNIQUE, purchase_date TEXT NOT NULL, status TEXT NOT NULL, marketplace TEXT DEFAULT 'amazon', fulfillment_channel TEXT NOT NULL, is_estimated INTEGER DEFAULT 1, created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS order_items (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL, asin TEXT NOT NULL, sku TEXT, quantity INTEGER NOT NULL DEFAULT 1, price_per_unit INTEGER NOT NULL, total_price INTEGER NOT NULL, shipping_charged INTEGER DEFAULT 0, shipping_cost INTEGER DEFAULT 0);
-  CREATE TABLE IF NOT EXISTS financial_events (id INTEGER PRIMARY KEY AUTOINCREMENT, event_type TEXT NOT NULL, posted_date TEXT NOT NULL, order_id TEXT, asin TEXT, sku TEXT, marketplace TEXT DEFAULT 'amazon', total_amount INTEGER NOT NULL, raw_data TEXT, created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS fee_details (id INTEGER PRIMARY KEY AUTOINCREMENT, financial_event_id INTEGER NOT NULL, order_id TEXT, asin TEXT, fee_type TEXT NOT NULL, fee_category TEXT, amount INTEGER NOT NULL, posted_date TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS inventory_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, asin TEXT NOT NULL, sku TEXT, buy_price INTEGER NOT NULL, quantity INTEGER NOT NULL, quantity_remaining INTEGER NOT NULL, supplier_id INTEGER, date_purchased TEXT NOT NULL, notes TEXT, created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS refunds (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT NOT NULL, refund_date TEXT NOT NULL, asin TEXT, sku TEXT, quantity INTEGER DEFAULT 1, refund_amount INTEGER NOT NULL, reason TEXT, item_returned INTEGER DEFAULT 0, fee_clawback INTEGER DEFAULT 0, marketplace TEXT DEFAULT 'amazon', created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS reimbursements (id INTEGER PRIMARY KEY AUTOINCREMENT, reimbursement_id TEXT, reimbursement_date TEXT NOT NULL, asin TEXT, sku TEXT, reason TEXT, amount INTEGER NOT NULL, quantity INTEGER DEFAULT 1, status TEXT DEFAULT 'Approved', marketplace TEXT DEFAULT 'amazon', created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS removals (id INTEGER PRIMARY KEY AUTOINCREMENT, removal_order_id TEXT NOT NULL, asin TEXT, sku TEXT, quantity INTEGER NOT NULL, removal_type TEXT NOT NULL, reason TEXT, status TEXT DEFAULT 'Pending', date_requested TEXT NOT NULL, date_completed TEXT, fee INTEGER DEFAULT 0, marketplace TEXT DEFAULT 'amazon', created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS inbound_shipments (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT NOT NULL, date_shipped TEXT NOT NULL, carrier TEXT, tracking TEXT, boxes INTEGER DEFAULT 1, weight REAL, cost INTEGER NOT NULL, total_units INTEGER NOT NULL, status TEXT DEFAULT 'In Transit', marketplace TEXT DEFAULT 'amazon', created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS inbound_shipment_items (id INTEGER PRIMARY KEY AUTOINCREMENT, shipment_id TEXT NOT NULL, asin TEXT NOT NULL, sku TEXT, quantity INTEGER NOT NULL);
-  CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, category TEXT NOT NULL, amount INTEGER NOT NULL, description TEXT, recurring TEXT DEFAULT 'one-time', created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS other_income (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT NOT NULL, income_type TEXT NOT NULL, amount INTEGER NOT NULL, description TEXT, marketplace TEXT DEFAULT 'amazon', created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS sales_tax (id INTEGER PRIMARY KEY AUTOINCREMENT, order_id TEXT, state TEXT NOT NULL, tax_collected INTEGER NOT NULL, marketplace_facilitator_tax INTEGER DEFAULT 0, posted_date TEXT NOT NULL, marketplace TEXT DEFAULT 'amazon');
-`);
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const now = new Date().toISOString();
