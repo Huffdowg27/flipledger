@@ -1,61 +1,29 @@
 # P&L Reconciliation Handoff — FlipLedger vs InventoryLab
 
-**Audit period:** 2026-04-11 through 2026-05-11  
-**Session date:** 2026-05-11  
-**Status:** Bugs confirmed, fixes designed, NOT YET applied
+**Audit period:** 2026-04-11 through 2026-05-11
+**Last updated:** 2026-05-12
+**Status:** FBAInboundConvenienceFee fix applied and verified. Remaining gap +$191.84 (FL above IL).
 
 ---
 
-## Summary of findings
+## Current reconciled state (as of 2026-05-12)
 
-Three root causes explain the full divergence between FlipLedger and InventoryLab:
-
-| # | Bug | FL vs IL gap | Fix status |
-|---|-----|-------------|------------|
-| 1 | Fee double-count (5 fee types) | −$1,487.43 (FL overcounts fees) | Fix designed, NOT applied |
-| 2 | COGS lot quantity understatement | −$1,480.17 (FL undercounts COGS) | Fix designed, NOT applied |
-| 3 | Date-basis mismatch (Accrual vs IL Hybrid) | $8,141.27 sales / $4,460.17 COGS | By design — future IL Hybrid mode planned |
-
----
-
-## Mode decision (CONFIRMED)
-
-**Do NOT change FL Accrual to match IL.** Keep FL Accrual pure (purchase_date basis).
-
-Four planned dashboard modes:
-1. **Accrual** — purchase_date basis (current default) ← keep this pure
-2. **Cash/Reconciled** — ShipmentEvent posted_date basis
-3. **InventoryLab Hybrid** — settled orders by posted_date + unreconciled by purchase_date ← future work
-4. **DD+7 Forecast** — held cash + expected release timing ← future work
+| Metric | Value |
+|---|---|
+| FL Reconciled net profit | **$3,205.58** |
+| IL Reconciled net profit | $3,013.74 |
+| Gap | **+$191.84 (FL above IL)** |
+| Audit window | 2026-04-11 to 2026-05-11 |
 
 ---
 
-## Bug 1: Fee double-count (Part 1 fix — NEXT to apply)
+## Fix history
 
-### Root cause
-`ServiceFeeEvent` rows are re-inserted every sync day (new `posted_date` bypasses the unique constraint). The same fee ends up with N rows — one per sync day that overlaps its window. `SettlementServiceFee` is the canonical single-source; it never re-inserts.
+### Fix 1 — ServiceFeeEvent query-time filter (applied, prior session)
 
-The `serviceFees` query in `profitloss/route.ts` and `dashboard/route.ts` joins `fee_details` to `financial_events` with NO filter on `event_type`, so both ServiceFeeEvent and SettlementServiceFee rows are summed.
+Five fee types that appear in both `ServiceFeeEvent` (re-inserted daily by sync) and `SettlementServiceFee` (canonical, once per period) were excluded from the `serviceFees` query at read time.
 
-### Confirmed duplicate pairs
-
-| ServiceFeeEvent fee_type | SettlementServiceFee | IL bucket | Overcount |
-|--------------------------|---------------------|-----------|-----------|
-| FBAStorageFee | StorageFee | 30 Day Storage Fees | $700.15 (5× repetition) |
-| FBARemovalFee | RemovalComplete | Removal Order Fees | $174.79 |
-| Subscription | SubscriptionFee | Amazon Pro Subscription | $159.96 |
-| FBACustomerReturnPerUnitFee | FBACustomerReturnPerUnitFee | FBA Customer Return Per Unit Fee | $304.64 |
-| FBAInboundTransportationFee | InboundTransportationFee | Inbound Transportation Fee | $147.89 |
-| **Total** | | | **$1,487.43** |
-
-### Fee types that must NOT be excluded (ServiceFeeEvent only, no settlement equivalent)
-- `FBAInboundConvenienceFee`: −$958.78 — only source
-- `ReCommerceGradingAndListingCharge`: −$9.00 — only source
-
-### Fix: Part 1 — query-time filter (SAFE, no data changes)
-
-Add to the WHERE clause of all 4 `serviceFees`-style queries:
-
+**Filter applied in `profitloss/route.ts` and `dashboard/route.ts`:**
 ```sql
 AND NOT (
   fe.event_type = 'ServiceFeeEvent'
@@ -69,31 +37,97 @@ AND NOT (
 )
 ```
 
-Files to edit:
-- `src/app/api/data/profitloss/route.ts` — `serviceFees` query (~line 123)
-- `src/app/api/data/dashboard/route.ts` — `serviceFeeData`, `prevServiceFeeData`, `serviceFeeBreakdown` queries
-
-### Fix: Part 2 — sync idempotency (DEFER — 3 options)
-Options:
-1. Content hash dedup: add a hash column to financial_events; skip insert if hash exists
-2. ±14-day dedup: when syncing ServiceFeeEvents, delete existing rows within a window before reinserting
-3. SettlementServiceFee-preferred: after sync, delete any ServiceFeeEvent rows that have a matching SettlementServiceFee counterpart
-
-**Recommendation:** Option 3 is cleanest — mirrors the query-time fix at the data layer.
+These five types still have their settlement-canonical counterparts counted correctly via `SettlementServiceFee`.
 
 ---
 
-## Bug 2: COGS lot quantity understatement
+### Fix 2 — FBAInboundConvenienceFee dedup (applied 2026-05-12)
 
-### Root cause
-`inventory_ledger` was imported from IL's FBA Sales CSV which reports units *sold* per export window, not units *purchased*. MSKU position 4 (0-indexed, `_`-split) encodes the true purchase quantity. Lots with `quantity_remaining=1–14` deplete after the first few sales; all subsequent orders of that SKU get `cogs_per_unit = 0`.
+#### Root cause
+`FBAInboundConvenienceFee` is an FBA inbound split-shipment fee charged per-unit per shipment plan. It arrives via `ServiceFeeEvent` with no `PostedDate`. `processServiceFeeEvent` in `finances.ts` used the sync's `contextDate` (today − 14 days) as the posted_date. Since `contextDate` advances daily, each sync run re-inserted the same fee with a new date, bypassing the existing dedup key `(fee_type, amount, asin, sku, date)`.
 
-### Confirmed impact
-- 168 orders in the date range have `cogs_per_unit = 0`
+This fee has **no `SettlementServiceFee` equivalent** — it is never settled and cannot be excluded by the query-time filter. It had to be fixed at the sync layer.
+
+#### Code fix — commit `bfa0b22`
+`processServiceFeeEvent` in `src/lib/sp-api/finances.ts` now uses a two-branch dedup:
+
+- **Events with `AmazonOrderId`** (FBA shipment plan fees): dedup by `(fee_type, shipment_id, amount)` via a `JOIN` on `fee_details + financial_events`. Skips insertion if that combination already exists — regardless of date.
+- **Events without `AmazonOrderId`** (storage, subscription, etc.): unchanged — existing date + batch-count dedup path.
+
+#### Historical data cleanup (run 2026-05-12)
+**DB backup before cleanup:**
+`data/backups/flipledger-before-fba-inbound-convenience-cleanup-20260512-120839.db`
+
+**Cleanup preview CSVs (do not delete):**
+- `docs/fba_inbound_convenience_fee_duplicate_cleanup_preview.csv`
+- `docs/fba_inbound_convenience_fee_duplicate_backup.csv`
+
+**Keep rule:** earliest `fee_detail_id` per `(fee_type, shipment_id, amount)` — the first time each unique fee was stored. Later rows are re-insertions from subsequent sync runs and belong to the period the shipment plan was originally created, not the re-sync date.
+
+**Cleanup result:**
+
+| | Before | After |
+|---|---|---|
+| All-time `FBAInboundConvenienceFee` rows | 3,700 | 1,499 |
+| `fee_details` rows deleted | — | 2,201 |
+| Orphaned `financial_events` rows deleted | — | 2,201 |
+| Apr 11–May 11 rows | 525 | 20 |
+| Apr 11–May 11 fee total | $1,125.87 | $68.91 |
+| FL Reconciled net | $2,148.62 | **$3,205.58** |
+| Gap vs IL | −$865.12 | **+$191.84** |
+
+**Important — why $68.91, not $147.29 (earlier estimate):**
+57 unique `(shipment_id, amount)` combos appear in the Apr 11–May 11 window. Of those:
+- 20 had their first-ever insertion inside the window → $68.91 stays in Apr P&L
+- 37 had their first insertion before Apr 11 → those fees correctly land in their original earlier period (not Apr 11–May 11)
+
+The $147.29 estimate was wrong because it counted the "best row within window" for all 57 combos, rather than honouring the true first-insertion date.
+
+---
+
+## Fees confirmed clean — do not touch
+
+### FBAInboundPlacementServiceFee
+- Source: `SettlementServiceFee` only
+- 77 rows in window, $178.15
+- No duplication detected (each row is unique per settlement)
+- **Leave as-is.**
+
+### FBAInboundTransportationFee / InboundTransportationFee
+- `ServiceFeeEvent` version correctly excluded by query-time filter
+- `SettlementServiceFee` version (`InboundTransportationFee`, $14.97) counted once
+- **Leave as-is.**
+
+### MISSING_FROM_INBOUND_CLAWBACK / COMPENSATED_CLAWBACK
+- Both from `SettlementServiceFee`, one row each, settlement-backed
+- **Leave as-is.**
+
+---
+
+## Remaining gap — +$191.84 (FL above IL)
+
+After cleanup FL is $191.84 *above* IL. Possible causes — do not chase yet:
+
+- Refund timing differences (IL may count refunds differently)
+- Small fee classification differences
+- IL-specific treatment of clawback fee types
+- FBA shipping credit handling
+
+**Decision: defer investigation unless gap matters for filing.**
+
+---
+
+## Pending work (do not start until gap investigation is approved)
+
+### COGS lot quantity correction
+
+`inventory_ledger` was imported from IL's FBA Sales CSV which reports units *sold* per export window, not units *purchased*. MSKU position 4 (0-indexed, `_`-split) encodes true purchase quantity. Lots with `quantity_remaining=1–14` deplete after the first few sales; subsequent orders get `cogs_per_unit = 0`.
+
+- 168 orders in window have `cogs_per_unit = 0`
 - Estimated missing COGS: ~$1,480.17
-- Of those, some have zero COGS because the lot was legitimately depleted; others have wrong lot quantities
+- **Do not apply until approved.** Run dry-run preview first.
 
-### MSKU qty parsing
+**MSKU parsing:**
 ```typescript
 function parseMskuQty(sku: string): number {
   const parts = sku.split('_');
@@ -105,35 +139,31 @@ function parseMskuCost(sku: string): number {
 }
 ```
 
-### Fix: lot quantity dry-run (NOT YET DONE)
-Before any writes, build a preview table:
-`(MSKU, current qty, parsed qty from position 4, buy_price, date_purchased, units_sold, proposed_new_qty, confidence)`
+---
 
-Then re-run FIFO after confirming the preview looks correct.
+## Next product step — reporting-view architecture
+
+Three planned P&L view modes:
+
+| Mode | Basis | Purpose |
+|---|---|---|
+| **Operating / Sellerboard-style** | Posted date, all fees including estimated | Day-to-day operations, velocity, margin by product |
+| **Cash / DD+7** | Posted date + Amazon reserve release timing | Cash flow forecasting, actual bank deposit view |
+| **Accounting / Reconciled** | Settlement-period fees only (`financial_event_id != 0`) | Tax filing, IL comparison, true settled P&L |
+
+This is the next architectural decision — do not implement until approved.
 
 ---
 
-## Bug 3: Date-basis mismatch (by design)
-
-### Finding
-IL "Estimated" P&L is a **hybrid**: settled orders use `ShipmentEvent.posted_date`; unreconciled orders use `purchase_date`. FL Accrual uses `purchase_date` for all orders.
-
-168 prior-period orders (purchased before 2026-04-11, settled in the window) account for:
-- $8,453 of the sales gap
-- $4,460 of the COGS gap
-
-This is not a bug — it's a mode difference. The fix is to build the "InventoryLab Hybrid" mode.
-
----
-
-## Debug endpoints (all read-only, no data writes)
+## Debug endpoints (all read-only)
 
 | Endpoint | Purpose |
-|----------|---------|
+|---|---|
 | `/api/debug/recon?startDate=&endDate=` | 3-mode recon: Accrual vs IL Estimated, Cash vs IL Reconciled, DD+7 |
 | `/api/debug/sales-gap?startDate=&endDate=` | Bucket analysis: FL Accrual, FL Cash, Held, Prior-period |
 | `/api/debug/cogs-gap?startDate=&endDate=` | Zero-COGS breakdown, MSKU lot qty mismatch table |
 | `/api/debug/fee-double-count?startDate=&endDate=` | Per-pair analysis, day-repetition proof, impact summary |
+| `/api/debug/settlement-periods?requestedStart=` | Settlement period metadata, overlap groups, effective start |
 
 ---
 
@@ -159,27 +189,9 @@ Net Profit:       $ 3,013.74
 
 ---
 
-## Next session checklist
+## Settlement periods
 
-1. **Apply Part 1 query-time fee filter** to profitloss + dashboard routes
-2. Rebuild (`npm run build`) and restart PM2 (`pm2 restart 5`)
-3. Re-run `/api/debug/recon?startDate=2026-04-11&endDate=2026-05-11` — verify storage/removal/subscription buckets corrected
-4. Run COGS lot quantity dry-run (build preview table, no writes yet)
-5. Confirm preview → apply lot quantity corrections → re-run FIFO
-6. Re-run full recon audit
-7. Decide: implement IL Hybrid mode (Mode 3) or move to next priority
-
----
-
-## Schema notes (for future IL Hybrid mode)
-
-```sql
--- Cash basis: ShipmentEvent posted_date
-SELECT order_id, MIN(posted_date) as posted_date
-FROM financial_events WHERE event_type = 'ShipmentEvent' AND order_id IS NOT NULL
-GROUP BY order_id
-
--- IL Hybrid: settled orders by posted_date, unreconciled by purchase_date
--- Reconciled = has a ShipmentEvent in financial_events
--- Unreconciled = purchase_date only, no settlement yet
-```
+- `settlement_periods` table populated via `/api/sync/backfill-settlement-periods`
+- 29 periods stored, all dates normalized to ISO format
+- `getEffectiveReconcileStart` helper in `reports.ts`: finds earliest settlement period ≥ requested start date, tie-breaks on shortest duration
+- Settlement-aware start snap was tested for 2026-04-11: zero orders excluded (all Apr 11 orders post after 15:10:36 UTC). **Not the source of the gap.**
