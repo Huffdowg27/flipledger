@@ -30,10 +30,16 @@ export async function GET() {
         s.name AS supplier_name,
         p.name AS product_name,
         p.image_url,
-        p.category
+        p.category,
+        lbi.fnsku
       FROM inventory_ledger il
       LEFT JOIN suppliers s ON s.id = il.supplier_id
       LEFT JOIN products p ON p.asin = il.asin
+      LEFT JOIN (
+        SELECT sku, fnsku FROM listing_batch_items
+        WHERE fnsku IS NOT NULL
+        GROUP BY sku
+      ) lbi ON lbi.sku = il.sku
       WHERE il.quantity_remaining > 0
       ORDER BY
         CASE WHEN il.bin_location IS NULL OR il.bin_location = '' THEN 1 ELSE 0 END,
