@@ -38,7 +38,7 @@ export default function PageHeader({ title, subtitle, dateRange, onDateRangeChan
                 Operating
                 <Info size={11} className="shrink-0 opacity-40" />
               </button>
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
                 Purchase-date view. Best for business performance and Sellerboard-style operating trends. Includes orders based on when they were placed, even if Amazon has not settled the money yet.
               </div>
             </div>
@@ -54,7 +54,7 @@ export default function PageHeader({ title, subtitle, dateRange, onDateRangeChan
                 Settled
                 <Info size={11} className="shrink-0 opacity-40" />
               </button>
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
                 Posted-event view. Best for DD+7 cash timing. Shows orders and fees when Amazon financial events have posted, so it is closer to cash movement but may still differ from final settlement reports.
               </div>
             </div>
@@ -70,7 +70,7 @@ export default function PageHeader({ title, subtitle, dateRange, onDateRangeChan
                 Accounting
                 <Info size={11} className="shrink-0 opacity-40" />
               </button>
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
                 Reconciled settlement view. Best for comparing to InventoryLab reconciled P&amp;L, bookkeeping, and settlement-backed reporting. Use this for the cleanest accounting-style view.
               </div>
             </div>
