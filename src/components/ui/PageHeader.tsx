@@ -2,7 +2,7 @@
 
 import DateRangePicker, { type DateRange } from './DateRangePicker';
 import MarketplaceFilter from './MarketplaceFilter';
-import { Download } from 'lucide-react';
+import { Download, Info } from 'lucide-react';
 
 interface PageHeaderProps {
   title: string;
@@ -25,37 +25,55 @@ export default function PageHeader({ title, subtitle, dateRange, onDateRangeChan
       </div>
       <div className="flex items-center gap-2">
         {onDateBasisChange && (
-          <div className="flex h-9 rounded-md border border-border-default overflow-hidden text-sm">
-            <button
-              onClick={() => onDateBasisChange('purchase')}
-              className={`px-3 transition-colors ${
-                dateBasis === 'purchase'
-                  ? 'bg-accent/15 text-accent font-medium'
-                  : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
-              }`}
-            >
-              Operating
-            </button>
-            <button
-              onClick={() => onDateBasisChange('posted')}
-              className={`px-3 border-l border-border-default transition-colors ${
-                dateBasis === 'posted'
-                  ? 'bg-accent/15 text-accent font-medium'
-                  : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
-              }`}
-            >
-              Settled
-            </button>
-            <button
-              onClick={() => onDateBasisChange('reconciled')}
-              className={`px-3 border-l border-border-default transition-colors ${
-                dateBasis === 'reconciled'
-                  ? 'bg-accent/15 text-accent font-medium'
-                  : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
-              }`}
-            >
-              Accounting
-            </button>
+          <div className="flex h-9 text-sm">
+            <div className="relative group">
+              <button
+                onClick={() => onDateBasisChange('purchase')}
+                className={`flex items-center gap-1.5 px-3 h-9 border border-border-default rounded-l-md transition-colors ${
+                  dateBasis === 'purchase'
+                    ? 'relative z-10 bg-accent/15 text-accent font-medium'
+                    : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
+                }`}
+              >
+                Operating
+                <Info size={11} className="shrink-0 opacity-40" />
+              </button>
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
+                Purchase-date view. Best for business performance and Sellerboard-style operating trends. Includes orders based on when they were placed, even if Amazon has not settled the money yet.
+              </div>
+            </div>
+            <div className="relative group -ml-px">
+              <button
+                onClick={() => onDateBasisChange('posted')}
+                className={`flex items-center gap-1.5 px-3 h-9 border border-border-default transition-colors ${
+                  dateBasis === 'posted'
+                    ? 'relative z-10 bg-accent/15 text-accent font-medium'
+                    : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
+                }`}
+              >
+                Settled
+                <Info size={11} className="shrink-0 opacity-40" />
+              </button>
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
+                Posted-event view. Best for DD+7 cash timing. Shows orders and fees when Amazon financial events have posted, so it is closer to cash movement but may still differ from final settlement reports.
+              </div>
+            </div>
+            <div className="relative group -ml-px">
+              <button
+                onClick={() => onDateBasisChange('reconciled')}
+                className={`flex items-center gap-1.5 px-3 h-9 border border-border-default rounded-r-md transition-colors ${
+                  dateBasis === 'reconciled'
+                    ? 'relative z-10 bg-accent/15 text-accent font-medium'
+                    : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
+                }`}
+              >
+                Accounting
+                <Info size={11} className="shrink-0 opacity-40" />
+              </button>
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 p-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-secondary shadow-lg opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 text-left leading-relaxed pointer-events-none">
+                Reconciled settlement view. Best for comparing to InventoryLab reconciled P&amp;L, bookkeeping, and settlement-backed reporting. Use this for the cleanest accounting-style view.
+              </div>
+            </div>
           </div>
         )}
         {onMarketplaceChange && (
