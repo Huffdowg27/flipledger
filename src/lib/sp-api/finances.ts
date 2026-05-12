@@ -415,6 +415,10 @@ function processServiceFeeEvent(db: Database.Database, event: any, contextDate: 
   // Amazon's ServiceFeeEvent does not include a PostedDate field — use the
   // sync chunk's startDate so fees land in the correct period, not today.
   const postedDate = event.PostedDate || contextDate;
+  // FBA inbound fees carry an AmazonOrderId that is an FBA shipment plan ID
+  // (e.g. FBA198R06DXG), not a customer order. We use it as a stable identity
+  // key so the same fee doesn't re-insert on every sync run.
+  const shipmentId: string | null = event.AmazonOrderId || null;
 
   for (const fee of fees) {
     const amount = toCents(fee.FeeAmount);
@@ -424,6 +428,42 @@ function processServiceFeeEvent(db: Database.Database, event: any, contextDate: 
     const asin = event.ASIN || null;
     const sku = event.SellerSKU || null;
     const currency = fee.FeeAmount?.CurrencyCode || 'USD';
+
+    if (shipmentId) {
+      // Shipment-plan fees: dedup by (fee_type, shipment_id, amount).
+      // The date-based path below would re-insert the same fee on every sync
+      // because contextDate moves forward daily and ServiceFeeEvent has no
+      // PostedDate of its own.
+      const alreadyStored = (db.prepare(`
+        SELECT COUNT(*) as cnt
+        FROM fee_details fd
+        JOIN financial_events fe ON fd.financial_event_id = fe.id
+        WHERE fe.event_type = 'ServiceFeeEvent'
+          AND fd.fee_type = ?
+          AND fd.amount = ?
+          AND json_extract(fe.raw_data, '$.AmazonOrderId') = ?
+      `).get(feeType, amount, shipmentId) as any).cnt > 0;
+
+      if (alreadyStored) continue;
+
+      const result = db.prepare(`
+        INSERT OR IGNORE INTO financial_events (event_type, posted_date, order_id, asin, sku, marketplace, total_amount, raw_data, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run('ServiceFeeEvent', postedDate, null, asin, sku, 'amazon', amount, JSON.stringify(event), now);
+
+      if (result.changes > 0) {
+        const eventId = Number(result.lastInsertRowid);
+        db.prepare(`
+          INSERT OR IGNORE INTO fee_details (financial_event_id, order_id, asin, fee_type, fee_category, amount, posted_date)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(eventId, null, asin, feeType, categorizeFee(feeType), amount, postedDate);
+      }
+      continue;
+    }
+
+    // Non-shipment service fees (storage, subscription, etc.): use existing
+    // date + batch dedup. These fees have no stable identity key other than
+    // (fee_type, amount, asin, sku, day).
 
     // Build a dedup key: fee_type + amount + currency + asin + day
     const dedupKey = `${feeType}|${amount}|${currency}|${asin || ''}|${sku || ''}|${postedDate.substring(0, 10)}`;
