@@ -53,10 +53,12 @@ export async function GET(request: NextRequest) {
     `).get(startDate, endDate) as any;
 
     // Other income (reimbursements + other_income table)
+    // Exclude SETTLEMENT- rows (duplicates of ADJ- rows from settlement report re-import).
     const reimbursements = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
       FROM reimbursements
       WHERE reimbursement_date >= ? AND reimbursement_date < ?
+        AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
     `).get(startDate, endDate) as any;
 
     const otherIncomeData = db.prepare(`

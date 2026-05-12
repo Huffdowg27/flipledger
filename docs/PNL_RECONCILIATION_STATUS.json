@@ -1,0 +1,98 @@
+{
+  "audit_period": "2026-04-11 to 2026-05-11",
+  "audit_date": "2026-05-11",
+  "overall_status": "bugs_confirmed_fixes_pending",
+
+  "bugs": [
+    {
+      "id": "fee_double_count",
+      "title": "Fee double-count (5 fee types)",
+      "status": "fix_designed_not_applied",
+      "impact_cents": 148743,
+      "impact_dollars": 1487.43,
+      "direction": "FL_overcounts_fees",
+      "affected_files": [
+        "src/app/api/data/profitloss/route.ts",
+        "src/app/api/data/dashboard/route.ts"
+      ],
+      "fix_part1": "query-time NOT IN filter for ServiceFeeEvent rows where fee_type in duplicate set",
+      "fix_part2": "sync idempotency — dedup ServiceFeeEvent rows that have SettlementServiceFee counterpart",
+      "duplicate_fee_types": [
+        "FBAStorageFee",
+        "FBARemovalFee",
+        "Subscription",
+        "FBACustomerReturnPerUnitFee",
+        "FBAInboundTransportationFee"
+      ],
+      "safe_to_keep_fee_types": [
+        "FBAInboundConvenienceFee",
+        "ReCommerceGradingAndListingCharge"
+      ]
+    },
+    {
+      "id": "cogs_lot_quantity",
+      "title": "COGS lot quantity understatement",
+      "status": "fix_designed_dry_run_pending",
+      "impact_cents": 148017,
+      "impact_dollars": 1480.17,
+      "direction": "FL_undercounts_COGS",
+      "root_cause": "inventory_ledger imported from IL FBA Sales CSV (units sold) not purchase records; MSKU position 4 encodes true purchase qty",
+      "msku_qty_position": 4,
+      "msku_cost_position": 3,
+      "next_step": "Build dry-run preview table before any writes"
+    },
+    {
+      "id": "date_basis_mismatch",
+      "title": "Date-basis mismatch (Accrual vs IL Hybrid)",
+      "status": "by_design_future_mode_planned",
+      "impact_sales_cents": 814127,
+      "impact_sales_dollars": 8141.27,
+      "impact_cogs_cents": 446017,
+      "impact_cogs_dollars": 4460.17,
+      "root_cause": "IL Estimated is hybrid (posted_date for settled + purchase_date for unreconciled); FL Accrual is pure purchase_date",
+      "prior_period_orders": 168,
+      "decision": "Do NOT change FL Accrual. Build IL Hybrid as Mode 3."
+    }
+  ],
+
+  "mode_decisions": {
+    "mode_1_accrual": "purchase_date — current default — keep pure",
+    "mode_2_cash_reconciled": "ShipmentEvent posted_date — exists, use ?dateBasis=posted",
+    "mode_3_il_hybrid": "settled by posted_date + unreconciled by purchase_date — planned, not built",
+    "mode_4_dd7_forecast": "held cash + expected release — planned, not built"
+  },
+
+  "il_targets": {
+    "estimated": {
+      "sales": 4517778,
+      "cogs": 2299455,
+      "amazon_referral_fee": 664411,
+      "fba_fulfillment_fees": 452120,
+      "net_profit": 752189
+    },
+    "reconciled_only": {
+      "sales": 2855485,
+      "cogs": 1433635,
+      "amazon_referral_fee": 415051,
+      "fba_fulfillment_fees": 352976,
+      "net_profit": 301374
+    }
+  },
+
+  "debug_endpoints": {
+    "recon": "/api/debug/recon?startDate=2026-04-11&endDate=2026-05-11",
+    "sales_gap": "/api/debug/sales-gap?startDate=2026-04-11&endDate=2026-05-11",
+    "cogs_gap": "/api/debug/cogs-gap?startDate=2026-04-11&endDate=2026-05-11",
+    "fee_double_count": "/api/debug/fee-double-count?startDate=2026-04-11&endDate=2026-05-11"
+  },
+
+  "next_steps_ordered": [
+    "Apply Part 1 query-time fee filter to profitloss/route.ts and dashboard/route.ts",
+    "Rebuild (npm run build) and restart PM2 (pm2 restart 5)",
+    "Re-run /api/debug/recon to verify storage/removal/subscription buckets corrected",
+    "Build COGS lot quantity dry-run preview table (no writes)",
+    "Review preview → apply lot quantity corrections → re-run FIFO",
+    "Re-run full recon audit",
+    "Decide: implement IL Hybrid mode or move to next priority (completed shipment UI)"
+  ]
+}

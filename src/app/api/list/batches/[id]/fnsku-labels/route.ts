@@ -36,7 +36,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { clearTokenCache } from '@/lib/sp-api/auth';
 import { getListing, getSellerId } from '@/lib/sp-api/listingsItems';
-import { generateFnskuLabelPdf, type LabelInput } from '@/lib/fnsku-labels';
+import { generateFnskuLabelPdf, generateFnskuLabel30upPdf, type LabelInput } from '@/lib/fnsku-labels';
 import { printPdfBuffer, listAvailablePrinters } from '@/lib/print';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
 
@@ -83,6 +83,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   const url = new URL(request.url);
   const action = url.searchParams.get('action') || 'download';
   const mode = url.searchParams.get('mode') || 'per-sku';
+  const format = url.searchParams.get('format') || 'thermal'; // 'thermal' | 'letter-30up'
   const itemIdParam = url.searchParams.get('itemId');
   const itemIdFilter = itemIdParam ? parseInt(itemIdParam) : null;
   const copiesParam = url.searchParams.get('copies');
@@ -195,7 +196,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   // Generate the PDF
   let pdfBuffer: Buffer;
   try {
-    pdfBuffer = await generateFnskuLabelPdf(labelInputs);
+    pdfBuffer = format === 'letter-30up'
+      ? await generateFnskuLabel30upPdf(labelInputs)
+      : await generateFnskuLabelPdf(labelInputs);
   } catch (err) {
     return NextResponse.json({ error: `PDF generation failed: ${err}` }, { status: 500 });
   }

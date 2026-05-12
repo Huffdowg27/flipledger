@@ -127,6 +127,11 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: 'Amazon SP-API credentials not configured' }, { status: 400 });
     }
 
+    const elapsedMs = batch.sentAt ? (Date.now() - new Date(batch.sentAt).getTime()) : 0;
+
+    // Per-item debug data returned to the frontend for the debug panel.
+    const debugItems: Record<number, { fnsku: string | null; amazonStatus: string[]; lastChecked: string; pollError?: string }> = {};
+
     // Refresh each processing listing. ACTIVE only when Amazon's authoritative
     // summary.status includes 'BUYABLE' — that's the signal that customers can
     // actually purchase. Intermediate states like ['DISCOVERABLE'] mean the
@@ -145,11 +150,19 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         if (item.listingStatus !== 'PROCESSING') continue;
         try {
           const listing = await getListing(creds, sellerId, item.sku);
-          if (!listing) continue; // still being registered, leave as PROCESSING
-
-          const summary = listing.summaries?.[0];
+          const summary = listing?.summaries?.[0];
           const summaryStatus: string[] = summary?.status || [];
           const fnSku: string | undefined = summary?.fnSku;
+
+          // Always capture debug info so the frontend can show it.
+          console.log(`[batch status] poll ${item.sku}: listing=${!!listing} fnSku=${fnSku || 'none'} status=${JSON.stringify(summaryStatus)}`);
+          debugItems[item.id] = {
+            fnsku: fnSku || null,
+            amazonStatus: summaryStatus,
+            lastChecked: new Date().toISOString(),
+          };
+
+          if (!listing) continue; // still being registered, leave as PROCESSING
 
           const isReady = batch.channel === 'FBA'
             ? !!fnSku
@@ -173,6 +186,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
             item.listingError = errorNote;
           }
         } catch (err) {
+          debugItems[item.id] = { fnsku: null, amazonStatus: [], lastChecked: new Date().toISOString(), pollError: String(err) };
           console.warn(`[batch status] listing poll failed for ${item.sku}:`, err);
         }
       }
@@ -235,6 +249,32 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       batch.status = 'ready';
     }
 
+    // Timeout auto-advance: if the batch has been stuck in 'sending' for >15 min
+    // and the inbound plan was already created (meaning the listing was accepted),
+    // force it to 'ready' so the user isn't blocked forever. A warning is stored
+    // in sendError so it's visible in the UI.
+    const SENDING_TIMEOUT_MS = 15 * 60 * 1000;
+    if (
+      batch.status === 'sending' &&
+      elapsedMs > SENDING_TIMEOUT_MS &&
+      batch.inboundPlanId &&
+      !anyListingFailed &&
+      !opFailed
+    ) {
+      const mins = Math.round(elapsedMs / 60_000);
+      const timeoutNote = `Listing verification timed out after ${mins} min — inbound plan was already created, advancing to boxing.`;
+      console.warn(`[batch status] timeout advance: ${timeoutNote}`);
+      const dbT = getDb();
+      try {
+        dbT.prepare(`UPDATE listing_batches SET status = 'ready', send_error = ?, updated_at = ? WHERE id = ?`)
+          .run(timeoutNote, new Date().toISOString(), batchId);
+      } finally {
+        dbT.close();
+      }
+      batch.status = 'ready';
+      batch.sendError = timeoutNote;
+    }
+
     // Optionally fetch a fresh inbound plan snapshot for display
     let inboundPlan: any = null;
     if (batch.inboundPlanId && batch.planStatus === 'SUCCESS') {
@@ -250,6 +290,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       items,
       operationStatus: batch.planStatus,
       inboundPlan,
+      debugItems,
+      elapsedMs,
     });
   } catch (err) {
     try { db.close(); } catch {}

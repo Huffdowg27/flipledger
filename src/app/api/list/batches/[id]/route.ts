@@ -53,6 +53,13 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         placement_fee_cents as placementFeeCents,
         placement_confirmed_at as placementConfirmedAt,
         placement_error as placementError,
+        transportation_operation_id as transportationOperationId,
+        transportation_option_id as transportationOptionId,
+        transportation_status as transportationStatus,
+        transportation_confirmed_at as transportationConfirmedAt,
+        transportation_error as transportationError,
+        confirmed_shipments as confirmedShipments,
+        confirmed_shipment_ids as confirmedShipmentIds,
         notes,
         created_at as createdAt,
         updated_at as updatedAt

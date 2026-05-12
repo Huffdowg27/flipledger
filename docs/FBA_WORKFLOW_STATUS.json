@@ -1,0 +1,74 @@
+{
+  "last_successful_batch_ids": [7, 8],
+  "current_phase": "data_integrity_verification",
+  "working_features": [
+    "existing_msku_replenishment_detection",
+    "batch_creation",
+    "set_packing_information",
+    "placement_option_generation",
+    "placement_option_confirmation",
+    "transportation_option_generation",
+    "transportation_option_confirmation",
+    "delivery_window_confirmation",
+    "seller_central_unlock",
+    "box_label_pdf_download",
+    "fnsku_label_avery_5160_pdf",
+    "replenish_existing_skip_listing_put"
+  ],
+  "known_bugs": [
+    {
+      "id": "invalid_date_delivery_week",
+      "severity": "medium",
+      "symptom": "Seller Central shows 'Expected delivery week: Invalid Date - Invalid Date'",
+      "status": "debug_logging_added",
+      "next_step": "check PM2 logs for [deliveryWindow] all options after next real shipment"
+    },
+    {
+      "id": "box_dimensions_unit_mismatch",
+      "severity": "high",
+      "symptom": "Seller Central showed 15.2x15.2x15.2 when user entered different inch values",
+      "status": "fixed_2026-05-06",
+      "fix": "Changed unitOfMeasurement from CM to IN, removed * IN_TO_CM conversion"
+    },
+    {
+      "id": "carrier_cost_persistence",
+      "severity": "low",
+      "symptom": "Carrier cost may be null in confirmed_shipments if option object is stale at confirm time",
+      "status": "not_fixed"
+    },
+    {
+      "id": "map_destination_missing",
+      "severity": "low",
+      "symptom": "Map does not show final FC destination before transportation confirmation",
+      "status": "known_limitation"
+    }
+  ],
+  "do_not_touch": [
+    "core_inbound_plan_api_sequence",
+    "createInboundPlan",
+    "setPackingInformation",
+    "confirmPackingOption",
+    "generatePlacementOptions",
+    "confirmPlacementOption",
+    "generateTransportationOptions",
+    "confirmTransportationOptions"
+  ],
+  "next_actions": [
+    "deploy_dimension_unit_fix_to_pm2",
+    "run_test_shipment_and_verify_box_dimensions_in_seller_central",
+    "check_pm2_logs_for_delivery_window_option_payload",
+    "verify_delivery_week_dates_in_seller_central"
+  ],
+  "regression_tests": [
+    "add_replenish_existing_msku",
+    "add_new_asin_create_new",
+    "set_box_dimensions_and_weight",
+    "generate_placement_options",
+    "confirm_placement",
+    "confirm_transportation",
+    "verify_seller_central_unlocked",
+    "download_box_labels",
+    "download_fnsku_labels",
+    "spot_check_seller_central_dimensions_weight_delivery_dates_carrier_cost"
+  ]
+}

@@ -94,6 +94,21 @@ export async function POST(
     //    MFN listings don't need ship-from — the seller handles fulfillment and
     //    ship-from is set on individual shipments later when orders come in.
     if (batch.channel === 'FBA') {
+      // Fall back to Settings values for any fields the batch doesn't have
+      // (batch was created before the address was configured in Settings).
+      if (!batch.shipFromName || !batch.shipFromAddressLine1) {
+        const settingsRows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
+        const s: Record<string, string> = {};
+        for (const r of settingsRows) s[r.key] = r.value;
+        batch.shipFromName        = batch.shipFromName        || s.listing_ship_from_name         || null;
+        batch.shipFromAddressLine1 = batch.shipFromAddressLine1 || s.listing_ship_from_address_line1 || null;
+        batch.shipFromCity        = batch.shipFromCity        || s.listing_ship_from_city          || null;
+        batch.shipFromState       = batch.shipFromState       || s.listing_ship_from_state         || null;
+        batch.shipFromPostalCode  = batch.shipFromPostalCode  || s.listing_ship_from_postal_code   || null;
+        batch.shipFromCountryCode = batch.shipFromCountryCode || s.listing_ship_from_country_code  || 'US';
+        batch.shipFromPhone       = batch.shipFromPhone       || s.listing_ship_from_phone         || null;
+      }
+
       const required: [string, any][] = [
         ['name', batch.shipFromName],
         ['address', batch.shipFromAddressLine1],
@@ -113,7 +128,8 @@ export async function POST(
 
     // 3. Load items
     const items = db.prepare(`
-      SELECT id, asin, sku, product_name as productName, condition, quantity, list_price_cents as listPriceCents
+      SELECT id, asin, sku, product_name as productName, condition, quantity, list_price_cents as listPriceCents,
+             listing_mode as listingMode, fnsku
       FROM listing_batch_items WHERE batch_id = ?
       ORDER BY id ASC
     `).all(batchId) as any[];
@@ -159,6 +175,32 @@ export async function POST(
     const listingResults: { itemId: number; sku: string; status: string; submissionId: string | null; error: string | null }[] = [];
 
     for (const item of items) {
+      // ── Replenishment path ───────────────────────────────────────────────
+      // If the user selected an existing Seller Central MSKU, skip the PUT
+      // entirely — the listing is already active. Just verify the FNSKU is
+      // still present and mark ACTIVE immediately so the batch doesn't wait
+      // 10-15 min for Amazon to "re-verify" a listing that's already live.
+      if (item.listingMode === 'REPLENISH_EXISTING') {
+        try {
+          const existing = await getListing(creds, sellerId, item.sku);
+          const fnsku = existing?.summaries?.[0]?.fnSku || item.fnsku || null;
+          if (fnsku) {
+            console.log(`[send] REPLENISH_EXISTING ${item.sku}: FNSKU=${fnsku} — marking ACTIVE`);
+            listingResults.push({ itemId: item.id, sku: item.sku, status: 'ACTIVE', submissionId: null, error: null });
+            saveListingState(batchId, item.id, { listing_status: 'ACTIVE', listing_submission_id: null, listing_error: null });
+          } else {
+            // Listing exists but has no FNSKU — treat as new (fall through).
+            console.warn(`[send] REPLENISH_EXISTING ${item.sku}: no FNSKU found — treating as CREATE_NEW`);
+            item.listingMode = 'CREATE_NEW';
+          }
+        } catch (err) {
+          console.warn(`[send] REPLENISH_EXISTING ${item.sku}: getListing failed — ${err}. Falling back to CREATE_NEW.`);
+          item.listingMode = 'CREATE_NEW';
+        }
+        if (item.listingMode === 'REPLENISH_EXISTING') continue; // skip to next item
+      }
+
+      // ── New listing path ─────────────────────────────────────────────────
       try {
         // Check if listing already exists (replenishment vs new MSKU).
         // Either way, we then call createOrUpdateListing.
@@ -288,10 +330,13 @@ export async function POST(
       // the MSKU yet (and createInboundPlan will reject it).
       const FNSKU_POLL_MS = 20_000;     // 20s between polls
       const FNSKU_MAX_ATTEMPTS = 30;    // 30 × 20s = 10 min total
-      const skusNeedingFnsku = items.map((i) => i.sku);
-      console.log(`[send] Waiting for FNSKUs on ${skusNeedingFnsku.length} MSKU(s)…`);
+      // Replenishment items already have FNSKUs — only wait on new listings.
+      const skusNeedingFnsku = items
+        .filter((i) => i.listingMode !== 'REPLENISH_EXISTING')
+        .map((i) => i.sku);
+      console.log(`[send] Waiting for FNSKUs on ${skusNeedingFnsku.length} MSKU(s) (${items.length - skusNeedingFnsku.length} replenishment items skipped)…`);
       let fnskuReadyCount = 0;
-      for (let attempt = 0; attempt < FNSKU_MAX_ATTEMPTS; attempt++) {
+      for (let attempt = 0; attempt < FNSKU_MAX_ATTEMPTS && skusNeedingFnsku.length > 0; attempt++) {
         let allReady = true;
         fnskuReadyCount = 0;
         for (const sku of skusNeedingFnsku) {
@@ -344,7 +389,13 @@ export async function POST(
           const op = await getInboundOperation(creds, prepResult.operationId);
           if (op.operationStatus === 'SUCCESS') {
             prepDone = true;
-            console.log(`[send] Prep classification SUCCESS after ${(attempt + 1) * PREP_POLL_MS / 1000}s`);
+            console.log(`[send] Prep classification SUCCESS after ${(attempt + 1) * PREP_POLL_MS / 1000}s — waiting 10s for propagation`);
+            // Amazon's operation returning SUCCESS doesn't guarantee the
+            // classification has propagated to the inbound system. Without this
+            // buffer, createInboundPlan's async operation fails with FBA_INB_0182
+            // ("Prep classification for this SKU was missing") even though
+            // setPrepDetails returned SUCCESS seconds earlier.
+            await new Promise((r) => setTimeout(r, 10_000));
             break;
           }
           if (op.operationStatus === 'FAILED') {

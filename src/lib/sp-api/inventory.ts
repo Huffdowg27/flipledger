@@ -26,7 +26,10 @@ export async function syncFBAInventory(
   let itemsProcessed = 0;
 
   try {
-    // Step 1: Get all known SKUs from orders/products/existing inventory
+    // Step 1: Get all known SKUs from orders/products/existing inventory/COGS ledger.
+    // For inventory_ledger, only include SKUs not yet in live_inventory — this is a
+    // one-time discovery pass for MSKUs imported from IL that have never sold. Once
+    // in live_inventory (even at 0 qty), the bulk discovery handles updates.
     const knownSkus = new Set(
       db.prepare(`
         SELECT DISTINCT sku FROM order_items WHERE sku IS NOT NULL AND sku != ''
@@ -34,6 +37,13 @@ export async function syncFBAInventory(
         SELECT DISTINCT sku FROM products WHERE sku IS NOT NULL AND sku != '' AND marketplace = 'amazon'
         UNION
         SELECT DISTINCT sku FROM live_inventory WHERE marketplace = 'amazon' AND sku IS NOT NULL AND sku != ''
+        UNION
+        SELECT DISTINCT il.sku FROM inventory_ledger il
+        WHERE il.sku IS NOT NULL AND il.sku != ''
+          AND NOT EXISTS (
+            SELECT 1 FROM live_inventory li
+            WHERE li.sku = il.sku AND li.marketplace = 'amazon'
+          )
       `).all().map((r: any) => r.sku).filter(Boolean)
     );
 
@@ -57,7 +67,9 @@ export async function syncFBAInventory(
       } catch { break; }
     } while (nextDiscoverToken);
 
-    const skus = Array.from(knownSkus);
+    // SKUs containing commas can't be safely joined into the sellerSkus param —
+    // Amazon's parser would split on the comma and count them as multiple SKUs.
+    const skus = Array.from(knownSkus).filter(s => !s.includes(','));
 
     const now = new Date().toISOString();
 
@@ -141,4 +153,61 @@ export async function syncFBAInventory(
   }
 
   return { itemsProcessed, errors };
+}
+
+export interface FBAInventorySummary {
+  sellerSku: string;
+  fnSku: string | null;
+  asin: string;
+  fulfillableQty: number;
+  inboundQty: number;
+  productName: string | null;
+}
+
+/**
+ * Look up FBA inventory summaries for a single ASIN using the filterASINs
+ * query param. More reliable than the Listings Items filterASINs for finding
+ * which seller SKUs are associated with an ASIN — includes DISCOVERABLE (OOS)
+ * items. Paginates until all results are collected.
+ */
+export async function getInventorySummariesForASIN(
+  credentials: SPAPICredentials,
+  asin: string,
+): Promise<FBAInventorySummary[]> {
+  const results: FBAInventorySummary[] = [];
+  let nextToken: string | undefined;
+
+  do {
+    const params: Record<string, string> = {
+      details: 'true',
+      granularityType: 'Marketplace',
+      granularityId: credentials.marketplaceId,
+      marketplaceIds: credentials.marketplaceId,
+      filterASINs: asin,
+    };
+    if (nextToken) params.nextToken = nextToken;
+
+    const res = await spApiRequest(credentials, '/fba/inventory/v1/summaries', params);
+    const summaries: any[] = res?.payload?.inventorySummaries || [];
+
+    for (const item of summaries) {
+      if (!item.sellerSku) continue;
+      // filterASINs is often ignored by Amazon — filter client-side.
+      // Items with no ASIN or a different ASIN are excluded.
+      if (item.asin !== asin) continue;
+      const d = item.inventoryDetails || {};
+      results.push({
+        sellerSku: item.sellerSku,
+        fnSku: item.fnSku || null,
+        asin: item.asin,
+        fulfillableQty: d.fulfillableQuantity || 0,
+        inboundQty: (d.inboundWorkingQuantity || 0) + (d.inboundShippedQuantity || 0) + (d.inboundReceivingQuantity || 0),
+        productName: item.productName || null,
+      });
+    }
+
+    nextToken = res?.payload?.nextToken;
+  } while (nextToken);
+
+  return results;
 }

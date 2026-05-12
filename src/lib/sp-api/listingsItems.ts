@@ -139,6 +139,119 @@ export async function getProductType(
   return 'PRODUCT';
 }
 
+export interface SellerListing {
+  sku: string;
+  fnsku: string | null;
+  asin: string;
+  listingStatus: string;          // ACTIVE | INACTIVE | SUPPRESSED | INCOMPLETE
+  fulfillmentChannel: 'FBA' | 'MFN';
+  conditionType: string;          // new_new, used_like_new, etc.
+  fbaStock: number;               // fulfillable FBA quantity
+  listPriceCents: number;
+  itemName: string | null;
+}
+
+/**
+ * List all seller listings that match a given ASIN.
+ *
+ * Calls GET /listings/2021-08-01/items/{sellerId}?filterASINs={asin}
+ * which is documented to filter by ASIN, but the filter is unreliable in
+ * practice — Amazon often ignores it and returns an arbitrary page of listings.
+ *
+ * Defense: we paginate through ALL pages (up to MAX_PAGES), parse each item's
+ * summary.asin, and only keep items that actually belong to the requested ASIN.
+ * This is slower but correct.
+ *
+ * NOTE: Because of the filterASINs unreliability, if the seller has many
+ * listings (thousands), the matching SKU may be on a later page and could be
+ * missed within the page cap. The correct long-term fix is to look up the SKU
+ * directly via getListing(sku) once the SKU is known (e.g. from local DB).
+ */
+export async function getListingsForASIN(
+  credentials: SPAPICredentials,
+  sellerId: string,
+  asin: string,
+): Promise<SellerListing[]> {
+  const results: SellerListing[] = [];
+  let pageToken: string | undefined;
+  let pagesScanned = 0;
+  const MAX_PAGES = 20; // safety cap against runaway pagination
+
+  do {
+    const query: Record<string, string> = {
+      marketplaceIds: credentials.marketplaceId,
+      filterASINs: asin,        // hint — Amazon may or may not honor this
+      includedData: 'summaries,fulfillmentAvailability',
+      // NOTE: pageSize is NOT a valid param for this endpoint — Amazon returns 400.
+      // Default page size is used; we paginate via nextPageToken instead.
+    };
+    if (pageToken) query.pageToken = pageToken;
+
+    const data = await spApiRequest(
+      credentials,
+      `/listings/2021-08-01/items/${encodeURIComponent(sellerId)}`,
+      query,
+    );
+
+    const items: any[] = data?.items || [];
+    for (const item of items) {
+      const summary = item.summaries?.[0];
+      if (!summary) continue;
+
+      const itemAsin: string = summary.asin || '';
+
+      // Critical filter: only keep items whose ASIN matches the one we searched.
+      // The filterASINs param is not reliably honored by Amazon's API, so we
+      // must filter client-side on the asin field in summaries.
+      // NOTE: items with no ASIN in their summary must also be excluded — an
+      // empty itemAsin is not a match for our target ASIN.
+      if (itemAsin !== asin) continue;
+
+      const statusArr: string[] = summary.status || [];
+      // Explicit ordering: ACTIVE > DISCOVERABLE > SUPPRESSED > INCOMPLETE > whatever Amazon returns.
+      // DISCOVERABLE = OOS FBA listing, still live and replenishable — NOT the same as deleted/inactive.
+      const listingStatus = statusArr.includes('ACTIVE') ? 'ACTIVE'
+        : statusArr.includes('DISCOVERABLE') ? 'DISCOVERABLE'
+        : statusArr.includes('SUPPRESSED') ? 'SUPPRESSED'
+        : statusArr.includes('INCOMPLETE') ? 'INCOMPLETE'
+        : statusArr.includes('INACTIVE') ? 'INACTIVE'
+        : statusArr[0] || 'UNKNOWN';
+
+      const availability = item.fulfillmentAvailability?.[0];
+      const channelCode: string = availability?.fulfillmentChannelCode || 'DEFAULT';
+      const fulfillmentChannel: 'FBA' | 'MFN' = channelCode === 'AMAZON_NA' || channelCode === 'AMAZON' ? 'FBA' : 'MFN';
+
+      // List price: from the fulfillmentAvailability's price or offers — SP-API
+      // doesn't consistently expose price here; we set listPriceCents=0 as
+      // fallback and the UI can supplement from live_inventory.
+      const fbaStock = (fulfillmentChannel === 'FBA') ? (availability?.quantity ?? 0) : 0;
+
+      results.push({
+        sku: item.sku,
+        fnsku: summary.fnSku || null,
+        asin: itemAsin || asin,
+        listingStatus,
+        fulfillmentChannel,
+        conditionType: summary.conditionType || 'new_new',
+        fbaStock,
+        listPriceCents: 0,  // enriched below or by caller
+        itemName: summary.itemName || null,
+      });
+    }
+
+    pageToken = data?.nextPageToken;
+    pagesScanned++;
+
+    // If we found a match and have scanned enough pages with the filter active, stop early.
+    // If filterASINs is NOT working (0 matches so far after 2 pages), keep going to try
+    // to find the needle — but cap at MAX_PAGES to avoid excessive API usage.
+    if (results.length > 0 && !pageToken) break;
+    if (pagesScanned >= MAX_PAGES) break;
+  } while (pageToken);
+
+  return results;
+}
+
 /** Map internal condition values to SP-API's expected condition_type values. */
 const CONDITION_MAP: Record<string, string> = {
   NewItem: 'new_new',

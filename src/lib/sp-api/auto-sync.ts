@@ -121,6 +121,7 @@ async function autoSyncTick() {
       console.log(`[AutoSync] Starting Amazon sync (last ${LOOKBACK_DAYS} days)`);
       try {
         await runFullSync(amazonCreds, LOOKBACK_DAYS);
+        setLastSyncTime('lastSync', new Date().toISOString());
         console.log('[AutoSync] Amazon sync complete');
       } catch (err) {
         console.error('[AutoSync] Amazon error:', err);
@@ -236,6 +237,7 @@ async function autoSyncTick() {
       console.log(`[AutoSync] Starting Walmart sync (last ${LOOKBACK_DAYS} days)`);
       try {
         await runWalmartSync(walmartCreds, LOOKBACK_DAYS);
+        setLastSyncTime('walmart_last_sync', new Date().toISOString());
         console.log('[AutoSync] Walmart sync complete');
       } catch (err) {
         console.error('[AutoSync] Walmart error:', err);
@@ -262,6 +264,7 @@ async function autoSyncTick() {
       console.log(`[AutoSync] Starting eBay sync (last ${LOOKBACK_DAYS} days)`);
       try {
         await runEbaySync(ebayCreds, LOOKBACK_DAYS);
+        setLastSyncTime('ebay_last_sync', new Date().toISOString());
         console.log('[AutoSync] eBay sync complete');
       } catch (err) {
         console.error('[AutoSync] eBay error:', err);

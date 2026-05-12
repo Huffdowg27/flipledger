@@ -384,6 +384,24 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_reimbursement_candidates_eligible
       ON reimbursement_candidates(eligible_until);
 
+    -- Amazon settlement period boundaries. One row per settlement report, keyed
+    -- by settlement-id from the flat-file V2 header. Populated by
+    -- parseSettlementReport(); used by reconciled date-basis snapping.
+    CREATE TABLE IF NOT EXISTS settlement_periods (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      settlement_id TEXT NOT NULL,
+      marketplace TEXT NOT NULL DEFAULT 'amazon',
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      deposit_date TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_settlement_periods_id
+      ON settlement_periods(settlement_id);
+    CREATE INDEX IF NOT EXISTS idx_settlement_periods_dates
+      ON settlement_periods(start_date, end_date);
+
     -- Amazon DD+7 reserve balance history. Captured from settlement reports
     -- whenever Amazon includes "Current Reserve Amount" / "Previous Reserve
     -- Amount Balance" lines (classic Deferred Disbursement schedule). For
@@ -582,4 +600,17 @@ export function initializeDatabase() {
       PRIMARY KEY (asin, marketplace)
     );
   `);
+
+  // Column migrations — SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
+  // so we use try/catch. Safe to run on every startup.
+  const colMigrations = [
+    `ALTER TABLE listing_batch_items ADD COLUMN listing_mode TEXT DEFAULT 'CREATE_NEW'`,
+    `ALTER TABLE listing_batch_items ADD COLUMN fnsku TEXT`,
+    `ALTER TABLE listing_batch_items ADD COLUMN fulfillment_channel TEXT`,
+    `ALTER TABLE listing_batch_items ADD COLUMN listing_source TEXT`,
+    `ALTER TABLE listing_batch_items ADD COLUMN amazon_inventory_status TEXT`,
+  ];
+  for (const sql of colMigrations) {
+    try { sqlite.prepare(sql).run(); } catch { /* already exists */ }
+  }
 }

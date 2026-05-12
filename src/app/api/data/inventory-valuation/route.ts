@@ -17,7 +17,10 @@ export async function GET(request: NextRequest) {
   const MF = marketplace ? `AND li.marketplace = '${marketplace}'` : '';
 
   try {
-    // Use live_inventory (from API sync) joined to inventory_ledger (for COGS)
+    // Use live_inventory (from API sync) joined to inventory_ledger (for COGS).
+    // Join on SKU first (MSKU → MSKU, exact match). Fall back to ASIN only when
+    // the live_inventory row has no SKU. Avoid the OR join pattern which fans out
+    // when an ASIN has multiple lots in inventory_ledger.
     const rows = db.prepare(`
       SELECT
         li.asin,
@@ -38,14 +41,22 @@ export async function GET(request: NextRequest) {
         COALESCE(li.reserved_fc_processing, 0) as reservedFcProcessing,
         COALESCE(li.list_price, 0) as customListPrice,
         li.walmart_item_id as walmartItemId,
-        COALESCE(il.buy_price, 0) as cogsPerUnit,
-        COALESCE(il.buy_price * li.total_qty, 0) as totalCogsValue,
+        COALESCE(il_sku.buy_price, il_asin.buy_price, 0) as cogsPerUnit,
+        COALESCE(il_sku.buy_price, il_asin.buy_price, 0) * (li.fulfillable_qty + li.inbound_qty) as totalCogsValue,
         li.last_updated
       FROM live_inventory li
-      LEFT JOIN inventory_ledger il ON (li.sku = il.sku OR li.asin = il.asin)
+      LEFT JOIN (
+        SELECT sku, buy_price FROM inventory_ledger
+        WHERE sku IS NOT NULL AND sku != ''
+        GROUP BY sku
+      ) il_sku ON il_sku.sku = li.sku
+      LEFT JOIN (
+        SELECT asin, buy_price FROM inventory_ledger
+        WHERE (sku IS NULL OR sku = '')
+        GROUP BY asin
+      ) il_asin ON il_asin.asin = li.asin AND (li.sku IS NULL OR li.sku = '')
       LEFT JOIN products p ON li.asin = p.asin
       WHERE li.total_qty > 0 ${MF}
-      GROUP BY li.asin, li.sku, li.marketplace
       ORDER BY totalCogsValue DESC
     `).all() as any[];
 

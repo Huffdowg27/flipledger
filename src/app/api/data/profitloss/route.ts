@@ -37,7 +37,10 @@ export async function GET(request: NextRequest) {
   const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
   const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
   const dateBasis = searchParams.get('dateBasis') || 'posted';
+  // 'reconciled' uses posted_date basis but requires real fee rows (financial_event_id != 0),
+  // excluding estimated fees written by estimateAndBackfillFees() for unreconciled orders.
   const DATE_SUB = dateBasis === 'purchase' ? ORDER_PURCHASE_DATE : ORDER_POSTED_DATE;
+  const REAL_FEES_ONLY = dateBasis === 'reconciled' ? 'AND fd.financial_event_id != 0' : '';
 
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
@@ -85,17 +88,26 @@ export async function GET(request: NextRequest) {
       SELECT COALESCE(SUM(amount), 0) as total FROM other_income WHERE date >= ? AND date < ? ${MF_R}
     `).get(startDate, endDateNext) as any;
 
-    // COGS (FIFO)
+    // COGS (FIFO) — exclude items returned as SELLABLE (unit is back in inventory;
+    // COGS will be charged again when it resells, matching IL's return methodology)
     const cogsTotal = db.prepare(`
-      SELECT COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0) as total
+      SELECT COALESCE(SUM(
+        CASE WHEN sr.order_id IS NULL THEN oi.cogs_per_unit * oi.quantity ELSE 0 END
+      ), 0) as total
       FROM order_items oi
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
+      LEFT JOIN (
+        SELECT DISTINCT order_id, COALESCE(sku,'') as sku
+        FROM refunds
+        WHERE disposition = 'SELLABLE' AND item_returned = 1 AND marketplace = 'amazon'
+      ) sr ON oi.order_id = sr.order_id AND COALESCE(oi.sku,'') = sr.sku
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
     `).get(startDate, endDateNext) as any;
 
     // Order-linked fees (by order's posted_date)
     // Use -SUM(amount) instead of SUM(ABS(amount)) so that positive clawbacks reduce the fee total
+    // In reconciled mode: REAL_FEES_ONLY excludes financial_event_id=0 estimated fee rows.
     const orderFees = db.prepare(`
       SELECT
         COALESCE(fd.fee_category, 'Other Fees') as category,
@@ -106,12 +118,17 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
         AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        ${REAL_FEES_ONLY}
       GROUP BY fd.fee_category, fd.fee_type
     `).all(startDate, endDateNext) as any[];
 
     // Non-order fees (service fees like storage, inbound shipping, subscriptions)
     // These are marketplace-specific — filter by marketplace when one is selected
     const serviceFeeFilter = marketplace ? `AND fe.marketplace = '${marketplace}'` : '';
+    // Exclude ServiceFeeEvent rows for fee types that also appear in SettlementServiceFee.
+    // ServiceFeeEvent is re-inserted every sync day (new posted_date bypasses unique constraint),
+    // creating N duplicate rows. SettlementServiceFee posts once and is canonical.
+    // Safe-to-keep ServiceFeeEvent-only types: FBAInboundConvenienceFee, ReCommerceGradingAndListingCharge.
     const serviceFees = db.prepare(`
       SELECT
         COALESCE(fd.fee_category, 'Other Fees') as category,
@@ -123,6 +140,16 @@ export async function GET(request: NextRequest) {
         AND date(fd.posted_date) >= ?
         AND date(fd.posted_date) < ?
         ${serviceFeeFilter}
+        AND NOT (
+          fe.event_type = 'ServiceFeeEvent'
+          AND fd.fee_type IN (
+            'FBAStorageFee',
+            'FBARemovalFee',
+            'Subscription',
+            'FBACustomerReturnPerUnitFee',
+            'FBAInboundTransportationFee'
+          )
+        )
       GROUP BY fd.fee_category, fd.fee_type
     `).all(startDate, endDateNext) as any[];
 
@@ -170,9 +197,10 @@ export async function GET(request: NextRequest) {
         )
     `).get(startDate, endDateNext) as any;
 
-    // Reimbursements
+    // Reimbursements — exclude SETTLEMENT- rows (duplicates of ADJ- rows from settlement report re-import)
     const reimbTotal = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
+        AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
     `).get(startDate, endDateNext) as any;
 
     // Sales tax
@@ -262,9 +290,8 @@ export async function GET(request: NextRequest) {
       LEFT JOIN order_items oi
         ON oi.order_id = r.order_id
         AND (
-          oi.sku = r.sku
-          OR oi.asin = r.asin
-          OR (NULLIF(r.asin, '') IS NULL AND NULLIF(r.sku, '') IS NOT NULL)
+          (NULLIF(r.sku, '') IS NOT NULL AND oi.sku = r.sku)
+          OR (NULLIF(r.asin, '') IS NOT NULL AND oi.asin = r.asin AND NULLIF(r.sku, '') IS NULL)
         )
       LEFT JOIN products p_via_oi ON p_via_oi.asin = oi.asin
       LEFT JOIN products p  ON p.asin = r.asin AND r.asin != ''

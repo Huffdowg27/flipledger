@@ -39,6 +39,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     purchaseDate,
     estimatedFeeCents,   // already in cents (optional)
     estimatedShipCents,  // already in cents (optional) — MFN seller shipping estimate
+    listingMode = 'CREATE_NEW',  // 'CREATE_NEW' | 'REPLENISH_EXISTING'
+    fnsku,               // known FNSKU for replenishment items
+    fulfillmentChannel,  // 'FBA' | 'MFN'
+    listingSource,       // 'AMAZON_INVENTORY' | 'LOCAL_DB' | 'CATALOG'
+    amazonInventoryStatus, // e.g. 'DISCOVERABLE', 'ACTIVE', etc.
   } = body;
 
   if (!asin) return NextResponse.json({ error: 'asin is required' }, { status: 400 });
@@ -67,8 +72,9 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         INSERT INTO listing_batch_items (
           batch_id, asin, sku, msku, product_name, image_url, condition,
           quantity, list_price_cents, buy_price_cents, supplier, purchase_date,
-          estimated_fee_cents, estimated_ship_cents, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          estimated_fee_cents, estimated_ship_cents, listing_mode, fnsku,
+          fulfillment_channel, listing_source, amazon_inventory_status, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         batchId,
         asin,
@@ -84,6 +90,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         purchaseDate || null,
         estimatedFeeCents || 0,
         estimatedShipCents || 0,
+        listingMode,
+        fnsku || null,
+        fulfillmentChannel || null,
+        listingSource || null,
+        amazonInventoryStatus || null,
         now
       );
 

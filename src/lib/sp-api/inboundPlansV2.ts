@@ -334,10 +334,14 @@ export async function listPackingGroupItems(
 
 /**
  * Declare how the seller has actually boxed the product.
- * PUT /inbound/fba/2024-03-20/inboundPlans/{inboundPlanId}/packingInformation
+ * POST /inbound/fba/2024-03-20/inboundPlans/{inboundPlanId}/packingInformation
  *
  * `packageGroupings` is an array — one entry per packing group returned from
  * listPackingOptions. For small batches there's usually just one group.
+ *
+ * Caller passes dimensions in inches and weight in pounds (natural for US
+ * sellers). This function converts to CM and KG before sending to Amazon,
+ * which requires metric units per the v2024 API spec.
  */
 export async function setPackingInformation(
   credentials: SPAPICredentials,
@@ -360,7 +364,10 @@ export async function setPackingInformation(
       items: Array<{
         msku: string;
         quantity: number;
-        // labelOwner, prepOwner, expiration, manufacturingLotCode optional
+        labelOwner?: 'SELLER' | 'AMAZON' | 'NONE';
+        prepOwner?: 'SELLER' | 'AMAZON' | 'NONE';
+        expiration?: string;
+        manufacturingLotCode?: string;
       }>;
     }>;
   }>
@@ -371,31 +378,39 @@ export async function setPackingInformation(
   const body = {
     packageGroupings: packageGroupings.map((g) => ({
       packingGroupId: g.packingGroupId,
-      boxes: g.boxes.map((b) => ({
-        contentInformationSource: b.contentInformationSource || 'BOX_CONTENT_PROVIDED',
-        dimensions: {
-          unitOfMeasurement: b.dimensions.unitOfMeasurement,
-          length: b.dimensions.length,
-          width: b.dimensions.width,
-          height: b.dimensions.height,
-        },
-        weight: {
-          unit: b.weight.unit,
-          value: b.weight.value,
-        },
-        quantity: b.quantity,
-        items: b.items.map((i) => ({
-          msku: i.msku,
-          quantity: i.quantity,
-        })),
-      })),
+      boxes: g.boxes.map((b) => {
+        const boxPayload = {
+          contentInformationSource: b.contentInformationSource || 'BOX_CONTENT_PROVIDED',
+          dimensions: {
+            unitOfMeasurement: 'IN',
+            length: Math.round(b.dimensions.length * 100) / 100,
+            width:  Math.round(b.dimensions.width  * 100) / 100,
+            height: Math.round(b.dimensions.height * 100) / 100,
+          },
+          weight: {
+            unit: 'LB',
+            value: b.weight.value,
+          },
+          quantity: b.quantity,
+          items: b.items.map((i) => ({
+            msku: i.msku,
+            quantity: i.quantity,
+            ...(i.labelOwner         ? { labelOwner: i.labelOwner }                 : {}),
+            ...(i.prepOwner          ? { prepOwner: i.prepOwner }                   : {}),
+            ...(i.expiration         ? { expiration: i.expiration }                 : {}),
+            ...(i.manufacturingLotCode ? { manufacturingLotCode: i.manufacturingLotCode } : {}),
+          })),
+        };
+        console.log('[setPackingInformation] box payload', JSON.stringify(boxPayload, null, 2));
+        return boxPayload;
+      }),
     })),
   };
 
   const response = await fetch(
     `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/packingInformation`,
     {
-      method: 'PUT',
+      method: 'POST',
       headers: {
         'x-amz-access-token': accessToken,
         'Content-Type': 'application/json',
@@ -570,74 +585,129 @@ export async function listShipments(
   return data?.shipments || [];
 }
 
+/**
+ * Get a single shipment's details after placement confirmation.
+ * GET /inbound/fba/2024-03-20/inboundPlans/{inboundPlanId}/shipments/{shipmentId}
+ *
+ * Returns destinationWarehouseAddress, shipmentConfirmationId, selectedTransportationOptionId.
+ * This is the source of truth for the destination FC address post-confirmation.
+ */
+export async function getShipment(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string
+): Promise<any> {
+  const data = await spApiRequest(
+    credentials,
+    `/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}`
+  );
+  return data;
+}
+
 // ─── Phase 4: Labels (FNSKU + box ID) ─────────────────────────────────────
 //
-// Once placement is confirmed and shipments exist, Amazon can generate two
-// kinds of labels for each shipment:
+// FBA box/carton labels and FNSKU per-unit labels use the FBA Inbound v0 API,
+// NOT the v2024-03-20 API. The v2024 inboundPlans/.../labels endpoint returns
+// 403 for standard seller accounts — it's a vendor/direct-fulfillment endpoint.
 //
-//   - FNSKU per-unit labels (LabelType=UNIQUE): one barcode per individual
-//     product unit, applied over the original UPC. For Parker's stickered
-//     inventory this is required.
+// Correct endpoint for FBA inbound carton/FNSKU labels:
+//   GET /fba/inbound/v0/shipments/{shipmentId}/labels
 //
-//   - Box ID labels (LabelType=BARCODE_2D): one big barcode per box,
-//     identifies the box to Amazon's receiving warehouse. Required, applied
-//     to the outside of each box.
-//
-// Amazon returns a download URL pointing at a PDF; we fetch it server-side
-// and either stream it back to the browser OR print it directly to the
-// user's Rollo via macOS `lpr`.
+// IMPORTANT: When box content was provided via v2024-03-20 setPackingInformation,
+// PackageLabelsToPrint must contain the boxId values from listShipmentBoxes.
+// Passing a wrong or locally generated box name returns an error.
 
 export type LabelPageType =
-  | 'PackageLabel_Letter_2'      // 2 labels per Letter page (4×6 each)
-  | 'PackageLabel_Letter_4'      // 4 per page
-  | 'PackageLabel_Letter_6'      // 6 per page (most common for FNSKU)
+  | 'PackageLabel_Letter_2'
+  | 'PackageLabel_Letter_4'
+  | 'PackageLabel_Letter_6'
   | 'PackageLabel_A4_2'
   | 'PackageLabel_A4_4'
-  | 'PackageLabel_Plain_Paper'   // plain paper, one per page
+  | 'PackageLabel_Plain_Paper'
   | 'PackageLabel_Plain_Paper_CarrierBottom'
-  | 'PackageLabel_Thermal'        // 4×6 thermal
+  | 'PackageLabel_Thermal'
   | 'PackageLabel_Thermal_Unified'
   | 'PackageLabel_Thermal_NonPCP';
 
 export type LabelType = 'BARCODE_2D' | 'UNIQUE' | 'PALLET';
 
-export interface ShipmentLabels {
-  documents?: Array<{
-    url: string;
-    downloadType?: string;
-  }>;
-  // Some marketplaces return a flat downloadURL instead of documents[]
-  downloadURL?: string;
+/**
+ * List the boxes Amazon knows about for a specific shipment.
+ * GET /inbound/fba/2024-03-20/inboundPlans/{inboundPlanId}/shipments/{shipmentId}/boxes
+ *
+ * Returns Amazon-assigned boxId values. These must be passed as
+ * PackageLabelsToPrint when calling getFBAInboundLabels for box labels.
+ */
+export async function listShipmentBoxes(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string
+): Promise<Array<{ boxId: string; [key: string]: any }>> {
+  const data = await spApiRequest(
+    credentials,
+    `/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/boxes`
+  );
+  return data?.boxes || [];
 }
 
 /**
- * Get labels for a specific shipment within an inbound plan.
- * GET /inbound/fba/2024-03-20/inboundPlans/{inboundPlanId}/shipments/{shipmentId}/labels
+ * Fetch FBA inbound shipment labels from the v0 labels endpoint.
+ * GET /fba/inbound/v0/shipments/{shipmentId}/labels
  *
- * Use:
- *   - LabelType='UNIQUE' for per-unit FNSKU labels (one per product unit in this shipment)
- *   - LabelType='BARCODE_2D' for the box ID labels (one per box)
+ * For box labels (LabelType=BARCODE_2D):
+ *   - pass packageLabelsToPrint = boxId values from listShipmentBoxes
+ *   - numberOfPackages = box count
  *
- * PageType is the format. For Parker's Rollo (2×1 thermal printer) we'll use
- * PackageLabel_Letter_6 — small enough that 4 labels fit per Letter page,
- * and Rollo can crop down to 2×1 each. Amazon doesn't expose a 2×1 thermal
- * format directly, so this is the closest match.
+ * For FNSKU unit labels (LabelType=UNIQUE):
+ *   - packageLabelsToPrint is optional (Amazon generates per-unit labels)
+ *   - numberOfPackages = total unit count in the shipment
+ *
+ * Response shape: { payload: { URL: string, base64: string, ... } }
+ * URL is a time-limited presigned S3 download link.
  */
-export async function getShipmentLabels(
+export async function getFBAInboundLabels(
   credentials: SPAPICredentials,
-  inboundPlanId: string,
-  shipmentId: string,
-  pageType: LabelPageType = 'PackageLabel_Letter_6',
-  labelType: LabelType = 'UNIQUE'
-): Promise<ShipmentLabels> {
+  /** Must be the v0 shipmentConfirmationId (e.g. "FBA19CRM1CZ6"), NOT the v2024 shipmentId UUID. */
+  labelShipmentId: string,
+  pageType: LabelPageType = 'PackageLabel_Thermal_NonPCP',
+  labelType: LabelType = 'BARCODE_2D',
+  numberOfPackages?: number,
+  packageLabelsToPrint?: string[],
+  /** Integer: number of labels per page. Required for Non-Partnered / LTL shipments. */
+  pageSize?: number,
+  /** Integer: zero-based page start index. Required for Non-Partnered / LTL shipments. */
+  pageStartIndex?: number
+): Promise<{ downloadUrl: string | null; raw: any }> {
   const endpoint = getEndpoint(credentials.marketplaceId);
   const accessToken = await getAccessToken(credentials);
 
-  const url = new URL(
-    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/labels`
-  );
+  const url = new URL(`${endpoint}/fba/inbound/v0/shipments/${encodeURIComponent(labelShipmentId)}/labels`);
   url.searchParams.set('PageType', pageType);
   url.searchParams.set('LabelType', labelType);
+  if (numberOfPackages != null) {
+    url.searchParams.set('NumberOfPackages', String(numberOfPackages));
+  }
+  if (packageLabelsToPrint && packageLabelsToPrint.length > 0) {
+    url.searchParams.set('PackageLabelsToPrint', packageLabelsToPrint.join(','));
+  }
+  if (pageSize != null) {
+    url.searchParams.set('PageSize', String(pageSize));
+  }
+  if (pageStartIndex != null) {
+    url.searchParams.set('PageStartIndex', String(pageStartIndex));
+  }
+
+  console.dir({
+    operation: 'FBA_INBOUND_GET_LABELS',
+    labelShipmentId,
+    pageType,
+    labelType,
+    numberOfPackages,
+    packageLabelsToPrint,
+    pageSize,
+    pageStartIndex,
+    requestUrl: url.toString(),
+  }, { depth: null });
 
   const response = await fetch(url.toString(), {
     headers: {
@@ -646,13 +716,233 @@ export async function getShipmentLabels(
     },
   });
 
+  const responseText = await response.text();
+  let data: any;
+  try { data = JSON.parse(responseText); } catch { data = { _raw: responseText }; }
+
+  console.log('[getFBAInboundLabels] status:', response.status, '| response:', JSON.stringify(data));
+
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`SP-API getShipmentLabels ${response.status}: ${errorBody}`);
+    throw new Error(`SP-API getFBAInboundLabels ${response.status}: ${responseText}`);
   }
 
-  const data = await response.json();
-  return data;
+  // v0 response: { payload: { DownloadURL: "..." } } — Amazon uses DownloadURL (capital URL)
+  const downloadUrl: string | null =
+    data?.payload?.DownloadURL ??
+    data?.payload?.downloadURL ??
+    data?.payload?.downloadUrl ??
+    data?.payload?.URL ??
+    data?.payload?.url ??
+    data?.DownloadURL ??
+    data?.downloadURL ??
+    data?.downloadUrl ??
+    data?.URL ??
+    data?.url ??
+    null;
+
+  console.log('[getFBAInboundLabels] parsed downloadUrl', {
+    hasDownloadUrl: !!downloadUrl,
+    payloadKeys: Object.keys(data?.payload ?? {}),
+  });
+
+  return { downloadUrl, raw: data };
+}
+
+// ─── Phase 3.5: Transportation options ────────────────────────────────────────
+//
+// After confirmPlacementOption, Amazon requires:
+//   generateTransportationOptions → confirmTransportationOptions
+// before Seller Central will allow the shipment to be completed.
+// Plans created via API cannot be finished in Seller Central until both
+// placement AND transportation are confirmed through the API.
+
+export interface TransportationOption {
+  transportationOptionId: string;
+  shipmentId: string;
+  carrier?: { name?: string; alphaCode?: string };
+  shippingMode?: string;
+  shippingSolution?: string;
+  quote?: { cost?: { amount: number; currencyCode: string }; expirationDate?: string };
+  preconditions?: string[];
+}
+
+export async function generateTransportationOptions(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  placementOptionId: string,
+  shipmentIds: string[],
+  readyToShipStart?: string,
+): Promise<{ operationId: string }> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+
+  // readyToShipWindow.start is required by Amazon — never send blank.
+  // Default: tomorrow at noon UTC if caller doesn't provide.
+  let shipWindowStart = readyToShipStart;
+  if (!shipWindowStart) {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + 1);
+    d.setUTCHours(12, 0, 0, 0);
+    shipWindowStart = d.toISOString();
+  }
+
+  const shipmentTransportationConfigurations = shipmentIds.map((id) => ({
+    shipmentId: id,
+    readyToShipWindow: { start: shipWindowStart },
+  }));
+
+  const body = { placementOptionId, shipmentTransportationConfigurations };
+  console.log('[generateTransportationOptions] payload', JSON.stringify(body, null, 2));
+
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/transportationOptions`,
+    {
+      method: 'POST',
+      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  const text = await response.text();
+  console.log('[generateTransportationOptions] status:', response.status, 'response:', text);
+  if (!response.ok) throw new Error(`SP-API generateTransportationOptions ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return { operationId: data.operationId || '' };
+}
+
+export async function listTransportationOptions(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  placementOptionId: string,
+): Promise<TransportationOption[]> {
+  const allOptions: TransportationOption[] = [];
+  let paginationToken: string | undefined;
+  let page = 0;
+
+  do {
+    const endpoint = getEndpoint(credentials.marketplaceId);
+    const accessToken = await getAccessToken(credentials);
+    const url = new URL(
+      `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/transportationOptions`
+    );
+    url.searchParams.set('placementOptionId', placementOptionId);
+    url.searchParams.set('pageSize', '20');
+    if (paginationToken) url.searchParams.set('paginationToken', paginationToken);
+
+    const response = await fetch(url.toString(), { headers: { 'x-amz-access-token': accessToken } });
+    const text = await response.text();
+    console.log(`[listTransportationOptions] page ${page} status:`, response.status, 'length:', text.length);
+    if (!response.ok) throw new Error(`SP-API listTransportationOptions ${response.status}: ${text}`);
+    const data = JSON.parse(text);
+    const batch: TransportationOption[] = data?.transportationOptions || [];
+    allOptions.push(...batch);
+    paginationToken = data?.pagination?.nextToken;
+    page++;
+  } while (paginationToken && page < 20); // cap at 20 pages (400 options) to prevent infinite loops
+
+  console.log(`[listTransportationOptions] total options fetched: ${allOptions.length} across ${page} page(s)`);
+  return allOptions;
+}
+
+export async function confirmTransportationOptions(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  transportationSelections: Array<{ shipmentId: string; transportationOptionId: string }>,
+): Promise<{ operationId: string }> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+  const body = { transportationSelections };
+  console.log('[confirmTransportationOptions] request body:', JSON.stringify(body));
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/transportationOptions/confirmation`,
+    {
+      method: 'POST',
+      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  const text = await response.text();
+  console.log('[confirmTransportationOptions] status:', response.status, 'response:', text);
+  if (!response.ok) throw new Error(`SP-API confirmTransportationOptions ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return { operationId: data.operationId || '' };
+}
+
+// ─── Delivery Window Options ──────────────────────────────────────────────
+// Required before confirmTransportationOptions for non-partnered carrier
+// options and any option whose preconditions include DELIVERY_WINDOW_REQUIRED.
+//
+// Flow: generateDeliveryWindowOptions → poll → listDeliveryWindowOptions
+//       → pick first → confirmDeliveryWindowOptions → poll → confirmTransportation
+
+export async function generateDeliveryWindowOptions(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string,
+): Promise<{ operationId: string }> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/deliveryWindowOptions`,
+    {
+      method: 'POST',
+      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
+      body: '{}',
+    }
+  );
+  const text = await response.text();
+  console.log('[generateDeliveryWindowOptions]', shipmentId, response.status, text.slice(0, 500));
+  if (!response.ok) throw new Error(`SP-API generateDeliveryWindowOptions ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return { operationId: data.operationId || '' };
+}
+
+export async function listDeliveryWindowOptions(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string,
+): Promise<any[]> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/deliveryWindowOptions`,
+    { headers: { 'x-amz-access-token': accessToken } }
+  );
+  const text = await response.text();
+  console.log('[listDeliveryWindowOptions]', shipmentId, response.status, text.slice(0, 500));
+  if (!response.ok) throw new Error(`SP-API listDeliveryWindowOptions ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return data?.deliveryWindowOptions || [];
+}
+
+export async function confirmDeliveryWindowOptions(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string,
+  deliveryWindowOptionId: string,
+): Promise<{ operationId: string }> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+  const body = { deliveryWindowOptionId };
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/deliveryWindowOptions/confirmation`,
+    {
+      method: 'POST',
+      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  const text = await response.text();
+  console.log('[confirmDeliveryWindowOptions]', shipmentId, deliveryWindowOptionId, response.status, text.slice(0, 500));
+  // 403 here means the account type or shipment mode doesn't require delivery
+  // window confirmation via API (common for parcel/non-LTL non-partnered accounts).
+  // Treat as a no-op: skip and proceed to confirmTransportationOptions.
+  if (response.status === 403) {
+    console.warn('[confirmDeliveryWindowOptions] 403 — skipping (not required for this account/shipment type)');
+    return { operationId: '' };
+  }
+  if (!response.ok) throw new Error(`SP-API confirmDeliveryWindowOptions ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return { operationId: data.operationId || '' };
 }
 
 /**

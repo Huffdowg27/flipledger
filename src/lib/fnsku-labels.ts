@@ -131,6 +131,102 @@ function drawLabel(
   }
 }
 
+// ─── Avery 5160 constants (3×10, 2.625"×1" per label) ────────────────────────
+const PAGE_W_PT = 612;   // 8.5" × 72
+const PAGE_H_PT = 792;   // 11" × 72
+const COLS_30UP = 3;
+const ROWS_30UP = 10;
+const LABEL_30UP_W = 189;   // 2.625" × 72
+const LABEL_30UP_H = 72;    // 1.0" × 72
+const LEFT_MARGIN_30UP = 13.5;
+const TOP_MARGIN_30UP = 36;
+const COL_PITCH_30UP = 198; // 2.75" × 72 (label + gap)
+
+function drawLabel30up(
+  page: PDFPage,
+  barcodePng: PDFImage,
+  label: LabelInput,
+  col: number,
+  row: number,
+  font: PDFFont,
+  fontMono: PDFFont,
+) {
+  const x0 = LEFT_MARGIN_30UP + col * COL_PITCH_30UP;
+  // PDF y=0 is bottom; row 0 is the topmost row on the page
+  const y0 = PAGE_H_PT - TOP_MARGIN_30UP - (row + 1) * LABEL_30UP_H;
+
+  const margin = 3;
+  const innerW = LABEL_30UP_W - 2 * margin;
+
+  const bcWidth = innerW * 0.85;
+  const bcHeight = 26;
+  const bcX = x0 + (LABEL_30UP_W - bcWidth) / 2;
+  const bcY = y0 + LABEL_30UP_H - margin - bcHeight;
+  page.drawImage(barcodePng, { x: bcX, y: bcY, width: bcWidth, height: bcHeight });
+
+  const fnskuSize = 7;
+  const fnskuW = fontMono.widthOfTextAtSize(label.fnsku, fnskuSize);
+  page.drawText(label.fnsku, {
+    x: x0 + (LABEL_30UP_W - fnskuW) / 2,
+    y: bcY - fnskuSize - 1,
+    size: fnskuSize,
+    font: fontMono,
+  });
+
+  const titleSize = 6;
+  const titleY = bcY - fnskuSize - 3 - titleSize;
+  const titleText = truncateForWidth(label.productTitle, font, titleSize, innerW);
+  const titleW = font.widthOfTextAtSize(titleText, titleSize);
+  page.drawText(titleText, { x: x0 + (LABEL_30UP_W - titleW) / 2, y: titleY, size: titleSize, font });
+
+  if (label.condition) {
+    const condSize = 5;
+    const condW = font.widthOfTextAtSize(label.condition, condSize);
+    page.drawText(label.condition, {
+      x: x0 + (LABEL_30UP_W - condW) / 2,
+      y: titleY - condSize - 2,
+      size: condSize,
+      font,
+      color: rgb(0.4, 0.4, 0.4),
+    });
+  }
+}
+
+/**
+ * Avery 5160 (30-up, 3×10 grid). One label per unit across letter-size pages.
+ */
+export async function generateFnskuLabel30upPdf(labels: LabelInput[]): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  const fontMono = await pdf.embedFont(StandardFonts.Courier);
+
+  const barcodeCache = new Map<string, PDFImage>();
+  for (const label of labels) {
+    if (!barcodeCache.has(label.fnsku)) {
+      const png = await generateBarcodePng(label.fnsku);
+      barcodeCache.set(label.fnsku, await pdf.embedPng(png));
+    }
+  }
+
+  const units: LabelInput[] = [];
+  for (const label of labels) {
+    for (let i = 0; i < label.quantity; i++) units.push(label);
+  }
+
+  const perPage = COLS_30UP * ROWS_30UP;
+  let page: PDFPage | null = null;
+  for (let idx = 0; idx < units.length; idx++) {
+    const pos = idx % perPage;
+    if (pos === 0) page = pdf.addPage([PAGE_W_PT, PAGE_H_PT]);
+    const col = pos % COLS_30UP;
+    const row = Math.floor(pos / COLS_30UP);
+    const label = units[idx];
+    drawLabel30up(page!, barcodeCache.get(label.fnsku)!, label, col, row, font, fontMono);
+  }
+
+  return Buffer.from(await pdf.save());
+}
+
 /**
  * Build a PDF with one page per unit. Returns the PDF binary as a Buffer.
  *

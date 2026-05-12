@@ -85,7 +85,7 @@ export async function syncFinancialEvents(
       if (eventGroup.ServiceFeeEventList) {
         for (const event of eventGroup.ServiceFeeEventList) {
           try {
-            processServiceFeeEvent(db, event);
+            processServiceFeeEvent(db, event, startDate);
             eventsProcessed++;
           } catch (err) {
             errors.push(`ServiceFeeEvent error: ${err}`);
@@ -373,9 +373,14 @@ function processRefundEvent(db: Database.Database, event: any) {
       }
     }
 
+    // ON CONFLICT: keep the highest fee_clawback seen across sync runs.
+    // Amazon sometimes sends the same refund item twice — once with fee credits
+    // and once without — so we upsert to always preserve the real credit amount.
     db.prepare(`
-      INSERT OR IGNORE INTO refunds (order_id, refund_date, asin, sku, quantity, refund_amount, reason, item_returned, fee_clawback, marketplace, created_at)
+      INSERT INTO refunds (order_id, refund_date, asin, sku, quantity, refund_amount, reason, item_returned, fee_clawback, marketplace, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(order_id, COALESCE(sku,''), COALESCE(asin,''), refund_date, refund_amount, marketplace)
+      DO UPDATE SET fee_clawback = MAX(fee_clawback, excluded.fee_clawback)
     `).run(orderId, postedDate, item.ASIN || null, item.SellerSKU, item.QuantityShipped || 1,
       refundAmount, 'CUSTOMER_RETURN', 0, feeClawback, 'amazon', now);
 
@@ -385,8 +390,8 @@ function processRefundEvent(db: Database.Database, event: any) {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run('RefundEvent', postedDate, orderId, item.ASIN || null, item.SellerSKU, 'amazon', -refundAmount + feeClawback, JSON.stringify(event), now);
 
-    const eventId = Number(result.lastInsertRowid);
-    if (eventId > 0) {
+    if (result.changes > 0) {
+      const eventId = Number(result.lastInsertRowid);
       for (const fee of fees) {
         const feeAmount = toCents(fee.FeeAmount);
         if (feeAmount === 0) continue;
@@ -404,10 +409,12 @@ function processRefundEvent(db: Database.Database, event: any) {
 const serviceFeeTracker = new Map<string, number>();
 export function resetServiceFeeTracker() { serviceFeeTracker.clear(); }
 
-function processServiceFeeEvent(db: Database.Database, event: any) {
+function processServiceFeeEvent(db: Database.Database, event: any, contextDate: string) {
   const now = new Date().toISOString();
   const fees = event.FeeList || [];
-  const postedDate = event.PostedDate || now;
+  // Amazon's ServiceFeeEvent does not include a PostedDate field — use the
+  // sync chunk's startDate so fees land in the correct period, not today.
+  const postedDate = event.PostedDate || contextDate;
 
   for (const fee of fees) {
     const amount = toCents(fee.FeeAmount);
@@ -467,40 +474,19 @@ function processAdjustmentEvent(db: Database.Database, event: any) {
     const amount = toCents(item.TotalAmount);
     if (amount === 0) continue;
 
-    // Dedup by reason + date + amount (not AdjustmentId — it changes on each API call)
-    const existing = db.prepare(`
-      SELECT 1 FROM reimbursements
-      WHERE reason = ? AND reimbursement_date = ? AND amount = ? AND marketplace = 'amazon'
-      LIMIT 1
-    `).get(adjustmentType, postedDate, amount);
-
-    // Skip if the canonical FBA Reimbursements Report already has this entry
-    // (same date, amount, and either matching sku or asin). Canonical numeric
-    // IDs supersede our ADJ-* placeholders.
-    const canonical = db.prepare(`
-      SELECT 1 FROM reimbursements
-      WHERE marketplace = 'amazon'
-        AND reimbursement_id GLOB '[0-9]*'
-        AND date(reimbursement_date) = date(?)
-        AND amount = ?
-        AND (
-          (? IS NOT NULL AND sku = ?)
-          OR (? IS NOT NULL AND asin = ?)
-        )
-      LIMIT 1
-    `).get(postedDate, amount, item.SellerSKU || null, item.SellerSKU || null, item.ASIN || null, item.ASIN || null);
-
-    if (!existing && !canonical) {
-      db.prepare(`
-        INSERT OR IGNORE INTO reimbursements (reimbursement_id, reimbursement_date, asin, sku, reason, amount, quantity, status, marketplace, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        event.AdjustmentId || `ADJ-${Date.now()}`, postedDate,
-        item.ASIN || null, item.SellerSKU || null,
-        adjustmentType, amount, item.Quantity || 1,
-        'Approved', 'amazon', now
-      );
-    }
+    // INSERT OR IGNORE relies on idx_reimbursements_unique:
+    // (marketplace, reason, date(reimbursement_date), amount, sku, asin)
+    // This deduplicates across re-sync runs regardless of timestamp precision
+    // or whether Amazon returns an AdjustmentId.
+    db.prepare(`
+      INSERT OR IGNORE INTO reimbursements (reimbursement_id, reimbursement_date, asin, sku, reason, amount, quantity, status, marketplace, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.AdjustmentId || `ADJ-${postedDate}-${adjustmentType}-${amount}`, postedDate,
+      item.ASIN || null, item.SellerSKU || null,
+      adjustmentType, amount, item.Quantity || 1,
+      'Approved', 'amazon', now
+    );
   }
 }
 

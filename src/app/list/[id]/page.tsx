@@ -1,10 +1,13 @@
 'use client';
 
-import { useEffect, useState, useRef, useCallback, use } from 'react';
+import { useEffect, useState, useRef, useCallback, use, useMemo } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
 import { generateMSKU } from '@/lib/listing-msku';
 import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import type { MapShipmentMeta } from '@/components/PlacementMap';
+const PlacementMap = dynamic(() => import('@/components/PlacementMap'), { ssr: false });
 
 interface Batch {
   id: number;
@@ -29,6 +32,13 @@ interface Batch {
   placementFeeCents?: number | null;
   placementError?: string | null;
   placementConfirmedAt?: string | null;
+  // Phase 3.5: transportation
+  transportationStatus?: string | null;
+  transportationOptionId?: string | null;
+  transportationError?: string | null;
+  transportationConfirmedAt?: string | null;
+  confirmedShipments?: string | null;  // JSON: [{shipmentId, confirmationId, destinationFC, carrier, cost, ...}]
+  confirmedShipmentIds?: string | null; // JSON: [shipmentId, ...]
   createdAt: string;
   updatedAt: string;
 }
@@ -66,11 +76,44 @@ interface PackGroup {
   }>;
 }
 
+interface ConfirmedShipment {
+  shipmentId: string;
+  confirmationId: string | null;
+  destinationFC: string | null;
+  destinationCity: string | null;
+  destinationState: string | null;
+  destinationAddress: Record<string, string> | null;
+  carrier: string | null;
+  carrierCode: string | null;
+  shippingMode: string | null;
+  shippingSolution: string | null;
+  transportationOptionId: string;
+  cost: number | null;
+  costCurrency: string;
+  readyToShipWindow: string | null;
+  confirmedAt: string;
+}
+
 interface PlacementFee {
   target: string;
   type: string;
   value: { amount: number; code: string };
   description?: string;
+}
+
+interface PlacementDestination {
+  shipmentId: string;
+  fcCode: string | null;
+  city: string | null;
+  state: string | null;
+  lat: number | null;
+  lng: number | null;
+  distanceMiles: number | null;
+  type?: string | null;
+  carrier?: string | null;
+  shippingCost?: number | null;
+  boxes?: number | null;
+  units?: number | null;
 }
 
 interface PlacementOption {
@@ -79,6 +122,34 @@ interface PlacementOption {
   fees: PlacementFee[];
   status: 'OFFERED' | 'ACCEPTED' | 'EXPIRED';
   discounts?: any[];
+  // enriched by backend
+  placementFeeCents?: number;
+  carrierFeeCents?: number;
+  destinations?: PlacementDestination[];
+}
+
+interface PlacementMapData {
+  shipmentMeta: Record<string, MapShipmentMeta>;
+  shipFromLat: number | null;
+  shipFromLng: number | null;
+  shipFromState: string | null;
+}
+
+type DebugItem = { fnsku: string | null; amazonStatus: string[]; lastChecked: string; pollError?: string };
+
+interface ExistingSku {
+  sku: string;
+  fnsku: string | null;
+  asin: string;
+  listingStatus: string;          // ACTIVE | DISCOVERABLE | SUPPRESSED | INCOMPLETE | INACTIVE | UNKNOWN
+  fulfillmentChannel: 'FBA' | 'MFN';
+  conditionType: string;
+  fbaStock: number;
+  listPriceCents: number;
+  itemName: string | null;
+  /** AMAZON_INVENTORY = live from SP-API Listings (replenishable). LOCAL_DB = cached snapshot only. */
+  source: 'AMAZON_INVENTORY' | 'LOCAL_DB' | 'sp-api' | 'local';
+  lastSynced: string;
 }
 
 interface BatchItem {
@@ -97,6 +168,7 @@ interface BatchItem {
   supplier: string | null;
   purchaseDate: string | null;
   listingStatus?: string | null;
+  listingSubmissionId?: string | null;
   listingError?: string | null;
   labelsPrintedAt?: string | null;  // user marks "I'm done labeling this SKU"
 }
@@ -178,6 +250,18 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   // Phase 2: Send to Amazon state
   const [showSendModal, setShowSendModal] = useState(false);
   const [sending, setSending] = useState(false);
+  const [debugItems, setDebugItems] = useState<Record<number, DebugItem>>({});
+
+  // Existing Seller Central MSKU lookup — runs after every ASIN scan.
+  const [existingSkus, setExistingSkus] = useState<ExistingSku[]>([]);
+  const [existingSkusLoading, setExistingSkusLoading] = useState(false);
+  const [existingSkusError, setExistingSkusError] = useState<string | null>(null);
+  const [existingSkuFilter, setExistingSkuFilter] = useState('');
+  const [listingMode, setListingMode] = useState<'CREATE_NEW' | 'REPLENISH_EXISTING'>('CREATE_NEW');
+  const [selectedExistingSku, setSelectedExistingSku] = useState<ExistingSku | null>(null);
+  const [manualMsku, setManualMsku] = useState('');
+  const [manualMskuVerifying, setManualMskuVerifying] = useState(false);
+  const [manualMskuError, setManualMskuError] = useState<string | null>(null);
 
   // Phase 3: Boxing + placement state
   const [boxes, setBoxes] = useState<Box[]>([]);
@@ -187,8 +271,12 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   const [savingBoxes, setSavingBoxes] = useState(false);
   const [packing, setPacking] = useState(false);
   const [placementOptions, setPlacementOptions] = useState<PlacementOption[]>([]);
+  const [placementMapData, setPlacementMapData] = useState<PlacementMapData | null>(null);
+  const [placementDebug, setPlacementDebug] = useState<any>(null);
+  const [hoveredOptionId, setHoveredOptionId] = useState<string | null>(null);
   const [loadingPlacement, setLoadingPlacement] = useState(false);
   const [confirmingPlacementId, setConfirmingPlacementId] = useState<string | null>(null);
+  const [confirmingBothId, setConfirmingBothId] = useState<string | null>(null);
 
   // FNSKU label printing — works at the 'ready' state, no shipment ID needed
   const [printingFnsku, setPrintingFnsku] = useState(false);
@@ -224,6 +312,33 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
   useEffect(() => { fetchBatch(); }, [fetchBatch]);
 
+  // Shared status poll — called by the interval and by the manual Refresh button.
+  const pollStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/list/batches/${id}/status`);
+      const data = await res.json();
+      if (data.batch) setBatch(data.batch);
+      if (data.items) setItems(data.items);
+      if (data.debugItems) setDebugItems(data.debugItems);
+    } catch (err) {
+      console.warn('status poll error:', err);
+    }
+  }, [id]);
+
+  const handleForceReady = useCallback(async () => {
+    if (!batch) return;
+    try {
+      await fetch(`/api/list/batches/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'ready' }),
+      });
+      await pollStatus();
+    } catch (err) {
+      console.warn('force-ready error:', err);
+    }
+  }, [id, batch, pollStatus]);
+
   // Phase 2: poll /status while the batch is in 'sending' (or 'ready' briefly).
   // Cheap for other states — the backend short-circuits for draft/failed/ready.
   // Resilient to tab visibility: pauses polling when hidden, immediately re-polls
@@ -240,15 +355,8 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
     let interval: ReturnType<typeof setInterval> | null = null;
 
     const tick = async () => {
-      try {
-        const res = await fetch(`/api/list/batches/${id}/status`);
-        const data = await res.json();
-        if (cancelled) return;
-        if (data.batch) setBatch(data.batch);
-        if (data.items) setItems(data.items);
-      } catch (err) {
-        console.warn('status poll error:', err);
-      }
+      if (cancelled) return;
+      await pollStatus();
     };
 
     const startPolling = () => {
@@ -285,7 +393,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       stopPolling();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [id, batch?.status, batch]);
+  }, [id, batch?.status, batch, pollStatus]);
 
   async function handleSendToAmazon() {
     if (!batch) return;
@@ -591,6 +699,19 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
     setPacking(false);
   }
 
+  function applyPlacementData(data: any) {
+    if (data.options) setPlacementOptions(data.options);
+    if (data.shipmentMeta !== undefined) {
+      setPlacementMapData({
+        shipmentMeta: data.shipmentMeta ?? {},
+        shipFromLat: data.shipFromLat ?? null,
+        shipFromLng: data.shipFromLng ?? null,
+        shipFromState: data.shipFromState ?? null,
+      });
+    }
+    if (data._debug !== undefined) setPlacementDebug(data._debug);
+  }
+
   async function handleGeneratePlacement() {
     if (!batch) return;
     setLoadingPlacement(true);
@@ -603,9 +724,12 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       const data = await res.json();
       if (data.error) {
         alert(`Generate placement options failed: ${data.error}`);
-      } else if (data.options) {
-        setPlacementOptions(data.options);
+      } else {
+        applyPlacementData(data);
         await fetchBatch();
+        // Fetch GET to get shipment meta (generate POST doesn't include it)
+        const get = await fetch(`/api/list/batches/${id}/placement`).then((r) => r.json());
+        applyPlacementData(get);
       }
     } catch (err) {
       alert(String(err));
@@ -621,8 +745,8 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       const data = await res.json();
       if (data.error) {
         alert(`Load placement options failed: ${data.error}`);
-      } else if (data.options) {
-        setPlacementOptions(data.options);
+      } else {
+        applyPlacementData(data);
       }
     } catch (err) {
       alert(String(err));
@@ -656,12 +780,84 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
     setConfirmingPlacementId(null);
   }
 
+  async function handleConfirmPlacementAndLoadTransport(
+    placementOptionId: string,
+    shipmentIds: string[],
+    readyToShipStart: string,
+  ): Promise<{ success: boolean; options?: any[]; shipments?: any[]; error?: string }> {
+    if (!batch) return { success: false };
+    const chosen = placementOptions.find((o) => o.placementOptionId === placementOptionId);
+    const feeCents = chosen?.placementFeeCents ??
+      chosen?.fees.reduce((sum, f) => sum + Math.round((f.value?.amount || 0) * 100), 0) ?? 0;
+    if (!confirm(
+      `Confirm this placement option?\n\nThe ${formatCurrency(feeCents)} inbound placement fee will be charged to your Amazon account. Shipping cost will be shown after confirmation.`
+    )) return { success: false };
+
+    setConfirmingBothId(placementOptionId);
+    try {
+      const pRes = await fetch(`/api/list/batches/${id}/placement`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm', placementOptionId }),
+      });
+      const pData = await pRes.json();
+      if (pData.error) throw new Error(pData.error);
+
+      await fetchBatch();
+
+      const tRes = await fetch(`/api/list/batches/${id}/transportation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate', shipmentIds, readyToShipStart }),
+      });
+      const tData = await tRes.json();
+      if (tData.error) throw new Error(`Transportation: ${tData.error}`);
+
+      setConfirmingBothId(null);
+      return { success: true, options: tData.options ?? [], shipments: tData.shipments ?? [] };
+    } catch (err) {
+      alert(`Failed: ${err}`);
+      setConfirmingBothId(null);
+      return { success: false, error: String(err) };
+    }
+  }
+
+  async function handleConfirmTransportation(
+    selections: Array<{ shipmentId: string; transportationOptionId: string }>,
+    selectedOptions: any[],
+  ): Promise<void> {
+    if (!batch) return;
+    setConfirmingBothId('transport-only');
+    try {
+      const res = await fetch(`/api/list/batches/${id}/transportation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'confirm', selections, selectedOptions }),
+      });
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      await fetchBatch();
+    } catch (err) {
+      alert(`Confirm transportation failed: ${err}`);
+    }
+    setConfirmingBothId(null);
+  }
+
   async function handleScan(e?: React.FormEvent) {
     e?.preventDefault();
     if (!query.trim()) return;
     setSearching(true);
     setScanned(null);
     setScanError(null);
+    // Reset existing-SKU state for new scan
+    setExistingSkus([]);
+    setExistingSkusError(null);
+    setExistingSkusLoading(false);
+    setExistingSkuFilter('');
+    setSelectedExistingSku(null);
+    setListingMode('CREATE_NEW');
+    setManualMsku('');
+    setManualMskuError(null);
     try {
       const channelParam = `&channel=${batch?.channel || 'FBA'}`;
       const res = await fetch(`/api/list/catalog/search?q=${encodeURIComponent(query.trim())}${channelParam}`);
@@ -681,6 +877,9 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
         } else {
           setShipCost('');
         }
+        // Fire non-blocking lookup for existing Seller Central MSKUs on this ASIN.
+        // fetchExistingSkus manages its own loading/error state.
+        fetchExistingSkus(first.asin);
       } else {
         setScanError('No matches found');
       }
@@ -688,6 +887,52 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       setScanError(String(err));
     }
     setSearching(false);
+  }
+
+  async function fetchExistingSkus(asin: string) {
+    setExistingSkusLoading(true);
+    setExistingSkusError(null);
+    setExistingSkus([]);
+    setExistingSkuFilter('');
+    setSelectedExistingSku(null);
+    setListingMode('CREATE_NEW');
+    setManualMsku('');
+    setManualMskuError(null);
+    try {
+      const res = await fetch(`/api/list/catalog/existing-skus?asin=${encodeURIComponent(asin)}`);
+      const data = await res.json();
+      if (data.error && !data.skus?.length) {
+        setExistingSkusError(data.error);
+      } else {
+        const skus: ExistingSku[] = data.skus || [];
+        setExistingSkus(skus);
+
+        // Auto-select rules (safe defaults — only for AMAZON_INVENTORY rows):
+        //   1. Exactly ONE replenishable FBA MSKU from SP-API (ACTIVE or DISCOVERABLE)
+        //      with an FNSKU AND no other FBA MSKUs of any kind → auto-select.
+        //      DISCOVERABLE = out of stock but listing is live and replenishable.
+        //   2. Everything else → show the list, require manual selection.
+        const amazonFbaSkus = skus.filter(
+          (s) => (s.source === 'AMAZON_INVENTORY' || s.source === 'sp-api') &&
+                 s.fulfillmentChannel === 'FBA'
+        );
+        const replenishableFbaWithFnsku = amazonFbaSkus.filter(
+          (s) => (s.listingStatus === 'ACTIVE' || s.listingStatus === 'DISCOVERABLE') && s.fnsku
+        );
+        if (replenishableFbaWithFnsku.length === 1 && amazonFbaSkus.length === 1) {
+          const s = replenishableFbaWithFnsku[0];
+          setSelectedExistingSku(s);
+          setSku(s.sku);
+          setSkuManuallyEdited(true);
+          setListingMode('REPLENISH_EXISTING');
+          if (s.listPriceCents > 0) setListPrice((s.listPriceCents / 100).toFixed(2));
+        }
+        // else: multiple or ambiguous — user must pick from the list
+      }
+    } catch (err) {
+      setExistingSkusError(`Could not load existing MSKUs: ${err}`);
+    }
+    setExistingSkusLoading(false);
   }
 
   // Re-estimate fees when the user changes the list price on a scanned item.
@@ -758,6 +1003,11 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           purchaseDate: new Date().toISOString(),
           estimatedFeeCents: perUnitFeeCents,
           estimatedShipCents: perUnitShipCents,
+          listingMode,
+          fnsku: selectedExistingSku?.fnsku || null,
+          fulfillmentChannel: selectedExistingSku?.fulfillmentChannel || null,
+          listingSource: selectedExistingSku?.source || null,
+          amazonInventoryStatus: selectedExistingSku?.listingStatus || null,
         }),
       });
       const data = await res.json();
@@ -774,6 +1024,11 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
         setQuantity('1');
         setSupplier('');
         setCondition('NewItem');
+        setExistingSkus([]);
+        setExistingSkusError(null);
+        setExistingSkuFilter('');
+        setSelectedExistingSku(null);
+        setListingMode('CREATE_NEW');
         await fetchBatch();
       } else {
         alert(`Failed to add item: ${data.error}`);
@@ -1027,7 +1282,13 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
       {/* Send status card — visible while sending or after send */}
       {(batch.status === 'sending' || batch.status === 'ready' || batch.status === 'failed') && (
-        <SendStatusCard batch={batch} items={items} />
+        <SendStatusCard
+          batch={batch}
+          items={items}
+          debugItems={debugItems}
+          onRefresh={pollStatus}
+          onForceReady={handleForceReady}
+        />
       )}
 
       {/* Phase 3: Boxing workflow — visible while boxing/placement/shipping */}
@@ -1038,6 +1299,10 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           boxes={boxes}
           packGroups={packGroups}
           placementOptions={placementOptions}
+          placementMapData={placementMapData}
+          placementDebug={placementDebug}
+          hoveredOptionId={hoveredOptionId}
+          onHoverOption={setHoveredOptionId}
           savingBoxes={savingBoxes}
           packing={packing}
           loadingPlacement={loadingPlacement}
@@ -1051,6 +1316,9 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           onGeneratePlacement={handleGeneratePlacement}
           onLoadPlacement={handleLoadPlacement}
           onConfirmPlacement={handleConfirmPlacement}
+          onConfirmPlacementAndLoadTransport={handleConfirmPlacementAndLoadTransport}
+          onConfirmTransportation={handleConfirmTransportation}
+          confirmingBothId={confirmingBothId}
         />
       )}
 
@@ -1176,19 +1444,294 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                   </div>
                 </div>
 
+                {/* Existing Seller Central MSKUs */}
+                {(existingSkusLoading || existingSkus.length > 0 || existingSkusError) && (
+                  <div className="border-t border-border-subtle p-4">
+                    <div className="text-[10px] uppercase tracking-widest text-text-tertiary mb-2 flex items-center gap-2">
+                      Existing Seller Central MSKUs
+                      {existingSkusLoading && <Loader2 size={10} className="animate-spin" />}
+                    </div>
+
+                    {existingSkusLoading && (
+                      <div className="text-xs text-text-tertiary">Checking Seller Central…</div>
+                    )}
+
+                    {existingSkusError && !existingSkusLoading && (
+                      <div className="text-xs text-negative space-y-1">
+                        <div>{existingSkusError}</div>
+                        <div className="flex gap-3">
+                          <button onClick={() => scanned && fetchExistingSkus(scanned.asin)} className="text-accent hover:underline">Retry lookup</button>
+                          <button onClick={() => { setExistingSkusError(null); setListingMode('CREATE_NEW'); }} className="text-text-tertiary hover:underline">Create new MSKU instead</button>
+                        </div>
+                      </div>
+                    )}
+
+                    {!existingSkusLoading && existingSkus.length === 0 && !existingSkusError && (
+                      <div className="space-y-2">
+                        <div className="text-xs text-text-tertiary">
+                          No existing Seller Central MSKUs found automatically for this ASIN.
+                          If you have an existing MSKU, enter it below to verify against Seller Central.
+                        </div>
+                        <div className="flex gap-2 items-center">
+                          <input
+                            type="text"
+                            value={manualMsku}
+                            onChange={(e) => { setManualMsku(e.target.value); setManualMskuError(null); }}
+                            placeholder="Enter MSKU (e.g. LV_01FAFLIP_040126_…)"
+                            className="flex-1 text-xs font-mono border border-border-subtle rounded px-2 py-1 bg-surface text-text-primary placeholder:text-text-tertiary focus:outline-none focus:ring-1 focus:ring-accent"
+                            onKeyDown={async (e) => {
+                              if (e.key === 'Enter' && manualMsku.trim() && scanned?.asin) {
+                                e.preventDefault();
+                                setManualMskuVerifying(true);
+                                setManualMskuError(null);
+                                try {
+                                  const res = await fetch(`/api/list/catalog/verify-msku?asin=${encodeURIComponent(scanned.asin)}&sku=${encodeURIComponent(manualMsku.trim())}`);
+                                  const data = await res.json();
+                                  if (!res.ok) { setManualMskuError(data.error || 'Verification failed'); return; }
+                                  setExistingSkus([data]);
+                                  setSelectedExistingSku(data);
+                                  setListingMode('REPLENISH_EXISTING');
+                                  setSku(data.sku);
+                                  setManualMsku('');
+                                } catch (err) {
+                                  setManualMskuError(String(err));
+                                } finally {
+                                  setManualMskuVerifying(false);
+                                }
+                              }
+                            }}
+                          />
+                          <button
+                            disabled={!manualMsku.trim() || manualMskuVerifying}
+                            onClick={async () => {
+                              if (!manualMsku.trim() || !scanned?.asin) return;
+                              setManualMskuVerifying(true);
+                              setManualMskuError(null);
+                              try {
+                                const res = await fetch(`/api/list/catalog/verify-msku?asin=${encodeURIComponent(scanned.asin)}&sku=${encodeURIComponent(manualMsku.trim())}`);
+                                const data = await res.json();
+                                if (!res.ok) { setManualMskuError(data.error || 'Verification failed'); return; }
+                                setExistingSkus([data]);
+                                setSelectedExistingSku(data);
+                                setListingMode('REPLENISH_EXISTING');
+                                setSku(data.sku);
+                                setManualMsku('');
+                              } catch (err) {
+                                setManualMskuError(String(err));
+                              } finally {
+                                setManualMskuVerifying(false);
+                              }
+                            }}
+                            className="text-xs px-2 py-1 rounded border border-border-subtle bg-surface text-text-primary hover:bg-surface-hover disabled:opacity-40 whitespace-nowrap"
+                          >
+                            {manualMskuVerifying ? 'Verifying…' : 'Verify'}
+                          </button>
+                        </div>
+                        {manualMskuError && (
+                          <div className="text-xs text-negative">{manualMskuError}</div>
+                        )}
+                        <div className="text-[10px] text-text-tertiary">Or proceed without selecting an existing MSKU to create a new one.</div>
+                      </div>
+                    )}
+
+                    {existingSkus.length > 0 && (() => {
+                      // Separate AMAZON_INVENTORY (replenishable) from LOCAL_DB (historical context only).
+                      const isAmazonSource = (s: ExistingSku) =>
+                        s.source === 'AMAZON_INVENTORY' || s.source === 'sp-api';
+                      const amazonSkus = existingSkus.filter(isAmazonSource);
+                      const localOnlySkus = existingSkus.filter((s) => !isAmazonSource(s));
+
+                      // Ambiguous = multiple replenishable FBA candidates from Amazon (user must choose).
+                      const replenishableFbaSkus = amazonSkus.filter(
+                        (s) => s.fulfillmentChannel === 'FBA' &&
+                               (s.listingStatus === 'ACTIVE' || s.listingStatus === 'DISCOVERABLE')
+                      );
+                      const isAmbiguous = replenishableFbaSkus.length > 1 ||
+                        (replenishableFbaSkus.length === 0 && amazonSkus.length > 0);
+
+                      const filterLower = existingSkuFilter.toLowerCase();
+                      const applyFilter = (rows: ExistingSku[]) => existingSkuFilter
+                        ? rows.filter((s) => s.sku.toLowerCase().includes(filterLower))
+                        : rows;
+                      const displayedAmazon = applyFilter(amazonSkus);
+                      const displayedLocal = applyFilter(localOnlySkus);
+
+                      const skuStatusLabel = (s: ExistingSku): { label: string; color: string } => {
+                        if (s.listingStatus === 'ACTIVE') {
+                          if (s.fulfillmentChannel === 'FBA') {
+                            return { label: s.fbaStock > 0 ? 'ACTIVE FBA' : 'OUT OF STOCK / ACTIVE FBA', color: 'bg-positive/10 text-positive' };
+                          }
+                          return { label: 'ACTIVE MFN', color: 'bg-positive/10 text-positive' };
+                        }
+                        if (s.listingStatus === 'DISCOVERABLE') return { label: 'OUT OF STOCK / ACTIVE REPLENISHABLE', color: 'bg-accent/10 text-accent' };
+                        if (s.listingStatus === 'SUPPRESSED') return { label: 'SUPPRESSED', color: 'bg-negative/10 text-negative' };
+                        if (s.listingStatus === 'INCOMPLETE') return { label: 'INCOMPLETE', color: 'bg-amber-500/10 text-amber-400' };
+                        if (s.listingStatus === 'INACTIVE') return { label: 'INACTIVE', color: 'bg-text-tertiary/10 text-text-tertiary' };
+                        return { label: s.listingStatus || 'UNKNOWN', color: 'bg-text-tertiary/10 text-text-tertiary' };
+                      };
+
+                      const renderSkuRow = (s: ExistingSku, selectable: boolean) => {
+                        const { label: statusLabel, color: statusColor } = skuStatusLabel(s);
+
+                        const isSelected = selectedExistingSku?.sku === s.sku;
+                        return (
+                          <div
+                            key={s.sku}
+                            className={`flex items-start gap-3 p-2.5 rounded border text-xs transition-colors ${
+                              selectable ? 'cursor-pointer' : 'cursor-default opacity-60'
+                            } ${
+                              isSelected
+                                ? 'border-positive/50 bg-positive/5'
+                                : selectable
+                                  ? 'border-border-default bg-bg-elevated hover:border-accent/40'
+                                  : 'border-border-subtle bg-bg-elevated'
+                            }`}
+                            onClick={() => {
+                              if (!selectable) return;
+                              setSelectedExistingSku(s);
+                              setSku(s.sku);
+                              setSkuManuallyEdited(true);
+                              setListingMode('REPLENISH_EXISTING');
+                              if (s.listPriceCents > 0) setListPrice((s.listPriceCents / 100).toFixed(2));
+                            }}
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="font-mono text-text-primary break-all">{s.sku}</div>
+                              <div className="mt-1 flex items-center gap-1.5 flex-wrap">
+                                <span className={`px-1 py-0.5 rounded text-[9px] font-semibold ${statusColor}`}>
+                                  {statusLabel}
+                                </span>
+                                {/* Source tag — always visible */}
+                                <span className={`px-1 py-0.5 rounded text-[9px] font-semibold ${
+                                  isAmazonSource(s)
+                                    ? 'bg-accent/15 text-accent'
+                                    : 'bg-text-tertiary/15 text-text-tertiary'
+                                }`}>
+                                  {isAmazonSource(s) ? 'AMAZON_INVENTORY' : 'LOCAL_DB'}
+                                </span>
+                                {s.conditionType && (
+                                  <span className="text-text-tertiary">{s.conditionType.replace(/_/g, ' ')}</span>
+                                )}
+                                <span className="text-text-tertiary">· stock: {s.fbaStock}</span>
+                                {s.listPriceCents > 0 && (
+                                  <span className="text-text-tertiary">· {formatCurrency(s.listPriceCents)}</span>
+                                )}
+                                {s.fnsku ? (
+                                  <span className="font-mono text-[10px] text-text-tertiary">FNSKU: {s.fnsku}</span>
+                                ) : (
+                                  <span className="text-[10px] text-amber-400">no FNSKU</span>
+                                )}
+                              </div>
+                            </div>
+                            {selectable && (isSelected ? (
+                              <span className="text-positive text-[10px] font-semibold whitespace-nowrap flex items-center gap-1 shrink-0 mt-0.5">
+                                <CheckCircle size={11} /> Selected
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-accent whitespace-nowrap shrink-0 mt-0.5">Select</span>
+                            ))}
+                          </div>
+                        );
+                      };
+
+                      return (
+                        <div className="space-y-2">
+                          {/* Amber prompt when multiple replenishable FBA candidates exist */}
+                          {isAmbiguous && listingMode !== 'REPLENISH_EXISTING' && amazonSkus.length > 0 && (
+                            <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded px-2.5 py-1.5">
+                              {amazonSkus.length} Seller Central MSKUs found for this ASIN. Select the one you want to replenish, or create a new MSKU.
+                            </div>
+                          )}
+
+                          {/* Search filter */}
+                          {existingSkus.length > 2 && (
+                            <input
+                              value={existingSkuFilter}
+                              onChange={(e) => setExistingSkuFilter(e.target.value)}
+                              placeholder="Filter by SKU…"
+                              className="w-full h-8 px-2 bg-bg-elevated border border-border-default rounded text-xs font-mono focus:outline-none focus:border-accent"
+                            />
+                          )}
+
+                          {displayedAmazon.length === 0 && displayedLocal.length === 0 && existingSkuFilter && (
+                            <div className="text-xs text-negative">
+                              No MSKU matching &ldquo;{existingSkuFilter}&rdquo; found in results.
+                              Paste the exact Seller Central SKU above to filter.
+                            </div>
+                          )}
+
+                          {/* AMAZON_INVENTORY rows — selectable for replenishment */}
+                          {displayedAmazon.length > 0 && (
+                            <div className="space-y-1.5">
+                              {displayedAmazon.map((s) => renderSkuRow(s, true))}
+                            </div>
+                          )}
+
+                          {/* LOCAL_DB rows — historical context only, not selectable */}
+                          {displayedLocal.length > 0 && (
+                            <div className="mt-2">
+                              <div className="text-[9px] uppercase tracking-widest text-text-tertiary mb-1.5">
+                                Historical local SKUs (cached — not confirmed live in Seller Central)
+                              </div>
+                              <div className="space-y-1.5">
+                                {displayedLocal.map((s) => renderSkuRow(s, false))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Selected SKU summary */}
+                          {selectedExistingSku && (
+                            <div className="mt-1 bg-positive/5 border border-positive/20 rounded p-2.5 text-[11px]">
+                              <div className="text-positive font-semibold mb-1">Selected for replenishment</div>
+                              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-text-primary">
+                                <span className="text-text-tertiary">MSKU:</span><span className="break-all">{selectedExistingSku.sku}</span>
+                                <span className="text-text-tertiary">FNSKU:</span><span>{selectedExistingSku.fnsku || '—'}</span>
+                                <span className="text-text-tertiary">Channel:</span><span>{selectedExistingSku.fulfillmentChannel}</span>
+                                <span className="text-text-tertiary">Status:</span><span>{skuStatusLabel(selectedExistingSku).label}</span>
+                                <span className="text-text-tertiary">FBA stock:</span><span>{selectedExistingSku.fbaStock}</span>
+                                {selectedExistingSku.listPriceCents > 0 && (
+                                  <><span className="text-text-tertiary">Price:</span><span>{formatCurrency(selectedExistingSku.listPriceCents)}</span></>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex gap-3 mt-1">
+                            {listingMode === 'REPLENISH_EXISTING' && (
+                              <button
+                                onClick={() => { setSelectedExistingSku(null); setListingMode('CREATE_NEW'); setSkuManuallyEdited(false); setSku(''); }}
+                                className="text-[11px] text-text-tertiary hover:text-text-secondary"
+                              >
+                                Create new MSKU instead
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+
                 {/* Entry grid */}
                 <div className="p-4 grid grid-cols-2 lg:grid-cols-6 gap-3">
                   <div className="col-span-2">
                     <label className="text-[10px] uppercase tracking-widest text-text-tertiary flex items-center gap-1">
                       MSKU
-                      {!skuManuallyEdited && supplier && buyPrice && (
+                      {listingMode === 'REPLENISH_EXISTING' ? (
+                        <span className="text-[9px] text-positive font-semibold normal-case tracking-normal">replenish</span>
+                      ) : !skuManuallyEdited && supplier && buyPrice ? (
                         <span className="text-[9px] text-accent/70 normal-case tracking-normal">auto</span>
-                      )}
+                      ) : null}
                     </label>
                     <input
                       value={sku}
+                      readOnly={listingMode === 'REPLENISH_EXISTING'}
                       onChange={(e) => { setSku(e.target.value); setSkuManuallyEdited(true); }}
-                      className="w-full mt-1 h-9 px-2 bg-bg-elevated border border-border-default rounded text-sm font-mono focus:outline-none focus:border-accent"
+                      className={`w-full mt-1 h-9 px-2 bg-bg-elevated border rounded text-sm font-mono focus:outline-none focus:border-accent ${
+                        listingMode === 'REPLENISH_EXISTING'
+                          ? 'border-positive/40 text-positive cursor-default'
+                          : 'border-border-default'
+                      }`}
                     />
                   </div>
                   <div>
@@ -1661,7 +2204,19 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
 // ─── SendStatusCard ─────────────────────────────────────────────────────────
 // Renders the progress of an in-flight or completed send operation.
-function SendStatusCard({ batch, items }: { batch: Batch; items: BatchItem[] }) {
+function SendStatusCard({
+  batch,
+  items,
+  debugItems,
+  onRefresh,
+  onForceReady,
+}: {
+  batch: Batch;
+  items: BatchItem[];
+  debugItems: Record<number, DebugItem>;
+  onRefresh: () => void;
+  onForceReady: () => void;
+}) {
   const listingsReady = items.filter((i) => i.listingStatus === 'ACTIVE').length;
   const listingsFailed = items.filter((i) => i.listingStatus === 'FAILED').length;
   const listingsProcessing = items.filter((i) => i.listingStatus === 'PROCESSING').length;
@@ -1669,10 +2224,33 @@ function SendStatusCard({ batch, items }: { batch: Batch; items: BatchItem[] }) 
 
   const isFBA = batch.channel === 'FBA';
   const planState = batch.planStatus || 'IN_PROGRESS';
-
   const isSending = batch.status === 'sending';
   const isReady = batch.status === 'ready';
   const isFailed = batch.status === 'failed';
+
+  // Live elapsed-time counter updated every second.
+  const [elapsedSec, setElapsedSec] = useState(0);
+  useEffect(() => {
+    if (!isSending || !batch.sentAt) return;
+    const base = new Date(batch.sentAt).getTime();
+    const update = () => setElapsedSec(Math.floor((Date.now() - base) / 1000));
+    update();
+    const t = setInterval(update, 1000);
+    return () => clearInterval(t);
+  }, [isSending, batch.sentAt]);
+
+  const elapsedMin = Math.floor(elapsedSec / 60);
+  const elapsedStr = elapsedSec < 60
+    ? `${elapsedSec}s`
+    : `${elapsedMin}m ${elapsedSec % 60}s`;
+
+  // "Continue anyway" is available after 5 min if the inbound plan exists
+  // (meaning the listing was accepted by Amazon — plan creation would have
+  // failed if the MSKU wasn't valid).
+  const canForceReady = isSending && !!batch.inboundPlanId && elapsedMin >= 5;
+  const isTimedOut = elapsedMin >= 15;
+
+  const [showDebug, setShowDebug] = useState(false);
 
   return (
     <div className={`rounded-lg p-4 mb-5 border ${
@@ -1680,27 +2258,53 @@ function SendStatusCard({ batch, items }: { batch: Batch; items: BatchItem[] }) 
       isReady ? 'border-positive/30 bg-positive/5' :
       'border-accent/30 bg-accent/5'
     }`}>
-      <div className="flex items-center gap-2 mb-3">
-        {isFailed ? (
-          <AlertCircle size={18} className="text-negative" />
-        ) : isReady ? (
-          <CheckCircle size={18} className="text-positive" />
-        ) : (
-          <Loader2 size={18} className="text-accent animate-spin" />
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          {isFailed ? (
+            <AlertCircle size={18} className="text-negative" />
+          ) : isReady ? (
+            <CheckCircle size={18} className="text-positive" />
+          ) : (
+            <Loader2 size={18} className="text-accent animate-spin" />
+          )}
+          <h3 className={`text-sm font-medium ${
+            isFailed ? 'text-negative' : isReady ? 'text-positive' : 'text-accent'
+          }`}>
+            {isFailed
+              ? (isFBA ? 'Send failed' : 'Publish failed')
+              : isReady
+                ? (isFBA ? 'Inbound plan ready' : 'Listings live on Amazon')
+                : (isFBA ? 'Sending to Amazon…' : 'Publishing to Amazon…')}
+          </h3>
+          {isSending && batch.sentAt && (
+            <span className={`text-[11px] font-mono ml-1 ${isTimedOut ? 'text-amber-400' : 'text-text-tertiary'}`}>
+              {elapsedStr}
+            </span>
+          )}
+        </div>
+        {isSending && (
+          <button
+            onClick={onRefresh}
+            className="text-[11px] text-accent hover:text-accent/80 border border-accent/30 rounded px-2 py-0.5"
+          >
+            Refresh
+          </button>
         )}
-        <h3 className={`text-sm font-medium ${
-          isFailed ? 'text-negative' : isReady ? 'text-positive' : 'text-accent'
-        }`}>
-          {isFailed
-            ? (isFBA ? 'Send failed' : 'Publish failed')
-            : isReady
-              ? (isFBA ? 'Inbound plan ready' : 'Listings live on Amazon')
-              : (isFBA ? 'Sending to Amazon…' : 'Publishing to Amazon…')}
-        </h3>
       </div>
 
-      {isFailed && batch.sendError && (
-        <div className="text-xs text-text-primary bg-bg-elevated rounded p-2 mb-3 font-mono whitespace-pre-wrap">
+      {/* Timeout warning */}
+      {isSending && isTimedOut && (
+        <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded p-2 mb-3">
+          Taking longer than expected ({elapsedStr}). Amazon MSKU verification can stall on new listings.
+          {canForceReady && ' The inbound plan was already created — you can proceed to boxing now.'}
+        </div>
+      )}
+
+      {/* sendError shown for failed OR timeout-advanced batches */}
+      {(isFailed || (isReady && batch.sendError)) && batch.sendError && (
+        <div className={`text-xs rounded p-2 mb-3 font-mono whitespace-pre-wrap ${
+          isFailed ? 'text-text-primary bg-bg-elevated' : 'text-amber-400 bg-amber-500/10 border border-amber-500/20'
+        }`}>
           {batch.sendError}
         </div>
       )}
@@ -1727,14 +2331,301 @@ function SendStatusCard({ batch, items }: { batch: Batch; items: BatchItem[] }) 
         )}
       </div>
 
-      {isSending && (
+      {/* Action buttons for stuck batches */}
+      {canForceReady && (
+        <div className="mt-3 flex gap-2">
+          <button
+            onClick={onForceReady}
+            className="text-xs bg-positive/10 hover:bg-positive/20 text-positive border border-positive/30 rounded px-3 py-1.5"
+          >
+            Continue to boxing anyway
+          </button>
+        </div>
+      )}
+
+      {/* Per-item debug panel */}
+      {isSending && items.length > 0 && (
+        <div className="mt-3">
+          <button
+            onClick={() => setShowDebug((v) => !v)}
+            className="text-[11px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
+          >
+            <ChevronDown size={12} className={showDebug ? 'rotate-180' : ''} />
+            Debug: MSKU verification status
+          </button>
+          {showDebug && (
+            <div className="mt-2 space-y-2">
+              {items.map((item) => {
+                const dbg = debugItems[item.id];
+                return (
+                  <div key={item.id} className="bg-bg-elevated rounded p-2 text-[11px] font-mono">
+                    <div className="flex gap-2 items-start flex-wrap">
+                      <span className="text-text-tertiary">SKU:</span>
+                      <span className="text-text-primary">{item.sku}</span>
+                      <span className="text-text-tertiary ml-2">ASIN:</span>
+                      <span className="text-text-primary">{item.asin}</span>
+                    </div>
+                    <div className="flex gap-2 items-start flex-wrap mt-1">
+                      <span className="text-text-tertiary">FNSKU:</span>
+                      <span className={dbg?.fnsku ? 'text-positive' : 'text-text-tertiary'}>
+                        {dbg?.fnsku || 'not yet assigned'}
+                      </span>
+                      <span className="text-text-tertiary ml-2">Amazon status:</span>
+                      <span className="text-text-primary">
+                        {dbg?.amazonStatus?.length ? dbg.amazonStatus.join(', ') : item.listingStatus || '—'}
+                      </span>
+                    </div>
+                    {item.listingSubmissionId && (
+                      <div className="flex gap-2 mt-1">
+                        <span className="text-text-tertiary">SubmissionId:</span>
+                        <span className="text-text-primary">{item.listingSubmissionId}</span>
+                      </div>
+                    )}
+                    {dbg?.pollError && (
+                      <div className="text-negative mt-1">Poll error: {dbg.pollError}</div>
+                    )}
+                    {item.listingError && (
+                      <div className="text-amber-400 mt-1">Amazon note: {item.listingError}</div>
+                    )}
+                    {dbg?.lastChecked && (
+                      <div className="text-text-tertiary mt-1">
+                        Last checked: {new Date(dbg.lastChecked).toLocaleTimeString()}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {isSending && !isTimedOut && (
         <p className="text-[11px] text-text-tertiary mt-3">
-          Amazon is verifying your MSKUs. This usually takes 10–15 minutes for new items and is near-instant for restocks.
+          Amazon is verifying your MSKUs. Usually near-instant for restocks, up to 15 min for new items.
           You can close this page and come back — FlipLedger will track it.
         </p>
       )}
     </div>
   );
+}
+
+// ─── Amazon placement debug summary ─────────────────────────────────────────
+
+function summarizeAmazonPlacementDebug(debug: any) {
+  const placement = debug?.rawPlacementResponse;
+  const shipments = debug?.rawShipmentsResponse;
+  const plan = debug?.rawInboundPlan;
+
+  const placementOptions: any[] =
+    placement?.placementOptions ??
+    placement?.payload?.placementOptions ??
+    placement?.data?.placementOptions ??
+    [];
+
+  const shipmentList: any[] =
+    shipments?.shipments ??
+    shipments?.payload?.shipments ??
+    shipments?.data?.shipments ??
+    [];
+
+  return {
+    placementKeys: placement ? Object.keys(placement) : [],
+    placementOptionCount: placementOptions.length,
+    placementOptions: placementOptions.map((o: any) => ({
+      placementOptionId: o.placementOptionId,
+      shipmentIds: o.shipmentIds ?? o.shipmentIdsByShipmentType ?? o.shipments ?? [],
+      fees: o.fees,
+      discounts: o.discounts,
+      rawKeys: Object.keys(o ?? {}),
+    })),
+    shipmentKeys: shipments ? Object.keys(shipments) : [],
+    shipmentCount: shipmentList.length,
+    shipments: shipmentList.map((s: any) => ({
+      shipmentId: s.shipmentId,
+      warehouseId:
+        s.destination?.warehouseId ??
+        s.destination?.fulfillmentCenterId ??
+        s.destination?.fulfillmentCenterCode ??
+        s.warehouseId ??
+        s.fulfillmentCenterId ??
+        null,
+      destinationAddress:
+        s.destination?.address ?? s.shipToAddress ?? s.destinationAddress ?? null,
+      sourceAddress: s.sourceAddress ?? s.shipFromAddress ?? null,
+      boxCount: Array.isArray(s.boxes) ? s.boxes.length : null,
+      rawKeys: Object.keys(s ?? {}),
+    })),
+    inboundPlanKeys: plan ? Object.keys(plan) : [],
+    inboundPlanStatus: plan?.status ?? plan?.inboundPlanStatus ?? null,
+  };
+}
+
+// Scan an arbitrary object for FC code patterns (e.g. BNA6, PBI3, MIT2)
+function scanFcCodes(obj: any): string[] {
+  const str = JSON.stringify(obj);
+  const matches = str.match(/\b([A-Z]{3,4}\d{1,2})\b/g);
+  return matches ? [...new Set(matches)] : [];
+}
+
+// Known FC coordinates — used as fallback when Amazon doesn't return lat/lng
+const FC_LOCATIONS: Record<string, { city: string; state: string; lat: number; lng: number }> = {
+  PSC2: { city: 'Pasco',           state: 'WA', lat: 46.2396, lng: -119.1006 },
+  MIT2: { city: 'Shafter',         state: 'CA', lat: 35.5005, lng: -119.2718 },
+  BNA6: { city: 'Lebanon',         state: 'TN', lat: 36.2081, lng:  -86.2911 },
+  PBI3: { city: 'Port St. Lucie',  state: 'FL', lat: 27.2730, lng:  -80.3582 },
+  FWA4: { city: 'Fort Wayne',      state: 'IN', lat: 41.0793, lng:  -85.1394 },
+  GYR2: { city: 'Goodyear',        state: 'AZ', lat: 33.4353, lng: -112.3576 },
+  BFI4: { city: 'Kent',            state: 'WA', lat: 47.3809, lng: -122.2348 },
+  SMF3: { city: 'Sacramento',      state: 'CA', lat: 38.5816, lng: -121.4944 },
+  SLC2: { city: 'Salt Lake City',  state: 'UT', lat: 40.7608, lng: -111.8910 },
+  LAS1: { city: 'Las Vegas',       state: 'NV', lat: 36.1699, lng: -115.1398 },
+  PHX3: { city: 'Goodyear',        state: 'AZ', lat: 33.4500, lng: -112.3600 },
+  ONT2: { city: 'Ontario',         state: 'CA', lat: 34.0633, lng: -117.6509 },
+  DEN2: { city: 'Aurora',          state: 'CO', lat: 39.7392, lng: -104.9903 },
+  DFW1: { city: 'Haslet',          state: 'TX', lat: 32.9757, lng:  -97.3427 },
+  IAH1: { city: 'Katy',            state: 'TX', lat: 29.7858, lng:  -95.8245 },
+};
+
+// Recursively extract destination fields (city, state, postal, FC) from any object
+function extractDestination(obj: any): {
+  city: string | null; state: string | null; postalCode: string | null;
+  fcCode: string | null; foundAt: string[];
+} {
+  let city: string | null = null, state: string | null = null;
+  let postalCode: string | null = null, fcCode: string | null = null;
+  const foundAt: string[] = [];
+
+  function walk(o: any, path: string) {
+    if (!o || typeof o !== 'object' || Array.isArray(o)) return;
+    for (const [k, v] of Object.entries(o)) {
+      const fp = path ? `${path}.${k}` : k;
+      const lk = k.toLowerCase();
+      if (typeof v === 'string' && v) {
+        if (!city && (lk === 'city' || lk.endsWith('city')))
+          { city = v; foundAt.push(fp); }
+        if (!state && (lk === 'stateorprovincecode' || lk === 'state' || lk === 'statecode') && v.length <= 4)
+          { state = v; foundAt.push(fp); }
+        if (!postalCode && (lk === 'postalcode' || lk === 'zipcode' || lk === 'zip') && /^\d{5}/.test(v))
+          { postalCode = v; foundAt.push(fp); }
+        if (!fcCode && /^[A-Z]{3,4}\d{1,2}$/.test(v))
+          { fcCode = v; foundAt.push(fp); }
+      } else if (v && typeof v === 'object') {
+        walk(v, fp);
+      }
+    }
+  }
+
+  walk(obj, '');
+
+  // Fallback: scan full JSON string for FC pattern
+  if (!fcCode) {
+    const hits = scanFcCodes(obj);
+    if (hits[0]) { fcCode = hits[0]; foundAt.push(`scan:${fcCode}`); }
+  }
+  return { city, state, postalCode, fcCode, foundAt };
+}
+
+const REJECT_SHIPPING_MODES = ['LTL', 'FTL', 'FREIGHT', 'PALLET'];
+const REJECT_CARRIER_FRAGMENTS = ['total express', 'tex courier', 'itapemirim', 'correios'];
+
+function pickBestTransportOption(options: any[]): any | null {
+  const valid = options.filter((o) => {
+    const mode = (o.shippingMode || '').toUpperCase();
+    const carrier = (o.carrier?.name || '').toLowerCase();
+    if (REJECT_SHIPPING_MODES.some((r) => mode.includes(r))) return false;
+    if (REJECT_CARRIER_FRAGMENTS.some((r) => carrier.includes(r))) return false;
+    return true;
+  });
+  const upsPartnered = valid.find((o) =>
+    o.shippingMode === 'GROUND_SMALL_PARCEL' &&
+    o.shippingSolution === 'AMAZON_PARTNERED_CARRIER' &&
+    (o.carrier?.name || '').toUpperCase().includes('UPS')
+  );
+  if (upsPartnered) return upsPartnered;
+  const spdPartnered = valid.find((o) =>
+    o.shippingMode === 'GROUND_SMALL_PARCEL' && o.shippingSolution === 'AMAZON_PARTNERED_CARRIER'
+  );
+  if (spdPartnered) return spdPartnered;
+  const spd = valid.find((o) => o.shippingMode === 'GROUND_SMALL_PARCEL');
+  if (spd) return spd;
+  return valid[0] ?? null;
+}
+
+interface ShipmentSummary {
+  shipmentId: string;
+  best: any;
+  allOptions: any[];
+  fcCode: string | null;
+  city: string | null;
+  state: string | null;
+  lat: number | null;
+  lng: number | null;
+  costCents: number;
+  destDebug: { foundAt: string[] };
+}
+
+interface TransportSummary {
+  perShipment: ShipmentSummary[];
+  totalShippingCents: number;
+  selections: Array<{ shipmentId: string; transportationOptionId: string }>;
+  hasPartnerUps: boolean;
+}
+
+function buildTransportSummary(rawOptions: any[], shipmentDetails?: any[]): TransportSummary {
+  const shipmentIds = [...new Set(rawOptions.map((o) => o.shipmentId).filter(Boolean))] as string[];
+  const perShipment: ShipmentSummary[] = [];
+  for (const sid of shipmentIds) {
+    const opts = rawOptions.filter((o) => o.shipmentId === sid);
+    const best = pickBestTransportOption(opts);
+    if (best) {
+      // Use getShipment destinationWarehouseAddress as primary source (post-confirmation only)
+      const shipmentData = shipmentDetails?.find((s: any) => s.shipmentId === sid);
+      const warehouseAddr = shipmentData?.destinationWarehouseAddress ?? null;
+
+      // Fall back to extractDestination on the transport option object
+      const dest = extractDestination(best);
+      const fcCode = dest.fcCode ?? null;
+
+      // Prefer warehouse address fields; fall back to transport option parse; fall back to FC_LOCATIONS
+      const lookup = fcCode ? FC_LOCATIONS[fcCode] : null;
+      const city = warehouseAddr?.city ?? dest.city ?? lookup?.city ?? null;
+      const state = warehouseAddr?.stateOrProvinceCode ?? dest.state ?? lookup?.state ?? null;
+
+      // Lat/lng: try FC_LOCATIONS by FC code, or reverse-lookup by city+state
+      let lat: number | null = lookup?.lat ?? null;
+      let lng: number | null = lookup?.lng ?? null;
+      if ((lat === null || lng === null) && city && state) {
+        const revEntry = Object.entries(FC_LOCATIONS).find(([, v]) =>
+          v.city.toLowerCase() === city.toLowerCase() && v.state.toLowerCase() === state.toLowerCase()
+        );
+        if (revEntry) { lat = revEntry[1].lat; lng = revEntry[1].lng; }
+      }
+
+      const foundAt = [
+        ...(warehouseAddr ? ['destinationWarehouseAddress'] : []),
+        ...dest.foundAt,
+      ];
+
+      perShipment.push({
+        shipmentId: sid, best, allOptions: opts,
+        fcCode, city, state, lat, lng,
+        costCents: Math.round((best.quote?.cost?.amount || 0) * 100),
+        destDebug: { foundAt },
+      });
+    }
+  }
+  const totalShippingCents = perShipment.reduce((s, p) => s + p.costCents, 0);
+  const selections = perShipment.map((p) => ({
+    shipmentId: p.shipmentId,
+    transportationOptionId: p.best.transportationOptionId,
+  }));
+  const hasPartnerUps = perShipment.length > 0 && perShipment.every(
+    (p) => p.best.shippingMode === 'GROUND_SMALL_PARCEL' &&
+            p.best.shippingSolution === 'AMAZON_PARTNERED_CARRIER' &&
+            (p.best.carrier?.name || '').toUpperCase().includes('UPS')
+  );
+  return { perShipment, totalShippingCents, selections, hasPartnerUps };
 }
 
 // ─── BoxingWorkflow ─────────────────────────────────────────────────────────
@@ -1750,6 +2641,10 @@ interface BoxingWorkflowProps {
   boxes: Box[];
   packGroups: PackGroup[];
   placementOptions: PlacementOption[];
+  placementMapData: PlacementMapData | null;
+  placementDebug: any;
+  hoveredOptionId: string | null;
+  onHoverOption: (id: string | null) => void;
   savingBoxes: boolean;
   packing: boolean;
   loadingPlacement: boolean;
@@ -1763,6 +2658,9 @@ interface BoxingWorkflowProps {
   onGeneratePlacement: () => void;
   onLoadPlacement: () => void;
   onConfirmPlacement: (optionId: string) => void;
+  onConfirmPlacementAndLoadTransport: (placementOptionId: string, shipmentIds: string[], readyToShipStart: string) => Promise<{ success: boolean; options?: any[]; shipments?: any[]; error?: string }>;
+  onConfirmTransportation: (selections: Array<{ shipmentId: string; transportationOptionId: string }>, selectedOptions: any[]) => Promise<void>;
+  confirmingBothId: string | null;
 }
 
 function BoxingWorkflow({
@@ -1771,6 +2669,10 @@ function BoxingWorkflow({
   boxes,
   packGroups,
   placementOptions,
+  placementMapData,
+  placementDebug,
+  hoveredOptionId,
+  onHoverOption,
   savingBoxes,
   packing,
   loadingPlacement,
@@ -1784,10 +2686,13 @@ function BoxingWorkflow({
   onGeneratePlacement,
   onLoadPlacement,
   onConfirmPlacement,
+  onConfirmPlacementAndLoadTransport,
+  onConfirmTransportation,
+  confirmingBothId,
 }: BoxingWorkflowProps) {
   // Auto-load placement options when we first transition into placement state
   useEffect(() => {
-    if (batch.status === 'placement' && placementOptions.length === 0) {
+    if ((batch.status === 'placement' || batch.status === 'shipping') && placementOptions.length === 0) {
       onLoadPlacement();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1801,12 +2706,207 @@ function BoxingWorkflow({
     destination: { city?: string; stateOrProvinceCode?: string; postalCode?: string } | null;
     destinationFC: string | null;
     boxCount: number | null;
+    // Extended fields from confirmed_shipments (persisted after transportation confirm)
+    confirmationId?: string | null;
+    carrier?: string | null;
+    carrierCode?: string | null;
+    shippingMode?: string | null;
+    shippingSolution?: string | null;
+    cost?: number | null;
+    costCurrency?: string | null;
   }>>([]);
   const [printingLabel, setPrintingLabel] = useState<string | null>(null); // key: `${type}-${shipmentId}`
+  const [boxLabelFormat, setBoxLabelFormat] = useState<string>('PackageLabel_Thermal_NonPCP');
+  const [fnskuLabelFormat, setFnskuLabelFormat] = useState<'thermal' | 'letter-30up'>('letter-30up');
+  const [printingFnskuShipment, setPrintingFnskuShipment] = useState(false);
+  const [transportationStatus, setTransportationStatus] = useState<string | null>(batch.transportationStatus || null);
+  const [completingTransport, setCompletingTransport] = useState(false);
+  const [transportationError, setTransportationError] = useState<string | null>(batch.transportationError || null);
+
+  // Placement inspector — per-option transport data so "load all" can populate all at once
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null);
+  const [transportDataByOption, setTransportDataByOption] = useState<Record<string, {
+    loading: boolean;
+    options: any[] | null;
+    shipments: any[] | null;  // from getShipment — has destinationWarehouseAddress
+    error: string | null;
+  }>>({});
+  // Merge base shipmentMeta from placement API with transport-derived lat/lng from FC_LOCATIONS.
+  // Keyed by shipmentId — used by PlacementMap to draw route lines once transport loads.
+  const derivedShipmentMeta = useMemo((): Record<string, MapShipmentMeta> => {
+    const base: Record<string, MapShipmentMeta> = { ...(placementMapData?.shipmentMeta ?? {}) };
+    for (const td of Object.values(transportDataByOption)) {
+      if (!td.options) continue;
+      const summary = buildTransportSummary(td.options, td.shipments ?? undefined);
+      for (const ps of summary.perShipment) {
+        const existing = base[ps.shipmentId];
+        base[ps.shipmentId] = {
+          shipmentId: ps.shipmentId,
+          fcCode: ps.fcCode ?? existing?.fcCode ?? null,
+          city: ps.city ?? existing?.city ?? null,
+          state: ps.state ?? existing?.state ?? null,
+          lat: ps.lat ?? existing?.lat ?? null,
+          lng: ps.lng ?? existing?.lng ?? null,
+          distanceMiles: existing?.distanceMiles ?? null,
+        };
+      }
+    }
+    return base;
+  }, [placementMapData?.shipmentMeta, transportDataByOption]);
+
+  // Ship date for transportation options — shared across all options, defaults to tomorrow
+  const [shipDate, setShipDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return d.toISOString().slice(0, 10);
+  });
+
+  async function handleCompleteTransportation() {
+    setCompletingTransport(true);
+    setTransportationError(null);
+    try {
+      // Pass shipment IDs from the confirmed placement option so listShipments isn't needed
+      const confirmedOpt = placementOptions.find((o) => o.placementOptionId === batch.placementOptionId);
+      const shipmentIds = confirmedOpt?.shipmentIds ?? [];
+      const readyToShipStart = shipDate
+        ? new Date(`${shipDate}T09:00:00`).toISOString()
+        : undefined;
+      const res = await fetch(`/api/list/batches/${batch.id}/transportation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate-and-confirm', shipmentIds, readyToShipStart }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTransportationStatus('SUCCESS');
+      } else {
+        setTransportationError(data.error || 'Transportation step failed — check pm2 logs');
+      }
+    } catch (err) {
+      setTransportationError(String(err));
+    }
+    setCompletingTransport(false);
+  }
+
+  function handleSelectOption(optionId: string) {
+    setSelectedOptionId((prev) => (prev === optionId ? null : optionId));
+  }
+
+  // Called when placement is not yet confirmed — confirms placement first, then generates transport.
+  async function handleConfirmAndLoadTransport(optionId: string) {
+    if (!shipDate) return;
+    const opt = placementOptions.find((o) => o.placementOptionId === optionId);
+    const shipmentIds = opt?.shipmentIds ?? [];
+    const readyToShipStart = new Date(`${shipDate}T09:00:00`).toISOString();
+
+    setTransportDataByOption((prev) => ({
+      ...prev,
+      [optionId]: { loading: true, options: null, shipments: null, error: null },
+    }));
+    const result = await onConfirmPlacementAndLoadTransport(optionId, shipmentIds, readyToShipStart);
+    setTransportDataByOption((prev) => ({
+      ...prev,
+      [optionId]: {
+        loading: false,
+        options: result.options ?? null,
+        shipments: result.shipments ?? null,
+        error: result.success ? null : (result.error ?? 'Failed — check pm2 logs'),
+      },
+    }));
+  }
+
+  // Called when placement is already confirmed (page reload, or after confirmation) — just generate+list transport.
+  async function handleLoadTransportForConfirmed(optionId: string) {
+    if (!shipDate) return;
+    const opt = placementOptions.find((o) => o.placementOptionId === optionId);
+    const shipmentIds = opt?.shipmentIds ?? [];
+    const readyToShipStart = new Date(`${shipDate}T09:00:00`).toISOString();
+
+    setTransportDataByOption((prev) => ({
+      ...prev,
+      [optionId]: { loading: true, options: null, shipments: null, error: null },
+    }));
+    try {
+      const res = await fetch(`/api/list/batches/${batch.id}/transportation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'generate', shipmentIds, readyToShipStart }),
+      });
+      const data = await res.json();
+      setTransportDataByOption((prev) => ({
+        ...prev,
+        [optionId]: {
+          loading: false,
+          options: data.options ?? null,
+          shipments: data.shipments ?? null,
+          error: data.error ?? (data.options ? null : 'No options returned'),
+        },
+      }));
+    } catch (err) {
+      setTransportDataByOption((prev) => ({
+        ...prev,
+        [optionId]: { loading: false, options: null, shipments: null, error: String(err) },
+      }));
+    }
+  }
+
+  async function handlePrintFnskuShipmentLabels(action: 'print' | 'download') {
+    const qs = new URLSearchParams({ action, mode: 'per-unit', format: fnskuLabelFormat });
+    if (action === 'download') {
+      window.open(`/api/list/batches/${batch.id}/fnsku-labels?${qs}`, '_blank');
+      return;
+    }
+    setPrintingFnskuShipment(true);
+    try {
+      const res = await fetch(`/api/list/batches/${batch.id}/fnsku-labels?${qs}`);
+      const data = await res.json();
+      if (data.success) {
+        const missing = data.missingFnsku?.length
+          ? `\n\n⚠ Missing FNSKU for: ${data.missingFnsku.join(', ')}`
+          : '';
+        alert(`✓ Printed ${data.labelCount} FNSKU labels to ${data.printer}${data.jobId ? ' — job ' + data.jobId : ''}.${missing}`);
+      } else {
+        alert(`Print failed: ${data.error}${data.hint ? '\n\n' + data.hint : ''}`);
+      }
+    } catch (err) {
+      alert(`Print error: ${err}`);
+    }
+    setPrintingFnskuShipment(false);
+  }
+
+  // Prefer confirmed_shipments from DB (populated after transportation confirm) over
+  // the /shipments API call, which 403s on some SP-API accounts.
+  const confirmedShipmentData = useMemo((): ConfirmedShipment[] => {
+    if (!batch.confirmedShipments) return [];
+    try { return JSON.parse(batch.confirmedShipments); } catch { return []; }
+  }, [batch.confirmedShipments]);
 
   useEffect(() => {
     if (batch.status !== 'shipping' && batch.status !== 'shipped') return;
     if (shipments.length > 0) return;
+    // If we already have persisted confirmed shipment data, use it and skip the API call
+    if (confirmedShipmentData.length > 0) {
+      setShipments(confirmedShipmentData.map((cs) => ({
+        shipmentId: cs.shipmentId,
+        name: cs.confirmationId || cs.shipmentId,
+        status: 'WORKING',
+        destination: cs.destinationAddress ? {
+          city: cs.destinationCity ?? undefined,
+          stateOrProvinceCode: cs.destinationState ?? undefined,
+        } : null,
+        destinationFC: cs.destinationFC,
+        boxCount: null,
+        // Extended fields from confirmed data
+        confirmationId: cs.confirmationId,
+        carrier: cs.carrier,
+        carrierCode: cs.carrierCode,
+        shippingMode: cs.shippingMode,
+        shippingSolution: cs.shippingSolution,
+        cost: cs.cost,
+        costCurrency: cs.costCurrency,
+      })));
+      return;
+    }
     let cancelled = false;
     (async () => {
       try {
@@ -1818,15 +2918,15 @@ function BoxingWorkflow({
       }
     })();
     return () => { cancelled = true; };
-  }, [batch.status, batch.id, shipments.length]);
+  }, [batch.status, batch.id, shipments.length, confirmedShipmentData]);
 
   async function handlePrintLabels(shipmentId: string, type: 'fnsku' | 'box') {
     const key = `${type}-${shipmentId}`;
     setPrintingLabel(key);
     try {
-      const res = await fetch(
-        `/api/list/batches/${batch.id}/labels?type=${type}&shipmentId=${encodeURIComponent(shipmentId)}&action=print`
-      );
+      const qs = new URLSearchParams({ type, shipmentId, action: 'print' });
+      if (type === 'box') qs.set('pageType', boxLabelFormat);
+      const res = await fetch(`/api/list/batches/${batch.id}/labels?${qs}`);
       const data = await res.json();
       if (data.success) {
         alert(`✓ Printed ${type === 'fnsku' ? 'FNSKU' : 'Box ID'} labels for ${shipmentId}\nPrinter: ${data.printer}${data.jobId ? ' (job ' + data.jobId + ')' : ''}`);
@@ -1841,9 +2941,9 @@ function BoxingWorkflow({
   }
 
   function handleDownloadLabels(shipmentId: string, type: 'fnsku' | 'box') {
-    // Use a simple link click — the browser handles the PDF download via Content-Disposition
-    const url = `/api/list/batches/${batch.id}/labels?type=${type}&shipmentId=${encodeURIComponent(shipmentId)}&action=download`;
-    window.open(url, '_blank');
+    const qs = new URLSearchParams({ type, shipmentId, action: 'download' });
+    if (type === 'box') qs.set('pageType', boxLabelFormat);
+    window.open(`/api/list/batches/${batch.id}/labels?${qs}`, '_blank');
   }
 
   // Build an itemId → batch item map for quick lookups
@@ -2147,54 +3247,381 @@ function BoxingWorkflow({
           )}
 
           {placementOptions.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-              {placementOptions.map((opt, idx) => {
-                const feeCents = opt.fees.reduce(
-                  (sum, f) => sum + Math.round((f.value?.amount || 0) * 100),
-                  0
-                );
-                const isConfirmed = batch.placementOptionId === opt.placementOptionId;
-                const isConfirming = confirmingPlacementId === opt.placementOptionId;
-                const shipmentCount = opt.shipmentIds.length;
-                // Amazon returns options in order of decreasing destination count
-                // (Optimized has the most, Minimal has 1). Label based on that.
-                const label = idx === 0 ? 'Optimized' : idx === placementOptions.length - 1 ? 'Minimal' : 'Partial';
-                return (
-                  <div
-                    key={opt.placementOptionId}
-                    className={`border rounded-lg p-3 ${
-                      isConfirmed
-                        ? 'border-positive/50 bg-positive/5'
-                        : 'border-border-subtle bg-bg-elevated hover:border-accent/30 transition-colors'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-xs font-medium text-text-primary">{label}</span>
-                      {isConfirmed && (
-                        <span className="text-[10px] text-positive bg-positive/10 px-1.5 py-0.5 rounded">CONFIRMED</span>
+            <div className="space-y-4">
+              {/* Map — hero element */}
+              {placementMapData && (
+                <PlacementMap
+                  options={placementOptions}
+                  shipmentMeta={derivedShipmentMeta}
+                  shipFromLat={placementMapData.shipFromLat}
+                  shipFromLng={placementMapData.shipFromLng}
+                  hoveredOptionId={selectedOptionId ?? hoveredOptionId}
+                  confirmedOptionId={batch.placementOptionId ?? undefined}
+                  height={400}
+                />
+              )}
+
+              {/* Ship date — shared, set before confirming */}
+              <div className="flex items-center gap-3">
+                <div>
+                  <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Ship Date</label>
+                  <input
+                    type="date"
+                    value={shipDate}
+                    min={new Date().toISOString().slice(0, 10)}
+                    onChange={(e) => { setShipDate(e.target.value); setTransportDataByOption({}); }}
+                    className="h-8 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent"
+                  />
+                </div>
+                <p className="text-[11px] text-text-muted mt-3">
+                  Shipping estimates and FC destinations are loaded after confirming a placement option.
+                </p>
+              </div>
+
+              {/* Placement option list */}
+              <div className="space-y-2">
+                {placementOptions.map((opt, idx) => {
+                  const isSelected = selectedOptionId === opt.placementOptionId;
+                  const isConfirmed = batch.placementOptionId === opt.placementOptionId;
+                  const anotherConfirmed = !!(batch.placementOptionId && !isConfirmed);
+                  const tData = transportDataByOption[opt.placementOptionId];
+                  const tLoading = tData?.loading ?? false;
+                  const tOptions = tData?.options ?? null;
+                  const tShipments = tData?.shipments ?? null;
+                  const tError = tData?.error ?? null;
+                  const placementFee = opt.placementFeeCents ??
+                    opt.fees.reduce((s, f) => s + Math.round((f.value?.amount || 0) * 100), 0);
+                  const tSummary = tOptions ? buildTransportSummary(tOptions, tShipments ?? undefined) : null;
+                  const totalShippingCents = tSummary?.totalShippingCents ?? 0;
+                  const transportSelections = tSummary?.selections ?? [];
+
+                  return (
+                    <div
+                      key={opt.placementOptionId}
+                      className={`border rounded-lg overflow-hidden transition-opacity ${
+                        isConfirmed
+                          ? 'border-positive/30 bg-positive/5'
+                          : anotherConfirmed
+                            ? 'border-border-subtle/30 bg-bg-elevated opacity-50'
+                            : 'border-border-subtle bg-bg-elevated'
+                      }`}
+                    >
+                      {/* Row */}
+                      <div
+                        className={`flex items-center gap-3 px-4 py-3 transition-colors select-none ${anotherConfirmed ? '' : 'cursor-pointer hover:bg-bg-surface/50'} ${isSelected ? 'bg-bg-surface/30' : ''}`}
+                        onClick={() => { if (!anotherConfirmed) handleSelectOption(opt.placementOptionId); }}
+                      >
+                        <span className="text-sm font-semibold text-text-primary shrink-0">Option {idx + 1}</span>
+
+                        {isConfirmed && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-positive/10 text-positive border border-positive/30 shrink-0">✓ CONFIRMED</span>
+                        )}
+                        {anotherConfirmed && (
+                          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-text-muted/10 text-text-muted border border-text-muted/20 shrink-0">EXPIRED</span>
+                        )}
+
+                        <span className="text-xs text-text-secondary shrink-0">
+                          Inbound <span className="font-semibold text-text-primary">{formatCurrency(placementFee)}</span>
+                        </span>
+
+                        {/* Show shipping + total only after transport is loaded for confirmed option */}
+                        {isConfirmed && tLoading && (
+                          <span className="text-xs text-text-muted flex items-center gap-1 shrink-0">
+                            <Loader2 size={10} className="animate-spin" /> loading shipping…
+                          </span>
+                        )}
+                        {isConfirmed && tSummary && totalShippingCents > 0 && (
+                          <span className="text-xs text-text-secondary shrink-0">
+                            + Ship <span className="font-semibold text-text-primary">{formatCurrency(totalShippingCents)}</span>
+                            {' = '}
+                            <span className="font-bold text-text-primary">{formatCurrency(placementFee + totalShippingCents)}</span>
+                          </span>
+                        )}
+
+                        <span className="text-xs text-text-muted shrink-0">
+                          {opt.shipmentIds.length} Shipment{opt.shipmentIds.length !== 1 ? 's' : ''}
+                        </span>
+
+                        {/* Shipment chips — FC code only after confirmed + transport loaded */}
+                        <div className="flex flex-wrap gap-1.5 flex-1 min-w-0">
+                          {opt.shipmentIds.map((sid, si) => {
+                            const fcCode = isConfirmed && tSummary
+                              ? (tSummary.perShipment.find((p) => p.shipmentId === sid)?.fcCode ?? null)
+                              : null;
+                            return (
+                              <span key={sid} className="text-[11px] px-2 py-0.5 bg-bg-surface rounded border border-border-subtle font-mono flex items-center gap-1 shrink-0">
+                                Shipment {si + 1}
+                                {isConfirmed && tLoading ? (
+                                  <Loader2 size={10} className="animate-spin text-text-muted ml-0.5" />
+                                ) : fcCode ? (
+                                  <span className="font-bold text-text-primary">· {fcCode}</span>
+                                ) : !isConfirmed ? (
+                                  <span className="text-text-muted/50">· —</span>
+                                ) : null}
+                              </span>
+                            );
+                          })}
+                        </div>
+
+                        {!anotherConfirmed && (
+                          <ChevronDown size={14} className={`text-text-muted shrink-0 transition-transform duration-200 ${isSelected ? 'rotate-180' : ''}`} />
+                        )}
+                      </div>
+
+                      {/* Inspector — only for selected, non-expired options */}
+                      {isSelected && !anotherConfirmed && (
+                        <div className="border-t border-border-subtle bg-bg-surface/20 p-4 space-y-3">
+
+                          {/* Case: loading */}
+                          {tLoading && (
+                            <div className="flex items-center gap-2 text-[11px] text-text-muted">
+                              <Loader2 size={12} className="animate-spin" />
+                              {isConfirmed ? 'Generating shipping options…' : 'Confirming placement and loading shipping options…'}
+                            </div>
+                          )}
+
+                          {/* Case: error */}
+                          {!tLoading && tError && (
+                            <div className="space-y-2">
+                              <div className="text-[11px] text-negative">{tError}</div>
+                              {isConfirmed && (
+                                <button
+                                  onClick={() => handleLoadTransportForConfirmed(opt.placementOptionId)}
+                                  disabled={!shipDate}
+                                  className="h-7 px-3 bg-bg-surface border border-border-subtle rounded text-xs text-text-secondary hover:text-text-primary disabled:opacity-50 transition-colors"
+                                >
+                                  Retry
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Case: placement not yet confirmed — primary action */}
+                          {!tLoading && !tError && !tData && !isConfirmed && (
+                            <div className="space-y-2">
+                              <p className="text-[11px] text-text-tertiary">
+                                FC destination and shipping cost are assigned by Amazon after placement confirmation.
+                              </p>
+                              <button
+                                onClick={() => handleConfirmAndLoadTransport(opt.placementOptionId)}
+                                disabled={!!confirmingBothId || !shipDate}
+                                className="h-8 px-4 bg-accent text-white rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                              >
+                                {confirmingBothId === opt.placementOptionId && <Loader2 size={10} className="animate-spin" />}
+                                {confirmingBothId === opt.placementOptionId
+                                  ? 'Confirming…'
+                                  : 'Confirm placement and load shipping options'}
+                              </button>
+                              <p className="text-[10px] text-text-muted">
+                                Commits the {formatCurrency(placementFee)} inbound fee and creates real shipments on Amazon.
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Case: placement confirmed, transport not yet loaded (page reload) */}
+                          {!tLoading && !tError && !tData && isConfirmed && (
+                            <div className="space-y-2">
+                              <p className="text-[11px] text-text-tertiary">
+                                Placement confirmed. Load shipping options to see carrier and cost.
+                              </p>
+                              <button
+                                onClick={() => handleLoadTransportForConfirmed(opt.placementOptionId)}
+                                disabled={!shipDate}
+                                className="h-8 px-3 bg-bg-surface border border-border-subtle rounded text-xs text-text-secondary hover:text-text-primary disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                              >
+                                Load shipping options
+                              </button>
+                            </div>
+                          )}
+
+                          {/* Case: transport loaded successfully */}
+                          {!tLoading && tSummary && tSummary.perShipment.length > 0 && (
+                            <>
+                              {!tSummary.hasPartnerUps && (
+                                <div className="text-[11px] text-amber-400 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1">
+                                  No Amazon partnered UPS SPD option available — showing best alternative.
+                                </div>
+                              )}
+
+                              {/* Selected option summary per shipment */}
+                              <div className="space-y-1">
+                                {tSummary.perShipment.map((ps) => {
+                                  const prec: string[] = Array.isArray(ps.best.preconditions) ? ps.best.preconditions : [];
+                                  const needsWindow = prec.some((p) => p.toUpperCase().includes('DELIVERY_WINDOW'))
+                                    || ps.best.shippingSolution === 'USE_YOUR_OWN_CARRIER';
+                                  return (
+                                    <div key={ps.shipmentId} className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] font-mono bg-bg-surface/30 rounded px-2 py-1">
+                                      <span className="text-text-muted">{ps.shipmentId.slice(-8)}</span>
+                                      <span className={ps.best.shippingSolution === 'AMAZON_PARTNERED_CARRIER' ? 'text-positive' : 'text-amber-400'}>
+                                        {ps.best.shippingSolution || '?'}
+                                      </span>
+                                      <span className="text-text-tertiary">{ps.best.shippingMode || '?'}</span>
+                                      <span>{ps.best.carrier?.name || '?'}</span>
+                                      {ps.costCents > 0 && <span className="text-positive">{formatCurrency(ps.costCents)}</span>}
+                                      {needsWindow && <span className="text-amber-400">⚠ DELIVERY_WINDOW</span>}
+                                      {prec.length > 0 && !needsWindow && <span className="text-text-muted">[{prec.join(', ')}]</span>}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              <div className="space-y-2">
+                                {tSummary.perShipment.map((ps, si) => {
+                                  const warehouseAddr = tShipments?.find((s: any) => s.shipmentId === ps.shipmentId)?.destinationWarehouseAddress;
+                                  const displayCity = warehouseAddr?.city ?? ps.city;
+                                  const displayState = warehouseAddr?.stateOrProvinceCode ?? ps.state;
+                                  const displayPostal = warehouseAddr?.postalCode;
+                                  return (
+                                    <div key={ps.shipmentId} className="flex items-center justify-between text-[11px]">
+                                      <div className="flex items-center gap-1.5 text-text-secondary">
+                                        <span>Shipment {si + 1}</span>
+                                        {(ps.fcCode || displayCity) && <span className="text-text-muted">→</span>}
+                                        {ps.fcCode && <span className="font-mono font-bold text-text-primary">{ps.fcCode}</span>}
+                                        {displayCity && (
+                                          <span className="text-text-tertiary">
+                                            {displayCity}{displayState ? `, ${displayState}` : ''}{displayPostal ? ` ${displayPostal}` : ''}
+                                          </span>
+                                        )}
+                                        {ps.best.carrier?.name && <span className="text-text-muted">· {ps.best.carrier.name}</span>}
+                                        {ps.best.shippingMode && (
+                                          <span className="text-[10px] text-text-muted/60">({ps.best.shippingMode.replace(/_/g, ' ')})</span>
+                                        )}
+                                      </div>
+                                      <span className="font-mono text-text-secondary">
+                                        {ps.costCents > 0 ? formatCurrency(ps.costCents) : '—'}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+
+                              <div className="border-t border-border-subtle pt-2 space-y-1">
+                                <div className="flex justify-between text-[11px] text-text-secondary">
+                                  <span>Shipping</span>
+                                  <span className="font-mono">{formatCurrency(totalShippingCents)}</span>
+                                </div>
+                                <div className="flex justify-between text-[11px] text-text-secondary">
+                                  <span>Inbound placement</span>
+                                  <span className="font-mono">{formatCurrency(placementFee)}</span>
+                                </div>
+                                <div className="flex justify-between text-[11px] font-semibold text-text-primary">
+                                  <span>Total estimated</span>
+                                  <span className="font-mono">{formatCurrency(placementFee + totalShippingCents)}</span>
+                                </div>
+                              </div>
+
+                              {isPlacementPhase && batch.transportationStatus !== 'SUCCESS' && (() => {
+                                // Full option objects for the server's delivery-window detector
+                                const selectedOptionObjs = tSummary.perShipment.map((ps) => ps.best);
+                                const anyNeedsWindow = tSummary.perShipment.some((ps) => {
+                                  const prec: string[] = Array.isArray(ps.best.preconditions) ? ps.best.preconditions : [];
+                                  return prec.some((p) => p.toUpperCase().includes('DELIVERY_WINDOW'))
+                                    || ps.best.shippingSolution === 'USE_YOUR_OWN_CARRIER';
+                                });
+                                return (
+                                  <div className="space-y-2">
+                                    {anyNeedsWindow && (
+                                      <div className="text-[11px] text-amber-400 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1">
+                                        Delivery window confirmation required — will run automatically before transportation confirmation.
+                                      </div>
+                                    )}
+                                    <button
+                                      onClick={() => onConfirmTransportation(transportSelections, selectedOptionObjs)}
+                                      disabled={!!confirmingBothId || transportSelections.length === 0}
+                                      className="w-full h-8 px-3 bg-accent text-white rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
+                                    >
+                                      {confirmingBothId === 'transport-only' && <Loader2 size={10} className="animate-spin" />}
+                                      {confirmingBothId === 'transport-only'
+                                        ? (anyNeedsWindow ? 'Confirming delivery windows + transportation…' : 'Confirming transportation…')
+                                        : 'Confirm transportation'}
+                                    </button>
+                                  </div>
+                                );
+                              })()}
+
+                              {batch.transportationStatus === 'SUCCESS' && (
+                                <div className="flex items-center gap-2 text-[11px] text-positive">
+                                  <CheckCircle size={12} /> Transportation confirmed
+                                </div>
+                              )}
+
+                              <details className="text-[10px] text-text-muted border-t border-border-subtle pt-2">
+                                <summary className="cursor-pointer select-none hover:text-text-tertiary mb-1">
+                                  Dev: All transportation options ({tOptions?.length ?? 0})
+                                </summary>
+                                <div className="space-y-1 max-h-48 overflow-y-auto mt-1">
+                                  {tOptions?.map((o, i) => {
+                                    const d = extractDestination(o);
+                                    return (
+                                      <div key={i} className="flex flex-wrap gap-x-3 gap-y-0.5 font-mono bg-bg-surface/50 rounded px-2 py-1 text-[9px]">
+                                        <span className="text-text-muted/60">{(o.transportationOptionId || '?').slice(-8)}</span>
+                                        <span className="text-text-muted/60">{o.shipmentId?.slice(-8) || '?'}</span>
+                                        <span className="text-text-tertiary">{o.shippingMode || '?'}</span>
+                                        <span className="text-text-tertiary">{o.shippingSolution || '?'}</span>
+                                        <span>{o.carrier?.name || '?'}</span>
+                                        {o.quote?.cost?.amount != null && <span className="text-positive">${o.quote.cost.amount}</span>}
+                                        {d.fcCode && <span className="text-accent">{d.fcCode}</span>}
+                                        {d.city && <span className="text-blue-400">{d.city}{d.state ? `, ${d.state}` : ''}</span>}
+                                        {d.foundAt.length > 0 && <span className="text-text-muted/40">[{d.foundAt.join(' ')}]</span>}
+                                        {Array.isArray(o.preconditions) && o.preconditions.length > 0 && (
+                                          <span className="text-amber-400">⚠ {(o.preconditions as string[]).join(', ')}</span>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </details>
+
+                              {/* Dev: raw getShipment destination data */}
+                              {tShipments && tShipments.length > 0 && (
+                                <details className="text-[10px] text-text-muted border-t border-border-subtle pt-2">
+                                  <summary className="cursor-pointer select-none hover:text-text-tertiary mb-1">
+                                    Dev: getShipment destination data ({tShipments.length})
+                                  </summary>
+                                  <div className="space-y-1 mt-1 font-mono text-[9px]">
+                                    {tShipments.map((s: any, i: number) => {
+                                      const addr = s.destinationWarehouseAddress;
+                                      return (
+                                        <div key={i} className="bg-bg-surface/50 rounded px-2 py-1 flex flex-wrap gap-x-3 gap-y-0.5">
+                                          <span className="text-text-muted/60">{s.shipmentId?.slice(-8)}</span>
+                                          {addr ? (
+                                            <>
+                                              <span className="text-blue-400">{addr.addressLine1 || ''}</span>
+                                              <span className="text-blue-400">{addr.city}, {addr.stateOrProvinceCode} {addr.postalCode}</span>
+                                            </>
+                                          ) : (
+                                            <span className="text-amber-400">no destinationWarehouseAddress</span>
+                                          )}
+                                          {s.shipmentConfirmationId && <span className="text-positive">conf:{s.shipmentConfirmationId.slice(-8)}</span>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </details>
+                              )}
+                            </>
+                          )}
+
+                          {/* No valid options after filtering */}
+                          {!tLoading && tSummary && tSummary.perShipment.length === 0 && (
+                            <div className="space-y-2">
+                              <div className="text-[11px] text-text-muted italic">No valid SPD options after filtering — all options below:</div>
+                              <div className="space-y-1">
+                                {tOptions?.map((o, i) => (
+                                  <div key={i} className="text-[10px] font-mono bg-bg-surface/50 rounded px-2 py-1 text-text-muted">
+                                    {o.shippingMode} / {o.shippingSolution} / {o.carrier?.name} / {o.quote?.cost?.amount ?? 'no quote'}
+                                    {Array.isArray(o.preconditions) && o.preconditions.length > 0 && ` ⚠ ${(o.preconditions as string[]).join(', ')}`}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                     </div>
-                    <div className="text-2xl font-semibold text-text-primary mb-1">
-                      {formatCurrency(feeCents)}
-                    </div>
-                    <div className="text-[11px] text-text-tertiary mb-3">
-                      {shipmentCount} destination{shipmentCount === 1 ? '' : 's'}
-                      {idx === 0 && shipmentCount > 1 && ' · cheapest overall'}
-                      {idx === placementOptions.length - 1 && ' · simpler, but higher fee'}
-                    </div>
-                    {!isConfirmed && isPlacementPhase && (
-                      <button
-                        onClick={() => onConfirmPlacement(opt.placementOptionId)}
-                        disabled={!!confirmingPlacementId}
-                        className="w-full h-8 px-3 bg-accent text-white rounded text-xs font-medium hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
-                      >
-                        {isConfirming ? <Loader2 size={10} className="animate-spin" /> : null}
-                        {isConfirming ? 'Confirming…' : 'Choose this'}
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           )}
 
@@ -2204,21 +3631,102 @@ function BoxingWorkflow({
             </div>
           )}
 
+          {/* Amazon debug panel — shows raw API response for diagnosing data shape */}
+          {placementDebug && (
+            <details className="text-[11px] border border-border-subtle rounded">
+              <summary className="px-3 py-2 cursor-pointer text-text-muted hover:text-text-tertiary select-none">
+                Amazon debug data
+              </summary>
+              <pre className="p-3 overflow-x-auto text-[10px] text-text-muted bg-bg-base max-h-96 overflow-y-auto leading-relaxed">
+                {JSON.stringify(placementDebug, null, 2)}
+              </pre>
+            </details>
+          )}
+
           {isShippingPhase && (
             <>
               <div className="border border-positive/30 bg-positive/5 rounded p-3">
-                <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center gap-2 mb-1">
                   <CheckCircle size={14} className="text-positive" />
                   <span className="text-xs font-medium text-positive">
-                    Shipments committed
+                    Placement confirmed
                     {shipments.length > 0 && ` — ${shipments.length} shipment${shipments.length === 1 ? '' : 's'}`}
                   </span>
                 </div>
-                <p className="text-[11px] text-text-tertiary">
-                  Print FNSKU labels (one per unit, applied over original UPC) and box ID labels (one per box, taped to outside) for each shipment below.
-                  Carrier booking still happens in Seller Central.
-                </p>
               </div>
+
+              {/* ─── Transportation step ─────────────────────────────────── */}
+              {transportationStatus !== 'SUCCESS' ? (
+                <div className="border border-amber-500/40 bg-amber-500/5 rounded p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <AlertCircle size={14} className="text-amber-400 shrink-0" />
+                    <span className="text-xs font-medium text-amber-400">Transportation step required</span>
+                  </div>
+                  <p className="text-[11px] text-text-tertiary">
+                    Amazon requires <code className="bg-bg-surface px-1 rounded">generateTransportationOptions</code> +{' '}
+                    <code className="bg-bg-surface px-1 rounded">confirmTransportationOptions</code> before Seller Central
+                    will allow shipment completion. This takes ~30 seconds.
+                  </p>
+                  <div className="flex items-end gap-3">
+                    <div>
+                      <label className="text-[10px] text-amber-400/70 uppercase tracking-wider block mb-1">Ship Date</label>
+                      <input
+                        type="date"
+                        value={shipDate}
+                        min={new Date().toISOString().slice(0, 10)}
+                        onChange={(e) => setShipDate(e.target.value)}
+                        className="h-7 px-2 bg-bg-surface border border-amber-500/30 rounded text-xs text-text-primary focus:outline-none focus:border-amber-500"
+                      />
+                    </div>
+                    <button
+                      onClick={handleCompleteTransportation}
+                      disabled={completingTransport || !shipDate}
+                      className="h-7 px-3 bg-amber-500 text-white rounded text-[11px] font-medium hover:bg-amber-600 disabled:opacity-50 transition-colors flex items-center gap-1.5"
+                    >
+                      {completingTransport && <Loader2 size={10} className="animate-spin" />}
+                      {completingTransport ? 'Confirming transportation…' : 'Complete Transportation Step'}
+                    </button>
+                  </div>
+                  {transportationError && (
+                    <div className="text-[11px] text-negative bg-negative/5 border border-negative/30 rounded p-2 font-mono break-all">
+                      {transportationError}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <>
+                  {/* Transportation confirmed summary */}
+                  <div className="border border-positive/20 bg-positive/5 rounded px-3 py-2 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle size={12} className="text-positive" />
+                      <span className="text-[11px] text-positive font-medium">Transportation confirmed — Seller Central is now unlocked</span>
+                    </div>
+                    {confirmedShipmentData.length > 0 && (() => {
+                      const totalCost = confirmedShipmentData.reduce((sum, cs) => sum + (cs.cost ?? 0), 0);
+                      const carrier = confirmedShipmentData.find(cs => cs.carrier)?.carrier;
+                      const solution = confirmedShipmentData.find(cs => cs.shippingSolution)?.shippingSolution;
+                      return (
+                        <div className="text-[11px] text-text-secondary flex flex-wrap gap-x-3 gap-y-0.5">
+                          <span>{confirmedShipmentData.length} destination{confirmedShipmentData.length > 1 ? 's' : ''}</span>
+                          {carrier && <span>· {carrier}{solution === 'AMAZON_PARTNERED_CARRIER' ? ' (partnered)' : ''}</span>}
+                          {totalCost > 0 && <span>· Est. carrier charges: ${totalCost.toFixed(2)}</span>}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  {/* Open in Seller Central */}
+                  {batch.inboundPlanId && (
+                    <a
+                      href={`https://sellercentral.amazon.com/fba/sendtoamazon/confirm_content?wf=SEND&reference_id=${batch.inboundPlanId}`}
+                      target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-[11px] text-accent hover:underline"
+                    >
+                      <ExternalLink size={10} />
+                      Open in Seller Central
+                    </a>
+                  )}
+                </>
+              )}
 
               {/* Per-shipment print cards */}
               {shipments.length === 0 ? (
@@ -2227,18 +3735,23 @@ function BoxingWorkflow({
                 <div className="space-y-2">
                   {shipments.map((s) => {
                     const dest = s.destination;
+                    const fcCode = s.destinationFC;
                     const destLabel = dest?.city
-                      ? `${dest.city}, ${dest.stateOrProvinceCode || ''} ${dest.postalCode || ''}`.trim()
-                      : (s.destinationFC || 'Destination TBD');
+                      ? `${fcCode ? fcCode + ' · ' : ''}${dest.city}, ${dest.stateOrProvinceCode || ''}`
+                      : (fcCode || 'Destination TBD');
                     return (
                       <div key={s.shipmentId} className="border border-border-subtle rounded-lg bg-bg-elevated p-3">
                         <div className="flex items-start justify-between mb-2">
                           <div>
-                            <div className="text-xs font-medium text-text-primary font-mono">{s.shipmentId}</div>
+                            {/* Show confirmationId (FBA19...) prominently, v2024 UUID secondary */}
+                            <div className="text-xs font-medium text-text-primary font-mono">
+                              {s.confirmationId || s.shipmentId}
+                            </div>
                             <div className="text-[11px] text-text-tertiary mt-0.5">
                               <MapPin size={10} className="inline mr-0.5" />
                               {destLabel}
                               {s.boxCount != null && <> · {s.boxCount} box{s.boxCount === 1 ? '' : 'es'}</>}
+                              {s.carrier && <> · {s.carrier}{s.cost != null ? ` $${s.cost.toFixed(2)}` : ''}</>}
                             </div>
                           </div>
                           <span className="text-[10px] text-text-tertiary uppercase tracking-wider px-1.5 py-0.5 bg-bg-surface rounded">
@@ -2248,30 +3761,48 @@ function BoxingWorkflow({
 
                         {/* Print actions */}
                         <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-border-subtle">
-                          {/* FNSKU labels */}
-                          <button
-                            onClick={() => handlePrintLabels(s.shipmentId, 'fnsku')}
-                            disabled={printingLabel === `fnsku-${s.shipmentId}`}
-                            className="h-7 px-2.5 bg-accent text-white rounded text-[11px] font-medium hover:bg-accent/90 disabled:opacity-50 transition-colors flex items-center gap-1"
-                            title="Print FNSKU per-unit labels to Rollo"
+                          {/* FNSKU unit labels */}
+                          <select
+                            value={fnskuLabelFormat}
+                            onChange={(e) => setFnskuLabelFormat(e.target.value as 'thermal' | 'letter-30up')}
+                            className="h-7 px-1.5 bg-bg-surface border border-border-default rounded text-[11px] text-text-secondary"
+                            title="FNSKU label format"
                           >
-                            {printingLabel === `fnsku-${s.shipmentId}` ? <Loader2 size={10} className="animate-spin" /> : null}
+                            <option value="letter-30up">30-up Letter</option>
+                            <option value="thermal">2×1 Thermal</option>
+                          </select>
+                          <button
+                            onClick={() => handlePrintFnskuShipmentLabels('print')}
+                            disabled={printingFnskuShipment}
+                            className="h-7 px-2.5 bg-accent text-white rounded text-[11px] font-medium hover:bg-accent/90 disabled:opacity-50 transition-colors flex items-center gap-1"
+                            title="Print FNSKU per-unit labels (applied over original UPC on each product)"
+                          >
+                            {printingFnskuShipment ? <Loader2 size={10} className="animate-spin" /> : null}
                             Print FNSKU labels
                           </button>
                           <button
-                            onClick={() => handleDownloadLabels(s.shipmentId, 'fnsku')}
+                            onClick={() => handlePrintFnskuShipmentLabels('download')}
                             className="h-7 px-2 bg-bg-surface border border-border-default rounded text-[11px] text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
-                            title="Download FNSKU labels as PDF instead of printing"
+                            title="Download FNSKU unit labels as PDF"
                           >
-                            PDF
+                            Download FNSKU PDF
                           </button>
                           <span className="text-text-tertiary text-[11px]">·</span>
-                          {/* Box labels */}
+                          {/* Box/carton labels */}
+                          <select
+                            value={boxLabelFormat}
+                            onChange={(e) => setBoxLabelFormat(e.target.value)}
+                            className="h-7 px-1.5 bg-bg-surface border border-border-default rounded text-[11px] text-text-secondary"
+                            title="Box label format"
+                          >
+                            <option value="PackageLabel_Thermal_NonPCP">4×6 Thermal</option>
+                            <option value="PackageLabel_Plain_Paper">Plain Paper</option>
+                          </select>
                           <button
                             onClick={() => handlePrintLabels(s.shipmentId, 'box')}
                             disabled={printingLabel === `box-${s.shipmentId}`}
                             className="h-7 px-2.5 bg-bg-surface border border-border-default rounded text-[11px] font-medium text-text-primary hover:bg-bg-hover disabled:opacity-50 transition-colors flex items-center gap-1"
-                            title="Print box ID labels to Rollo"
+                            title="Print box/carton labels to Rollo (2D barcode taped to outside of each box)"
                           >
                             {printingLabel === `box-${s.shipmentId}` ? <Loader2 size={10} className="animate-spin" /> : null}
                             Print box labels
@@ -2279,9 +3810,9 @@ function BoxingWorkflow({
                           <button
                             onClick={() => handleDownloadLabels(s.shipmentId, 'box')}
                             className="h-7 px-2 bg-bg-surface border border-border-default rounded text-[11px] text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"
-                            title="Download box ID labels as PDF instead of printing"
+                            title="Download box/carton labels as PDF"
                           >
-                            PDF
+                            Download box label PDF
                           </button>
                         </div>
                       </div>

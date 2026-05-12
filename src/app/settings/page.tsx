@@ -345,6 +345,9 @@ export default function SettingsPage() {
         )}
       </div>
 
+      {/* Ship-From Address */}
+      <ShipFromSettings />
+
       {/* Walmart Credentials */}
       <WalmartSettings />
 
@@ -368,6 +371,155 @@ export default function SettingsPage() {
           <p>All data is stored locally in a SQLite database on your machine. Nothing is sent to any external server.</p>
           <p className="text-text-tertiary text-xs font-mono mt-3">Database: data/flipledger.db</p>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function ShipFromSettings() {
+  const [fields, setFields] = useState({
+    listing_ship_from_name: '',
+    listing_ship_from_address_line1: '',
+    listing_ship_from_city: '',
+    listing_ship_from_state: '',
+    listing_ship_from_postal_code: '',
+    listing_ship_from_country_code: 'US',
+    listing_ship_from_phone: '',
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/data/settings')
+      .then(r => r.json())
+      .then(data => {
+        if (data.settings) {
+          setFields(prev => ({
+            listing_ship_from_name: data.settings.listing_ship_from_name || prev.listing_ship_from_name,
+            listing_ship_from_address_line1: data.settings.listing_ship_from_address_line1 || prev.listing_ship_from_address_line1,
+            listing_ship_from_city: data.settings.listing_ship_from_city || prev.listing_ship_from_city,
+            listing_ship_from_state: data.settings.listing_ship_from_state || prev.listing_ship_from_state,
+            listing_ship_from_postal_code: data.settings.listing_ship_from_postal_code || prev.listing_ship_from_postal_code,
+            listing_ship_from_country_code: data.settings.listing_ship_from_country_code || 'US',
+            listing_ship_from_phone: data.settings.listing_ship_from_phone || prev.listing_ship_from_phone,
+          }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    await fetch('/api/data/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 3000);
+  }
+
+  const inputClass = 'w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25';
+  const labelClass = 'block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5';
+
+  return (
+    <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+      <h2 className="text-md font-medium text-text-primary mb-1">Ship-From Address</h2>
+      <p className="text-xs text-text-tertiary mb-4">Used when creating FBA inbound shipments. Must match the address registered with your carrier account.</p>
+      <div className="space-y-4">
+        <div>
+          <label className={labelClass}>Name / Company</label>
+          <input
+            type="text"
+            value={fields.listing_ship_from_name}
+            onChange={e => setFields(f => ({ ...f, listing_ship_from_name: e.target.value }))}
+            placeholder="Rockstar Products LLC"
+            className={inputClass}
+          />
+        </div>
+        <div>
+          <label className={labelClass}>Street Address</label>
+          <input
+            type="text"
+            value={fields.listing_ship_from_address_line1}
+            onChange={e => setFields(f => ({ ...f, listing_ship_from_address_line1: e.target.value }))}
+            placeholder="123 Main St"
+            className={inputClass}
+          />
+        </div>
+        <div className="grid grid-cols-3 gap-3">
+          <div className="col-span-1">
+            <label className={labelClass}>City</label>
+            <input
+              type="text"
+              value={fields.listing_ship_from_city}
+              onChange={e => setFields(f => ({ ...f, listing_ship_from_city: e.target.value }))}
+              placeholder="Chicago"
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>State</label>
+            <input
+              type="text"
+              value={fields.listing_ship_from_state}
+              onChange={e => setFields(f => ({ ...f, listing_ship_from_state: e.target.value }))}
+              placeholder="IL"
+              maxLength={2}
+              className={inputClass}
+            />
+          </div>
+          <div>
+            <label className={labelClass}>ZIP Code</label>
+            <input
+              type="text"
+              value={fields.listing_ship_from_postal_code}
+              onChange={e => setFields(f => ({ ...f, listing_ship_from_postal_code: e.target.value }))}
+              placeholder="60601"
+              className={inputClass}
+            />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className={labelClass}>Country</label>
+            <select
+              value={fields.listing_ship_from_country_code}
+              onChange={e => setFields(f => ({ ...f, listing_ship_from_country_code: e.target.value }))}
+              className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+            >
+              <option value="US">United States</option>
+              <option value="CA">Canada</option>
+              <option value="MX">Mexico</option>
+            </select>
+          </div>
+          <div>
+            <label className={labelClass}>Phone</label>
+            <input
+              type="tel"
+              value={fields.listing_ship_from_phone}
+              onChange={e => setFields(f => ({ ...f, listing_ship_from_phone: e.target.value }))}
+              placeholder="555-555-5555"
+              className={inputClass}
+            />
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-3 mt-5">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+        >
+          <Save size={14} />
+          {saving ? 'Saving...' : 'Save Address'}
+        </button>
+        {saved && (
+          <span className="flex items-center gap-1 text-sm text-positive">
+            <CheckCircle size={14} /> Saved
+          </span>
+        )}
       </div>
     </div>
   );

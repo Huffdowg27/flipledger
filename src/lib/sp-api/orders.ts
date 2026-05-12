@@ -6,6 +6,7 @@
 
 import { spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
+import { extractCogsFromSku, isCogsEncodedSku } from '../sku-cogs';
 import Database from 'better-sqlite3';
 import path from 'path';
 
@@ -134,6 +135,11 @@ export async function syncOrders(
           db.prepare('DELETE FROM order_items WHERE order_id = ? AND asin = ?').run(oid, 'PENDING');
         }
 
+        // For auto-ledger creation: fetch order metadata once
+        const orderMeta = db.prepare(
+          'SELECT purchase_date, fulfillment_channel FROM orders WHERE order_id = ? LIMIT 1'
+        ).get(oid) as { purchase_date: string; fulfillment_channel: string } | undefined;
+
         for (const oi of orderItems) {
           const asin = oi.ASIN;
           const oiSku = oi.SellerSKU;
@@ -153,15 +159,41 @@ export async function syncOrders(
             `).run(oid, asin, oiSku, qty, qty > 0 ? Math.round(itemPrice / qty) : itemPrice, itemPrice, shippingPrice);
           }
 
+          // Auto-create inventory_ledger entry for COGS-encoded SKUs that have
+          // no existing lot. Works for MFN and FBA items bought per-order where
+          // the buy cost is embedded in the SKU (LV_/ZTPC_ format).
+          if (oiSku && asin && isCogsEncodedSku(oiSku) && orderMeta) {
+            const cogsCents = extractCogsFromSku(oiSku);
+            if (cogsCents > 0) {
+              const hasLot = db.prepare(
+                'SELECT 1 FROM inventory_ledger WHERE sku = ? LIMIT 1'
+              ).get(oiSku);
+              if (!hasLot) {
+                const datePurchased = orderMeta.purchase_date
+                  ? orderMeta.purchase_date.slice(0, 10)
+                  : now.slice(0, 10);
+                try {
+                  db.prepare(`
+                    INSERT INTO inventory_ledger
+                      (asin, sku, buy_price, quantity, quantity_remaining, date_purchased, notes, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 'sku:auto', ?)
+                  `).run(asin, oiSku, cogsCents, qty, qty, datePurchased, now);
+                } catch { /* ignore; FIFO will recalc on next sync */ }
+              }
+            }
+          }
+
           if (asin) {
-            db.prepare(`
-              INSERT INTO products (asin, sku, name, marketplace, created_at, updated_at)
-              VALUES (?, ?, ?, 'amazon', ?, ?)
-              ON CONFLICT(asin) DO UPDATE SET
-                name = COALESCE(excluded.name, products.name),
-                sku = COALESCE(excluded.sku, products.sku),
-                updated_at = excluded.updated_at
-            `).run(asin, oiSku, oi.Title || null, now, now);
+            try {
+              db.prepare(`
+                INSERT INTO products (asin, sku, name, marketplace, created_at, updated_at)
+                VALUES (?, ?, ?, 'amazon', ?, ?)
+                ON CONFLICT(asin) DO UPDATE SET
+                  name = COALESCE(excluded.name, products.name),
+                  sku = COALESCE(excluded.sku, products.sku),
+                  updated_at = excluded.updated_at
+              `).run(asin, oiSku, oi.Title || null, now, now);
+            } catch { /* products is display-only; don't let it interrupt order_items */ }
           }
         }
 

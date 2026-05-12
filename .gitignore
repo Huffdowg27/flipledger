@@ -63,3 +63,9 @@ next-env.d.ts
 *.bak
 *.bak-*
 backup/
+
+# raw import files and private financial exports (large CSVs, screenshots)
+/imports/
+
+# financial backup CSVs generated during ops (private row-level data)
+/docs/*.csv

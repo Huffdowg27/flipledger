@@ -37,7 +37,10 @@ export async function GET(request: NextRequest) {
   const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
   const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
   const dateBasis = searchParams.get('dateBasis') || 'posted';
+  // 'reconciled' uses posted_date basis but requires real fee rows (financial_event_id != 0),
+  // excluding estimated fees written by estimateAndBackfillFees() for unreconciled orders.
   const FE = dateBasis === 'purchase' ? FE_PURCHASE : FE_POSTED;
+  const REAL_FEES_ONLY = dateBasis === 'reconciled' ? 'AND fd.financial_event_id != 0' : '';
 
   try {
     // ─── Revenue & units ──────────────────────────────────────────────
@@ -68,6 +71,7 @@ export async function GET(request: NextRequest) {
     `).get(prevStart, startDate) as any;
 
     // ─── Order fees ───────────────────────────────────────────────────
+    // In reconciled mode: REAL_FEES_ONLY excludes financial_event_id=0 estimated fee rows.
     const orderFeeData = db.prepare(`
       SELECT COALESCE(-SUM(fd.amount), 0) as totalFees
       FROM fee_details fd
@@ -75,6 +79,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
         AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        ${REAL_FEES_ONLY}
     `).get(startDate, endDateNext) as any;
 
     const serviceFeeData = db.prepare(`
@@ -84,6 +89,16 @@ export async function GET(request: NextRequest) {
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ? AND date(fd.posted_date) < ?
         ${marketplace ? "AND fe.marketplace = '" + marketplace + "'" : ''}
+        AND NOT (
+          fe.event_type = 'ServiceFeeEvent'
+          AND fd.fee_type IN (
+            'FBAStorageFee',
+            'FBARemovalFee',
+            'Subscription',
+            'FBACustomerReturnPerUnitFee',
+            'FBAInboundTransportationFee'
+          )
+        )
     `).get(startDate, endDateNext) as any;
 
     const prevOrderFeeData = db.prepare(`
@@ -93,6 +108,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
         AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        ${REAL_FEES_ONLY}
     `).get(prevStart, startDate) as any;
 
     const prevServiceFeeData = db.prepare(`
@@ -102,6 +118,16 @@ export async function GET(request: NextRequest) {
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ? AND date(fd.posted_date) < ?
         ${marketplace ? "AND fe.marketplace = '" + marketplace + "'" : ''}
+        AND NOT (
+          fe.event_type = 'ServiceFeeEvent'
+          AND fd.fee_type IN (
+            'FBAStorageFee',
+            'FBARemovalFee',
+            'Subscription',
+            'FBACustomerReturnPerUnitFee',
+            'FBAInboundTransportationFee'
+          )
+        )
     `).get(prevStart, startDate) as any;
 
     // ─── COGS ─────────────────────────────────────────────────────────
@@ -149,15 +175,17 @@ export async function GET(request: NextRequest) {
       FROM refunds WHERE refund_date >= ? AND refund_date < ? ${MF_R} ${SETTLED_FILTER}
     `).get(prevStart, startDate) as any;
 
-    // ─── Reimbursements ───────────────────────────────────────────────
+    // ─── Reimbursements — exclude SETTLEMENT- rows (duplicates of ADJ- rows) ──
     const reimbData = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
+        AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
     `).get(startDate, endDateNext) as any;
 
     const prevReimbData = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
       FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
+        AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
     `).get(prevStart, startDate) as any;
 
     // ─── Other expenses ───────────────────────────────────────────────
@@ -243,6 +271,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
         AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        ${REAL_FEES_ONLY}
       GROUP BY fd.fee_category
     `).all(startDate, endDateNext) as any[];
 
@@ -253,6 +282,16 @@ export async function GET(request: NextRequest) {
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ? AND date(fd.posted_date) < ?
         ${marketplace ? "AND fe.marketplace = '" + marketplace + "'" : ''}
+        AND NOT (
+          fe.event_type = 'ServiceFeeEvent'
+          AND fd.fee_type IN (
+            'FBAStorageFee',
+            'FBARemovalFee',
+            'Subscription',
+            'FBACustomerReturnPerUnitFee',
+            'FBAInboundTransportationFee'
+          )
+        )
       GROUP BY fd.fee_category
     `).all(startDate, endDateNext) as any[];
 

@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@tanstack/react-table": "^8.21.3",
+    "@types/react-simple-maps": "^3.0.6",
     "better-sqlite3": "^12.8.0",
     "bwip-js": "^4.10.1",
     "date-fns": "^4.1.0",
@@ -20,6 +21,7 @@
     "pdf-lib": "^1.17.1",
     "react": "19.2.4",
     "react-dom": "19.2.4",
+    "react-simple-maps": "^3.0.0",
     "recharts": "^3.8.1",
     "uuid": "^13.0.0"
   },
