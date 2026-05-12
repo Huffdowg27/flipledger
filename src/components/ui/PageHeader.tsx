@@ -27,24 +27,34 @@ export default function PageHeader({ title, subtitle, dateRange, onDateRangeChan
         {onDateBasisChange && (
           <div className="flex h-9 rounded-md border border-border-default overflow-hidden text-sm">
             <button
-              onClick={() => onDateBasisChange('posted')}
-              className={`px-3 transition-colors ${
-                dateBasis === 'posted'
-                  ? 'bg-accent/15 text-accent font-medium'
-                  : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
-              }`}
-            >
-              Cash
-            </button>
-            <button
               onClick={() => onDateBasisChange('purchase')}
-              className={`px-3 border-l border-border-default transition-colors ${
+              className={`px-3 transition-colors ${
                 dateBasis === 'purchase'
                   ? 'bg-accent/15 text-accent font-medium'
                   : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
               }`}
             >
-              Accrual
+              Operating
+            </button>
+            <button
+              onClick={() => onDateBasisChange('posted')}
+              className={`px-3 border-l border-border-default transition-colors ${
+                dateBasis === 'posted'
+                  ? 'bg-accent/15 text-accent font-medium'
+                  : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
+              }`}
+            >
+              Settled
+            </button>
+            <button
+              onClick={() => onDateBasisChange('reconciled')}
+              className={`px-3 border-l border-border-default transition-colors ${
+                dateBasis === 'reconciled'
+                  ? 'bg-accent/15 text-accent font-medium'
+                  : 'bg-bg-elevated text-text-secondary hover:bg-bg-hover'
+              }`}
+            >
+              Accounting
             </button>
           </div>
         )}
