@@ -609,6 +609,8 @@ export function initializeDatabase() {
     `ALTER TABLE listing_batch_items ADD COLUMN fulfillment_channel TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN listing_source TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN amazon_inventory_status TEXT`,
+    `ALTER TABLE inventory_ledger ADD COLUMN bin_location TEXT`,
+    `ALTER TABLE inventory_ledger ADD COLUMN condition TEXT`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }

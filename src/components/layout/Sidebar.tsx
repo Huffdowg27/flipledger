@@ -25,6 +25,7 @@ import {
   Menu,
   RefreshCw,
   ScanBarcode,
+  Warehouse,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import GlobalSearch from '@/components/ui/GlobalSearch';
@@ -67,6 +68,7 @@ const navSections: NavSection[] = [
   {
     title: 'ANALYZE',
     items: [
+      { label: 'Merchant Inventory', href: '/analyze/merchant-inventory', icon: <Warehouse size={18} /> },
       { label: 'Profit & Loss', href: '/analyze/profitloss', icon: <TrendingUp size={18} /> },
       { label: 'Sales Tax', href: '/analyze/salestax', icon: <Receipt size={18} /> },
       { label: 'Removals', href: '/analyze/removals', icon: <PackageMinus size={18} /> },

@@ -44,6 +44,8 @@ export async function GET(request: NextRequest) {
         il.buy_price,
         il.date_purchased,
         il.notes,
+        il.bin_location,
+        il.condition,
         il.created_at,
         s.name AS supplier_name,
         (il.quantity - il.quantity_remaining) AS units_consumed
@@ -54,7 +56,8 @@ export async function GET(request: NextRequest) {
     `).all(sku || asin) as Array<{
       id: number; sku: string | null; asin: string | null;
       quantity: number; quantity_remaining: number; buy_price: number;
-      date_purchased: string; notes: string | null; created_at: string;
+      date_purchased: string; notes: string | null; bin_location: string | null;
+      condition: string | null; created_at: string;
       supplier_name: string | null; units_consumed: number;
     }>;
 
@@ -92,6 +95,8 @@ export async function POST(request: NextRequest) {
   const supplier: string | undefined = body.supplier;
   const datePurchased: string | undefined = body.datePurchased;
   const notes: string | undefined = body.notes;
+  const binLocation: string | undefined = body.binLocation;
+  const condition: string | undefined = body.condition;
 
   if (!sku && !asin) {
     return NextResponse.json({ error: 'sku or asin required' }, { status: 400 });
@@ -117,9 +122,9 @@ export async function POST(request: NextRequest) {
     }
 
     const result = db.prepare(`
-      INSERT INTO inventory_ledger (asin, sku, buy_price, quantity, quantity_remaining, supplier_id, date_purchased, notes, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(asin || sku, sku || null, buyPriceCents, quantity, quantity, supplierId, dateP, notes || null, now);
+      INSERT INTO inventory_ledger (asin, sku, buy_price, quantity, quantity_remaining, supplier_id, date_purchased, notes, bin_location, condition, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(asin || sku, sku || null, buyPriceCents, quantity, quantity, supplierId, dateP, notes || null, binLocation || null, condition || null, now);
 
     const newLotId = Number(result.lastInsertRowid);
     db.close();
@@ -182,6 +187,14 @@ export async function PATCH(request: NextRequest) {
     if (body.notes !== undefined) {
       fields.push('notes = ?');
       params.push(body.notes || null);
+    }
+    if (body.binLocation !== undefined) {
+      fields.push('bin_location = ?');
+      params.push(body.binLocation || null);
+    }
+    if (body.condition !== undefined) {
+      fields.push('condition = ?');
+      params.push(body.condition || null);
     }
     if (body.supplier !== undefined) {
       const now = new Date().toISOString();

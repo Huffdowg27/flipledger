@@ -41,6 +41,8 @@ interface Lot {
   supplier_name: string | null;
   units_consumed: number;
   notes: string | null;
+  bin_location: string | null;
+  condition: string | null;
 }
 
 interface LotSummary {
@@ -66,6 +68,8 @@ interface NewLotForm {
   buyPrice: string;
   supplier: string;
   datePurchased: string;
+  binLocation: string;
+  condition: string;
 }
 
 export default function ProductsPage() {
@@ -90,12 +94,12 @@ export default function ProductsPage() {
 
   // Multi-lot view
   const [lotsView, setLotsView] = useState<LotsViewState | null>(null);
-  const [newLot, setNewLot] = useState<NewLotForm>({ quantity: '', buyPrice: '', supplier: '', datePurchased: '' });
+  const [newLot, setNewLot] = useState<NewLotForm>({ quantity: '', buyPrice: '', supplier: '', datePurchased: '', binLocation: '', condition: '' });
   const [savingLot, setSavingLot] = useState(false);
 
   const openLotsView = useCallback(async (sku: string, asin: string, productName: string) => {
     setLotsView({ sku, asin, productName, lots: [], summary: null, loading: true });
-    setNewLot({ quantity: '', buyPrice: '', supplier: '', datePurchased: new Date().toISOString().slice(0, 10) });
+    setNewLot({ quantity: '', buyPrice: '', supplier: '', datePurchased: new Date().toISOString().slice(0, 10), binLocation: '', condition: '' });
     try {
       const r = await fetch(`/api/data/inventory-lots?sku=${encodeURIComponent(sku)}`);
       const d = await r.json();
@@ -130,6 +134,8 @@ export default function ProductsPage() {
           buyPrice: price,
           supplier: newLot.supplier || undefined,
           datePurchased: newLot.datePurchased ? new Date(newLot.datePurchased).toISOString() : undefined,
+          binLocation: newLot.binLocation || undefined,
+          condition: newLot.condition || undefined,
         }),
       });
       if (!r.ok) {
@@ -137,7 +143,7 @@ export default function ProductsPage() {
         alert(`Failed: ${e.error || 'unknown'}`);
         return;
       }
-      setNewLot({ quantity: '', buyPrice: '', supplier: '', datePurchased: new Date().toISOString().slice(0, 10) });
+      setNewLot({ quantity: '', buyPrice: '', supplier: '', datePurchased: new Date().toISOString().slice(0, 10), binLocation: '', condition: '' });
       await refreshLotsView();
       fetchData();
     } finally {
@@ -484,6 +490,8 @@ export default function ProductsPage() {
                       <th className="text-right py-2 px-3 font-medium">Remaining</th>
                       <th className="text-right py-2 px-3 font-medium">Cost / unit</th>
                       <th className="text-left py-2 px-3 font-medium">Supplier</th>
+                      <th className="text-left py-2 px-3 font-medium">Bin</th>
+                      <th className="text-left py-2 px-3 font-medium">Condition</th>
                       <th className="text-right py-2 px-4 font-medium"></th>
                     </tr>
                   </thead>
@@ -496,6 +504,12 @@ export default function ProductsPage() {
                         <td className={`py-2 px-3 text-right font-mono ${lot.quantity_remaining === 0 ? 'text-text-tertiary' : 'text-text-primary'}`}>{lot.quantity_remaining}</td>
                         <td className="py-2 px-3 text-right font-mono">{formatCurrency(lot.buy_price)}</td>
                         <td className="py-2 px-3 text-text-secondary truncate max-w-[10rem]">{lot.supplier_name || '—'}</td>
+                        <td className="py-2 px-3">
+                          {lot.bin_location
+                            ? <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-accent/10 text-accent text-xs font-mono">{lot.bin_location}</span>
+                            : <span className="text-text-tertiary text-xs">—</span>}
+                        </td>
+                        <td className="py-2 px-3 text-text-secondary text-xs">{lot.condition || '—'}</td>
                         <td className="py-2 px-4 text-right">
                           <button
                             onClick={() => handleDeleteLot(lot.id)}
@@ -562,6 +576,31 @@ export default function ProductsPage() {
                   >
                     {savingLot ? 'Saving…' : 'Add lot'}
                   </button>
+                </div>
+              </div>
+              <div className="grid grid-cols-12 gap-2 mt-2">
+                <div className="col-span-3">
+                  <label className="block text-[10px] uppercase tracking-wider text-text-tertiary mb-1">Bin Location</label>
+                  <input
+                    type="text" value={newLot.binLocation}
+                    onChange={e => setNewLot({ ...newLot, binLocation: e.target.value })}
+                    placeholder="e.g. S1-B3"
+                    className="w-full h-9 px-2 bg-bg-input border border-border-default rounded-md text-sm font-mono focus:border-accent focus:outline-none"
+                  />
+                </div>
+                <div className="col-span-3">
+                  <label className="block text-[10px] uppercase tracking-wider text-text-tertiary mb-1">Condition</label>
+                  <select
+                    value={newLot.condition}
+                    onChange={e => setNewLot({ ...newLot, condition: e.target.value })}
+                    className="w-full h-9 px-2 bg-bg-input border border-border-default rounded-md text-sm focus:border-accent focus:outline-none"
+                  >
+                    <option value="">— optional —</option>
+                    <option value="New">New</option>
+                    <option value="Like New">Like New</option>
+                    <option value="Good">Good</option>
+                    <option value="Acceptable">Acceptable</option>
+                  </select>
                 </div>
               </div>
               <div className="text-[11px] text-text-tertiary mt-2">
