@@ -52,6 +52,11 @@ function trunc(s: string | null | undefined, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
+function realFnsku(value: string | null | undefined): string {
+  const fnsku = String(value || '').trim().toUpperCase();
+  return /^X00[A-Z0-9]+$/.test(fnsku) ? fnsku : '';
+}
+
 // -- ASIN Label (Customer Safe) --
 // Barcode = ASIN. Shows: ASIN + condition at top, barcode middle, title at bottom.
 // No MSKU, no cost, no supplier.
@@ -227,6 +232,12 @@ export async function GET(request: NextRequest) {
   try {
     specs = JSON.parse(Buffer.from(d, 'base64').toString('utf-8'));
     if (!Array.isArray(specs) || specs.length === 0) throw new Error('empty');
+    specs = specs.flatMap(spec => {
+      if (spec.labelMode !== 'fnsku') return [spec];
+      const fnsku = realFnsku(spec.fnsku);
+      return fnsku ? [{ ...spec, fnsku }] : [];
+    });
+    if (specs.length === 0) throw new Error('empty');
   } catch {
     return new Response('<html><body style="font-family:sans-serif;padding:2rem;">Invalid label data.</body></html>', {
       headers: { 'Content-Type': 'text/html' },

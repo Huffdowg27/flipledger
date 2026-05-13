@@ -45,6 +45,11 @@ function openPrintWindow(specs: LabelSpec[]) {
   window.open(`/api/labels/print?d=${encodeURIComponent(encoded)}`, '_blank');
 }
 
+function realFnsku(value: string | null | undefined): string | null {
+  const fnsku = String(value || '').trim().toUpperCase();
+  return /^X00[A-Z0-9]+$/.test(fnsku) ? fnsku : null;
+}
+
 interface PrintModalProps {
   selected: InventoryRow[];
   onClose: () => void;
@@ -64,7 +69,8 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
   const [showBin, setShowBin] = useState(false);
   const [custom, setCustom] = useState({ title: '', subtitle: '', notes: '', sku: '', asin: '', bin: '' });
 
-  const hasFnsku = selected.some(r => r.fnsku);
+  const fnskuCount = selected.filter(r => realFnsku(r.fnsku)).length;
+  const hasFnsku = fnskuCount > 0;
 
   function handlePrint() {
     if (labelMode === 'custom') {
@@ -81,18 +87,57 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
       return;
     }
 
+    if (labelMode === 'asin') {
+      const specs: LabelSpec[] = selected.map(r => {
+        const spec: LabelSpec = {
+          labelMode: 'asin',
+          size,
+          title: r.product_name || r.asin || '',
+          asin: r.asin,
+          condition: r.condition || undefined,
+        };
+        if (showBin && r.bin_location) {
+          spec.showBin = true;
+          spec.bin = r.bin_location;
+        }
+        return spec;
+      });
+      openPrintWindow(specs);
+      return;
+    }
+
+    if (labelMode === 'fnsku') {
+      const rowsWithFnsku = selected
+        .map(r => ({ row: r, fnsku: realFnsku(r.fnsku) }))
+        .filter((entry): entry is { row: InventoryRow; fnsku: string } => Boolean(entry.fnsku));
+
+      if (rowsWithFnsku.length === 0) {
+        alert('No selected items have a real FNSKU yet.');
+        return;
+      }
+
+      const specs: LabelSpec[] = rowsWithFnsku.map(({ row, fnsku }) => ({
+        labelMode: 'fnsku',
+        size,
+        title: row.product_name || row.asin || '',
+        asin: row.asin,
+        fnsku,
+        condition: row.condition || undefined,
+      }));
+      openPrintWindow(specs);
+      return;
+    }
+
     const specs: LabelSpec[] = selected.map(r => ({
-      labelMode,
+      labelMode: 'warehouse',
       size,
       title:      r.product_name || r.asin || '',
       asin:       r.asin,
-      fnsku:      r.fnsku || undefined,
-      sku:        labelMode === 'warehouse' ? (r.sku || undefined) : undefined,
+      sku:        r.sku || undefined,
       bin:        r.bin_location || undefined,
       condition:  r.condition || undefined,
       priceCents: r.buy_price,
-      showPrice:  labelMode === 'warehouse' ? showPrice : false,
-      showBin:    labelMode === 'asin' ? showBin : undefined,
+      showPrice,
     }));
     openPrintWindow(specs);
   }
@@ -101,7 +146,7 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
     labelMode === 'custom'
       ? !!(custom.title || custom.subtitle || custom.bin)
       : labelMode === 'fnsku'
-        ? selected.length > 0 && hasFnsku
+        ? selected.length > 0 && selected.some(r => realFnsku(r.fnsku))
         : selected.length > 0;
 
   return (
@@ -199,7 +244,7 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
           )}
           {labelMode === 'fnsku' && hasFnsku && (
             <p className="text-[11px] text-text-tertiary">
-              {selected.filter(r => r.fnsku).length} of {selected.length} selected item{selected.length !== 1 ? 's' : ''} have a real FNSKU.
+              {fnskuCount} of {selected.length} selected item{selected.length !== 1 ? 's' : ''} have a real FNSKU.
               Items without FNSKU will be skipped.
             </p>
           )}
@@ -285,7 +330,7 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
                         {r.bin_location}
                       </span>
                     )}
-                    {r.fnsku && (
+                    {realFnsku(r.fnsku) && (
                       <span className="text-[10px] font-mono text-text-tertiary bg-bg-elevated px-1.5 py-0.5 rounded">
                         FNSKU
                       </span>
