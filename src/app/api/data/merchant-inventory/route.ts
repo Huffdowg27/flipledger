@@ -41,6 +41,7 @@ export async function GET() {
         GROUP BY sku
       ) lbi ON lbi.sku = il.sku
       WHERE il.quantity_remaining > 0
+        AND (il.sku LIKE 'LV_%' OR il.sku LIKE 'MF_LV_%')
       ORDER BY
         CASE WHEN il.bin_location IS NULL OR il.bin_location = '' THEN 1 ELSE 0 END,
         il.bin_location ASC,
