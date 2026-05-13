@@ -415,8 +415,8 @@ export default function MerchantInventoryPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Local / E2A Inventory</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">Local FlipLedger lots (LV_ SKUs) · Amazon live MFN status not synced</p>
+          <h1 className="text-xl font-semibold tracking-tight">Merchant Fulfilled Inventory</h1>
+          <p className="text-sm text-text-tertiary mt-0.5">Local/E2A inventory candidates based on FlipLedger SKUs. Amazon live MFN status is not synced yet.</p>
         </div>
         <div className="flex items-center gap-3">
           {selected.size > 0 && (
