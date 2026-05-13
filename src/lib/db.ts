@@ -611,6 +611,11 @@ export function initializeDatabase() {
     `ALTER TABLE listing_batch_items ADD COLUMN amazon_inventory_status TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN bin_location TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN condition TEXT`,
+    `ALTER TABLE inventory_ledger ADD COLUMN quantity_received INTEGER`,
+    `ALTER TABLE inventory_ledger ADD COLUMN received_at TEXT`,
+    `ALTER TABLE inventory_ledger ADD COLUMN inspected_at TEXT`,
+    `ALTER TABLE inventory_ledger ADD COLUMN receive_notes TEXT`,
+    `ALTER TABLE inventory_ledger ADD COLUMN list_price_cents INTEGER`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }

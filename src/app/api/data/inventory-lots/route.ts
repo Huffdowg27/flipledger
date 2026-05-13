@@ -153,7 +153,9 @@ export async function PATCH(request: NextRequest) {
 
   const db = getDb();
   try {
-    const existing = db.prepare('SELECT sku, asin FROM inventory_ledger WHERE id = ?').get(id) as { sku: string | null; asin: string | null } | undefined;
+    const existing = db.prepare(
+      'SELECT sku, asin, received_at, inspected_at FROM inventory_ledger WHERE id = ?'
+    ).get(id) as { sku: string | null; asin: string | null; received_at: string | null; inspected_at: string | null } | undefined;
     if (!existing) {
       db.close();
       return NextResponse.json({ error: 'lot not found' }, { status: 404 });
@@ -161,6 +163,7 @@ export async function PATCH(request: NextRequest) {
 
     const fields: string[] = [];
     const params: (string | number | null)[] = [];
+    const now = new Date().toISOString();
 
     if (body.quantity !== undefined) {
       const q = Number(body.quantity);
@@ -197,7 +200,6 @@ export async function PATCH(request: NextRequest) {
       params.push(body.condition || null);
     }
     if (body.supplier !== undefined) {
-      const now = new Date().toISOString();
       let supplierId: number | null = null;
       if (body.supplier && body.supplier.trim()) {
         db.prepare('INSERT OR IGNORE INTO suppliers (name, created_at) VALUES (?, ?)').run(body.supplier.trim(), now);
@@ -206,6 +208,45 @@ export async function PATCH(request: NextRequest) {
       }
       fields.push('supplier_id = ?');
       params.push(supplierId);
+    }
+
+    // Receive workflow fields
+    if (body.quantityReceived !== undefined) {
+      const q = Number(body.quantityReceived);
+      if (!Number.isFinite(q) || q < 0) {
+        db.close();
+        return NextResponse.json({ error: 'quantityReceived must be >= 0' }, { status: 400 });
+      }
+      fields.push('quantity_received = ?');
+      params.push(q);
+    }
+    if (body.receiveNotes !== undefined) {
+      fields.push('receive_notes = ?');
+      params.push(body.receiveNotes || null);
+    }
+    if (body.listPriceCents !== undefined) {
+      const lp = Number(body.listPriceCents);
+      if (!Number.isFinite(lp) || lp < 0) {
+        db.close();
+        return NextResponse.json({ error: 'listPriceCents must be >= 0' }, { status: 400 });
+      }
+      fields.push('list_price_cents = ?');
+      params.push(lp);
+    }
+    if (body.markReceived === true && !existing.received_at) {
+      fields.push('received_at = ?');
+      params.push(now);
+    }
+    if (body.markInspected === true) {
+      const willBeReceived = existing.received_at != null || body.markReceived === true;
+      if (!willBeReceived) {
+        db.close();
+        return NextResponse.json({ error: 'Cannot mark inspected before marking received' }, { status: 400 });
+      }
+      if (!existing.inspected_at) {
+        fields.push('inspected_at = ?');
+        params.push(now);
+      }
     }
 
     if (fields.length === 0) {
