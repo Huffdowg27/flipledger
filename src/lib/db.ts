@@ -636,6 +636,7 @@ export function initializeDatabase() {
     `ALTER TABLE inventory_ledger ADD COLUMN inspected_at TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN receive_notes TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN list_price_cents INTEGER`,
+    `ALTER TABLE inventory_ledger ADD COLUMN merchant_shipping_group_name TEXT`,
     // merchant_listings new columns — populated by GET_MERCHANT_LISTINGS_ALL_DATA
     `ALTER TABLE merchant_listings ADD COLUMN listing_id TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN item_name TEXT`,

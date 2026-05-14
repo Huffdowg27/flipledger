@@ -46,6 +46,7 @@ export async function GET(request: NextRequest) {
         il.notes,
         il.bin_location,
         il.condition,
+        il.merchant_shipping_group_name,
         il.created_at,
         s.name AS supplier_name,
         (il.quantity - il.quantity_remaining) AS units_consumed
@@ -232,6 +233,10 @@ export async function PATCH(request: NextRequest) {
       }
       fields.push('list_price_cents = ?');
       params.push(lp);
+    }
+    if (body.merchantShippingGroupName !== undefined) {
+      fields.push('merchant_shipping_group_name = ?');
+      params.push(body.merchantShippingGroupName || null);
     }
     if (body.markReceived === true && !existing.received_at) {
       fields.push('received_at = ?');

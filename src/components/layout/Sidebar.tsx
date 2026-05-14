@@ -26,6 +26,7 @@ import {
   RefreshCw,
   ScanBarcode,
   Warehouse,
+  PackageCheck,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import GlobalSearch from '@/components/ui/GlobalSearch';
@@ -63,6 +64,7 @@ const navSections: NavSection[] = [
     title: 'LISTING',
     items: [
       { label: 'Batches', href: '/list', icon: <ScanBarcode size={18} /> },
+      { label: 'MFN Receive', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
     ],
   },
   {
