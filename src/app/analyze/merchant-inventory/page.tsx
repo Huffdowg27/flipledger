@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy } from 'lucide-react';
+import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,6 +85,102 @@ function realFnsku(value: string | null | undefined): string | null {
 function openPrintWindow(specs: LabelSpec[]) {
   const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(specs))));
   window.open(`/api/labels/print?d=${encodeURIComponent(encoded)}`, '_blank');
+}
+
+// ---------------------------------------------------------------------------
+// Activation CSV export — Phase 1: generate file for manual Seller Central upload.
+// No Amazon writes. No DB writes. Pure client-side computation.
+//
+// Column names match Amazon's Inventory Loader flat file template exactly:
+//   merchant-shipping-group-name — shipping template name (Seller Central
+//     Settings → Shipping Settings → Shipping Templates). Must match the exact
+//     template name on the account. Update DEFAULT_MFN_SHIPPING_TEMPLATE below.
+//
+// Price priority: receive-modal price (il_list_price_cents)
+//                → Amazon current price (amazon_list_price_cents)
+//                → MSKU-parsed estimate (parsed_list_price_cents)
+// Quantity: quantity_received (physically inspected count) → quantity_remaining
+// ---------------------------------------------------------------------------
+
+// Update this constant to match the exact shipping template name in Seller Central.
+// Seller Central → Settings → Shipping Settings → Shipping Templates.
+// The template name seen in synced listing data for this account was:
+//   'DEFAULT MFN USE THIS ONE'
+// Verify it in Seller Central before uploading any CSV.
+const DEFAULT_MFN_SHIPPING_TEMPLATE = 'DEFAULT MFN USE THIS ONE';
+
+function exportActivationCsv(rows: MerchantRow[]) {
+  const readyRows = rows.filter(r => getReceiveStatus(r) === 'ready');
+  if (readyRows.length === 0) {
+    alert('No Ready rows to export.\n\nItems must be received, inspected, binned, and priced before export.');
+    return;
+  }
+
+  const warnings: string[] = [];
+
+  if (!DEFAULT_MFN_SHIPPING_TEMPLATE) {
+    warnings.push('DEFAULT_MFN_SHIPPING_TEMPLATE is blank — merchant-shipping-group-name column will be empty. Verify the shipping template name in Seller Central before uploading.');
+  }
+
+  const csvLines: string[] = [
+    // Column names match Amazon Inventory Loader flat file format exactly.
+    // merchant-shipping-group-name sets the MFN shipping template per row.
+    // handling-time is left blank to use the account-level default.
+    ['sku', 'price', 'quantity', 'condition', 'handling-time', 'merchant-shipping-group-name'].join(','),
+  ];
+
+  for (const row of readyRows) {
+    if (!row.sku) {
+      warnings.push(`Row ${row.row_key}: no MSKU — skipped`);
+      continue;
+    }
+
+    // Use the price the user explicitly set during receiving first
+    const priceCents = row.il_list_price_cents ?? row.amazon_list_price_cents ?? row.parsed_list_price_cents;
+    const priceStr   = priceCents != null ? (priceCents / 100).toFixed(2) : '';
+    if (!priceStr) warnings.push(`${row.sku}: no list price set — price column will be blank`);
+
+    // Prefer count from physical receive over ledger remaining
+    const qty = (row.quantity_received ?? 0) > 0
+      ? row.quantity_received!
+      : (row.quantity_remaining ?? 0);
+    if (qty <= 0) {
+      warnings.push(`${row.sku}: quantity is 0 or missing — skipped`);
+      continue;
+    }
+
+    const condition      = (row.condition || '').replace(/"/g, '""');
+    const sku            = row.sku.replace(/"/g, '""');
+    const shippingGroup  = DEFAULT_MFN_SHIPPING_TEMPLATE.replace(/"/g, '""');
+
+    csvLines.push([
+      `"${sku}"`,
+      priceStr,
+      String(qty),
+      `"${condition}"`,
+      '',               // handling-time: blank = use account default
+      `"${shippingGroup}"`,
+    ].join(','));
+  }
+
+  if (warnings.length > 0) {
+    alert(`Export warnings:\n\n${warnings.join('\n')}\n\nCSV will still download for rows without errors.`);
+  }
+  if (csvLines.length <= 1) {
+    alert('No valid rows to export after validation.');
+    return;
+  }
+
+  const csv  = csvLines.join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `flipledger-activation-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ---------------------------------------------------------------------------
@@ -833,6 +929,14 @@ export default function MerchantInventoryPage() {
 
   const selectedRows = displayRows.filter(r => selected.has(r.row_key));
 
+  // Rows available for activation export: selection-scoped when rows are selected,
+  // otherwise all displayed rows when the Ready filter is active.
+  const readyForExport = useMemo(() => {
+    if (selected.size > 0) return selectedRows.filter(r => getReceiveStatus(r) === 'ready');
+    if (filterView === 'ready') return displayRows;
+    return [];
+  }, [selected, selectedRows, filterView, displayRows]);
+
   function actionLabel(status: ReceiveStatus): string {
     if (status === 'pending') return 'Receive';
     if (status === 'received') return 'Inspect';
@@ -880,6 +984,15 @@ export default function MerchantInventoryPage() {
               <p className="text-[10px] text-text-tertiary">Not yet synced</p>
             )}
           </div>
+          {readyForExport.length > 0 && (
+            <button
+              onClick={() => exportActivationCsv(readyForExport)}
+              className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-green-500/50 text-green-400 text-sm font-medium hover:bg-green-500/10 transition-colors"
+            >
+              <Download size={14} />
+              Export Activation CSV ({readyForExport.length})
+            </button>
+          )}
           {selected.size > 0 && (
             <button
               onClick={() => setShowPrintModal(true)}
@@ -941,6 +1054,23 @@ export default function MerchantInventoryPage() {
               </button>
             );
           })}
+        </div>
+      )}
+
+      {/* Activation workflow banner — shown only in Ready filter */}
+      {filterView === 'ready' && !loading && (
+        <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 bg-bg-elevated border border-border-subtle rounded-lg text-xs text-text-secondary">
+          <Download size={13} className="text-green-400 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-medium text-text-primary">Ready to Activate</span>{' '}
+            means received, inspected, binned, and priced locally —{' '}
+            <span className="text-text-tertiary">Seller Central has not been updated yet.</span>{' '}
+            Select rows and click{' '}
+            <span className="font-medium text-green-400">Export Activation CSV</span>{' '}
+            to generate a file you upload to Seller Central. The CSV sets{' '}
+            quantity, price, handling time, and shipping template per row.
+            Verify the shipping template name matches your Seller Central account before uploading.
+          </span>
         </div>
       )}
 
