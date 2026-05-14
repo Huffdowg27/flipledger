@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, Printer, X, Check, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,6 +49,13 @@ interface MerchantRow {
   fnsku: string | null;
   supplier_name: string | null;
   category: string | null;
+
+  // Parsed from MSKU — read-only, no DB source
+  parsed_cost_cents: number | null;
+  parsed_list_price_cents: number | null;
+  parsed_order_qty: number | null;
+  parsed_date: string | null;
+  sku_parse_status: 'parsed' | 'unparsed';
 }
 
 // ---------------------------------------------------------------------------
@@ -992,8 +999,14 @@ export default function MerchantInventoryPage() {
               ) : (
                 displayRows.map(row => {
                   const isSelected = selected.has(row.row_key);
-                  const receiveStatus = getReceiveStatus(row);
-                  const listPrice = row.il_list_price_cents ?? row.amazon_list_price_cents;
+                  // Suppress receive workflow for items already live on Amazon — they're
+                  // already active and don't need retroactive receive stamping.
+                  const alreadyLive = row.live_state === 'active';
+                  const receiveStatus = alreadyLive ? null : getReceiveStatus(row);
+                  // List price: Amazon source of truth first, then parsed from MSKU, then ledger value.
+                  const listPrice = row.amazon_list_price_cents ?? row.parsed_list_price_cents ?? row.il_list_price_cents;
+                  // Cost: ledger buy_price is authoritative; fall back to MSKU-parsed cost.
+                  const displayCost = row.buy_price ?? row.parsed_cost_cents;
 
                   return (
                     <tr
@@ -1026,14 +1039,26 @@ export default function MerchantInventoryPage() {
                             target="_blank"
                             rel="noopener noreferrer"
                             onClick={e => e.stopPropagation()}
-                            className="text-[10px] font-mono text-accent hover:underline"
+                            className="text-[10px] font-mono text-accent hover:underline shrink-0"
                           >
                             {row.asin}
                           </a>
                           {row.sku && (
-                            <span className="text-[10px] font-mono text-text-tertiary truncate max-w-[120px]" title={row.sku}>
+                            <span
+                              className="text-[10px] font-mono text-text-tertiary truncate max-w-[110px]"
+                              title={row.sku}
+                            >
                               {row.sku}
                             </span>
+                          )}
+                          {row.sku && (
+                            <button
+                              onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(row.sku); }}
+                              title={`Copy MSKU: ${row.sku}`}
+                              className="shrink-0 text-text-tertiary/40 hover:text-text-tertiary transition-colors"
+                            >
+                              <Copy size={9} />
+                            </button>
                           )}
                         </div>
                       </td>
@@ -1069,8 +1094,10 @@ export default function MerchantInventoryPage() {
                           : <span className="text-text-tertiary">—</span>}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-sm">
-                        {row.buy_price != null
-                          ? <span className="text-text-secondary">{formatCurrency(row.buy_price)}</span>
+                        {displayCost != null
+                          ? <span className={`${row.buy_price == null ? 'text-text-tertiary/70' : 'text-text-secondary'}`} title={row.buy_price == null ? 'Estimated from MSKU' : undefined}>
+                              {formatCurrency(displayCost)}
+                            </span>
                           : <span className="text-text-tertiary">—</span>}
                       </td>
                       <td className="px-4 py-2 text-right" onClick={e => e.stopPropagation()}>
