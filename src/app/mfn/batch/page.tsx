@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save } from 'lucide-react';
+import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -34,15 +34,19 @@ interface SearchResult {
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type CreateLotState = 'idle' | 'creating' | 'error';
 
 interface BatchItem extends SearchResult {
   draft_qty: string;
   draft_bin: string;
   draft_condition: string;
   draft_list_price: string;
+  draft_buy_price: string;
   draft_shipping_template: string;
   save_state: SaveState;
   save_error: string | null;
+  create_lot_state: CreateLotState;
+  create_lot_error: string | null;
 }
 
 const CONDITIONS = [
@@ -74,21 +78,20 @@ function liveStateBadge(status: string | null, qty: number | null) {
 }
 
 function makeBatchItem(r: SearchResult): BatchItem {
+  const costCents = r.buy_price ?? r.parsed_cost_cents;
+  const priceCents = r.il_list_price_cents ?? r.amazon_list_price_cents ?? r.parsed_list_price_cents;
   return {
     ...r,
     draft_qty:               String(r.quantity_received ?? r.quantity_remaining ?? 1),
     draft_bin:               r.bin_location ?? '',
     draft_condition:         r.condition ?? '',
-    draft_list_price:        r.il_list_price_cents != null
-                               ? (r.il_list_price_cents / 100).toFixed(2)
-                               : r.amazon_list_price_cents != null
-                                 ? (r.amazon_list_price_cents / 100).toFixed(2)
-                                 : r.parsed_list_price_cents != null
-                                   ? (r.parsed_list_price_cents / 100).toFixed(2)
-                                   : '',
+    draft_list_price:        priceCents != null ? (priceCents / 100).toFixed(2) : '',
+    draft_buy_price:         costCents   != null ? (costCents  / 100).toFixed(2) : '',
     draft_shipping_template: r.merchant_shipping_group_name ?? DEFAULT_SHIPPING_TEMPLATE,
     save_state:              'idle',
     save_error:              null,
+    create_lot_state:        'idle',
+    create_lot_error:        null,
   };
 }
 
@@ -163,10 +166,11 @@ interface BatchItemCardProps {
   onChange: (updates: Partial<BatchItem>) => void;
   onRemove: () => void;
   onSave: () => void;
+  onCreateLot: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps) {
-  const displayCost = item.buy_price ?? item.parsed_cost_cents;
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchItemCardProps) {
+  const noLot = item.il_id == null;
 
   return (
     <div className={`rounded-xl border p-4 transition-colors ${
@@ -174,7 +178,9 @@ function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps)
         ? 'border-green-500/30 bg-green-500/5'
         : item.save_state === 'error'
           ? 'border-red-500/30 bg-red-500/5'
-          : 'border-border-subtle bg-bg-surface'
+          : noLot
+            ? 'border-amber-500/20 bg-bg-surface'
+            : 'border-border-subtle bg-bg-surface'
     }`}>
       {/* Header */}
       <div className="flex items-start gap-3 mb-3">
@@ -192,9 +198,6 @@ function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps)
             {item.amazon_qty != null && (
               <span className="text-[10px] text-text-tertiary">Amz: {item.amazon_qty}</span>
             )}
-            {displayCost != null && (
-              <span className="text-[10px] text-text-tertiary">Cost: {formatCurrency(displayCost)}</span>
-            )}
           </div>
           <div className="text-[10px] font-mono text-text-tertiary/60 truncate mt-0.5" title={item.sku}>
             {item.sku}
@@ -210,18 +213,20 @@ function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps)
         </button>
       </div>
 
-      {/* No il_id warning */}
-      {item.il_id == null && (
-        <div className="flex items-center gap-1.5 mb-3 px-2.5 py-1.5 bg-amber-500/10 border border-amber-500/20 rounded text-[11px] text-amber-400">
-          <AlertCircle size={11} />
-          No local lot — cannot save without a ledger entry
+      {/* No-lot info banner */}
+      {noLot && (
+        <div className="flex items-start gap-1.5 mb-3 px-2.5 py-2 bg-amber-500/8 border border-amber-500/20 rounded text-[11px] text-amber-400/90 leading-snug">
+          <AlertCircle size={11} className="shrink-0 mt-0.5" />
+          <span>No local FlipLedger lot. Fill in the fields below and click <strong>Create Local Lot</strong> to register it. <em>Does not update Amazon.</em></span>
         </div>
       )}
 
       {/* Editable fields */}
       <div className="grid grid-cols-2 gap-2 mb-2">
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Qty Received</label>
+          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
+            {noLot ? 'Qty on Hand' : 'Qty Received'}
+          </label>
           <input
             type="number" min="0" step="1"
             value={item.draft_qty}
@@ -262,6 +267,22 @@ function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps)
         </div>
       </div>
 
+      {/* Buy price — only shown when creating a new lot */}
+      {noLot && (
+        <div className="mb-2">
+          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
+            Buy / Cost Price ($) <span className="text-amber-400 normal-case">(required to create lot)</span>
+          </label>
+          <input
+            type="number" min="0" step="0.01"
+            value={item.draft_buy_price}
+            onChange={e => onChange({ draft_buy_price: e.target.value })}
+            placeholder="0.00"
+            className="w-full h-8 px-2.5 bg-bg-elevated border border-amber-500/30 rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+          />
+        </div>
+      )}
+
       <div className="mb-3">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
         <input
@@ -272,7 +293,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps)
         />
       </div>
 
-      {/* Save row */}
+      {/* Action row */}
       <div className="flex items-center justify-between">
         <div className="text-[10px]">
           {item.save_state === 'saved' && (
@@ -283,24 +304,38 @@ function BatchItemCard({ item, onChange, onRemove, onSave }: BatchItemCardProps)
           {item.save_state === 'error' && (
             <span className="text-red-400">{item.save_error || 'Save failed'}</span>
           )}
+          {item.create_lot_state === 'error' && (
+            <span className="text-red-400">{item.create_lot_error || 'Create failed'}</span>
+          )}
         </div>
-        <button
-          onClick={onSave}
-          disabled={item.il_id == null || item.save_state === 'saving' || item.save_state === 'saved'}
-          className={`flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium border transition-colors ${
-            item.save_state === 'saved'
-              ? 'border-green-500/30 text-green-400 cursor-default'
-              : item.il_id == null
-                ? 'border-border-subtle text-text-tertiary/40 cursor-not-allowed'
+
+        {noLot ? (
+          <button
+            onClick={onCreateLot}
+            disabled={item.create_lot_state === 'creating'}
+            className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
+          >
+            {item.create_lot_state === 'creating'
+              ? <><Loader2 size={11} className="animate-spin" /> Creating…</>
+              : <><PackagePlus size={11} /> Create Local Lot</>}
+          </button>
+        ) : (
+          <button
+            onClick={onSave}
+            disabled={item.save_state === 'saving' || item.save_state === 'saved'}
+            className={`flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium border transition-colors ${
+              item.save_state === 'saved'
+                ? 'border-green-500/30 text-green-400 cursor-default'
                 : 'border-accent/50 text-accent hover:bg-accent/10'
-          }`}
-        >
-          {item.save_state === 'saving'
-            ? <><Loader2 size={11} className="animate-spin" /> Saving…</>
-            : item.save_state === 'saved'
-              ? <><CheckCircle2 size={11} /> Saved</>
-              : <><Save size={11} /> Save</>}
-        </button>
+            }`}
+          >
+            {item.save_state === 'saving'
+              ? <><Loader2 size={11} className="animate-spin" /> Saving…</>
+              : item.save_state === 'saved'
+                ? <><CheckCircle2 size={11} /> Saved</>
+                : <><Save size={11} /> Save</>}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -399,6 +434,62 @@ export default function MfnBatchReceivePage() {
       }
     } catch {
       updateBatchItem(sku, { save_state: 'error', save_error: 'Network error' });
+    }
+  }
+
+  async function createLot(sku: string) {
+    const item = batch.get(sku);
+    if (!item || item.il_id != null) return;
+
+    updateBatchItem(sku, { create_lot_state: 'creating', create_lot_error: null });
+
+    const qtyNum      = parseInt(item.draft_qty, 10);
+    const buyNum      = parseFloat(item.draft_buy_price);
+    const priceNum    = parseFloat(item.draft_list_price);
+
+    const body: Record<string, unknown> = {
+      sku,
+      asin:     item.asin || undefined,
+      quantity: Number.isFinite(qtyNum) && qtyNum > 0 ? qtyNum : 1,
+      buyCents: Number.isFinite(buyNum) && buyNum >= 0 ? Math.round(buyNum * 100) : 0,
+      markReceived: true,
+    };
+    if (Number.isFinite(priceNum) && priceNum > 0) body.listPriceCents = Math.round(priceNum * 100);
+    if (item.draft_condition.trim())               body.condition      = item.draft_condition.trim();
+    if (item.draft_bin.trim())                     body.binLocation    = item.draft_bin.trim();
+    if (item.draft_shipping_template.trim())       body.merchantShippingGroupName = item.draft_shipping_template.trim();
+
+    try {
+      const res = await fetch('/api/data/inventory-lots/create-mfn-local-lot', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await res.json().catch(() => ({})) as Record<string, unknown>;
+      if (!res.ok) {
+        updateBatchItem(sku, {
+          create_lot_state: 'error',
+          create_lot_error: (d.error as string | undefined) || 'Create failed',
+        });
+        return;
+      }
+      const lot = d.lot as Record<string, unknown>;
+      updateBatchItem(sku, {
+        il_id:                        Number(lot.id),
+        buy_price:                    lot.buy_price != null ? Number(lot.buy_price) : item.buy_price,
+        il_list_price_cents:          lot.list_price_cents != null ? Number(lot.list_price_cents) : item.il_list_price_cents,
+        bin_location:                 lot.bin_location != null ? String(lot.bin_location) : item.bin_location,
+        condition:                    lot.condition != null ? String(lot.condition) : item.condition,
+        quantity_received:            lot.quantity_received != null ? Number(lot.quantity_received) : item.quantity_received,
+        quantity_remaining:           lot.quantity_remaining != null ? Number(lot.quantity_remaining) : item.quantity_remaining,
+        received_at:                  lot.received_at != null ? String(lot.received_at) : item.received_at,
+        merchant_shipping_group_name: lot.merchant_shipping_group_name != null ? String(lot.merchant_shipping_group_name) : item.merchant_shipping_group_name,
+        create_lot_state:             'idle',
+        create_lot_error:             null,
+        save_state:                   'saved',
+      });
+    } catch {
+      updateBatchItem(sku, { create_lot_state: 'error', create_lot_error: 'Network error' });
     }
   }
 
@@ -512,6 +603,7 @@ export default function MfnBatchReceivePage() {
                   onChange={updates => updateBatchItem(item.sku, updates)}
                   onRemove={() => removeFromBatch(item.sku)}
                   onSave={() => saveItem(item.sku)}
+                  onCreateLot={() => createLot(item.sku)}
                 />
               ))}
             </div>
