@@ -10,7 +10,7 @@ import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy } from 'lucide
 
 type RowSource  = 'matched' | 'live_only' | 'local_only';
 type LiveState  = 'active' | 'oos' | 'inactive' | 'not_listed';
-type FilterView = 'live' | 'oos' | 'not_in_ledger' | 'local_only' | 'ready' | null;
+type FilterView = 'live' | 'oos' | 'inactive' | 'local_only' | 'ready' | null;
 type ReceiveStatus = 'pending' | 'received' | 'inspected' | 'ready';
 
 interface MerchantRow {
@@ -742,7 +742,7 @@ export default function MerchantInventoryPage() {
   const [syncing, setSyncing]           = useState(false);
   const [syncError, setSyncError]       = useState<string | null>(null);
   const [search, setSearch]             = useState('');
-  const [filterView, setFilterView]     = useState<FilterView>(null);
+  const [filterView, setFilterView]     = useState<FilterView>('live');
   const [selected, setSelected]         = useState<Set<string>>(new Set());
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [receiveRow, setReceiveRow]     = useState<MerchantRow | null>(null);
@@ -780,23 +780,25 @@ export default function MerchantInventoryPage() {
   }
 
   // Counts (always from full datasets, unaffected by filter/search)
-  const liveCount        = useMemo(() => listedRows.filter(r => r.live_state === 'active').length, [listedRows]);
-  const oosCount         = useMemo(() => listedRows.filter(r => r.live_state === 'oos').length, [listedRows]);
-  const notInLedgerCount = useMemo(() => listedRows.filter(r => r.row_source === 'live_only').length, [listedRows]);
-  const localOnlyCount   = localOnlyRows.length;
-  const readyCount       = useMemo(() =>
+  const liveCount      = useMemo(() => listedRows.filter(r => r.live_state === 'active').length,   [listedRows]);
+  const oosCount       = useMemo(() => listedRows.filter(r => r.live_state === 'oos').length,      [listedRows]);
+  const inactiveCount  = useMemo(() => listedRows.filter(r => r.live_state === 'inactive').length, [listedRows]);
+  const localOnlyCount = localOnlyRows.length;
+  const readyCount     = useMemo(() =>
     [...listedRows, ...localOnlyRows].filter(r => getReceiveStatus(r) === 'ready').length,
   [listedRows, localOnlyRows]);
 
-  // Display rows based on active filter
+  // Display rows based on active filter.
+  // null = All Amazon listings (the broadest view).
+  // Default on page load is 'live' so the working view is immediately useful.
   const baseRows = useMemo((): MerchantRow[] => {
     switch (filterView) {
-      case 'live':          return listedRows.filter(r => r.live_state === 'active');
-      case 'oos':           return listedRows.filter(r => r.live_state === 'oos');
-      case 'not_in_ledger': return listedRows.filter(r => r.row_source === 'live_only');
-      case 'local_only':    return localOnlyRows;
-      case 'ready':         return [...listedRows, ...localOnlyRows].filter(r => getReceiveStatus(r) === 'ready');
-      default:              return listedRows; // null = default: Amazon-primary view
+      case 'live':      return listedRows.filter(r => r.live_state === 'active');
+      case 'oos':       return listedRows.filter(r => r.live_state === 'oos');
+      case 'inactive':  return listedRows.filter(r => r.live_state === 'inactive');
+      case 'local_only':return localOnlyRows;
+      case 'ready':     return [...listedRows, ...localOnlyRows].filter(r => getReceiveStatus(r) === 'ready');
+      default:          return listedRows; // null = All Amazon listings
     }
   }, [listedRows, localOnlyRows, filterView]);
 
@@ -907,33 +909,34 @@ export default function MerchantInventoryPage() {
         </div>
       </div>
 
-      {/* Filter / stat cards — also serve as clickable filters */}
+      {/* Filter / stat cards — clicking selects the filter; clicking again returns to Live */}
       {hasData && (
-        <div className="grid grid-cols-5 gap-3 mb-6">
+        <div className="grid grid-cols-6 gap-2.5 mb-6">
           {([
-            { id: 'live'          as FilterView, label: 'Live on Amazon',   count: liveCount,        activeColor: 'border-green-500/50 bg-green-500/5',  numColor: 'text-green-400' },
-            { id: 'oos'           as FilterView, label: 'OOS on Amazon',    count: oosCount,         activeColor: 'border-amber-500/50 bg-amber-500/5',  numColor: 'text-amber-400' },
-            { id: 'not_in_ledger' as FilterView, label: 'Not in Ledger',    count: notInLedgerCount, activeColor: 'border-blue-500/50 bg-blue-500/5',    numColor: 'text-blue-400'  },
-            { id: 'local_only'    as FilterView, label: 'Local Not Listed',  count: localOnlyCount,   activeColor: 'border-border-default bg-bg-elevated', numColor: 'text-text-secondary' },
-            { id: 'ready'         as FilterView, label: 'Ready to Activate', count: readyCount,       activeColor: 'border-green-500/50 bg-green-500/5',  numColor: 'text-green-400' },
+            { id: null         as FilterView, label: 'All Listings',      count: listedRows.length, activeColor: 'border-text-tertiary/40 bg-bg-elevated shadow-sm',  numColor: 'text-text-primary'   },
+            { id: 'live'       as FilterView, label: 'Live on Amazon',    count: liveCount,          activeColor: 'border-green-500 bg-green-500/10 shadow-sm',        numColor: 'text-green-400'      },
+            { id: 'oos'        as FilterView, label: 'OOS',               count: oosCount,           activeColor: 'border-amber-500 bg-amber-500/10 shadow-sm',        numColor: 'text-amber-400'      },
+            { id: 'inactive'   as FilterView, label: 'Inactive',          count: inactiveCount,      activeColor: 'border-red-500 bg-red-500/10 shadow-sm',            numColor: 'text-red-400'        },
+            { id: 'local_only' as FilterView, label: 'Local Not Listed',  count: localOnlyCount,     activeColor: 'border-border-default bg-bg-elevated shadow-sm',    numColor: 'text-text-secondary' },
+            { id: 'ready'      as FilterView, label: 'Ready to Activate', count: readyCount,         activeColor: 'border-green-500 bg-green-500/10 shadow-sm',        numColor: 'text-green-400'      },
           ] as const).map(card => {
             const isActive = filterView === card.id;
             return (
               <button
-                key={card.id}
+                key={String(card.id)}
                 onClick={() => setFilter(card.id)}
-                className={`text-left p-4 rounded-lg border transition-colors ${
+                className={`text-left p-3.5 rounded-lg transition-all ${
                   isActive
-                    ? card.activeColor
-                    : 'bg-bg-surface border-border-subtle hover:border-border-default hover:bg-bg-hover'
+                    ? `border-2 ${card.activeColor}`
+                    : 'border border-border-subtle bg-bg-surface hover:border-border-default hover:bg-bg-hover'
                 }`}
               >
-                <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">{card.label}</div>
+                <div className="text-[10px] uppercase tracking-widest text-text-tertiary mb-1 truncate">{card.label}</div>
                 <div className={`text-2xl font-semibold font-mono ${isActive ? card.numColor : 'text-text-primary'}`}>
-                  {lastSynced || card.id === 'local_only' || card.id === 'ready' ? card.count : '—'}
+                  {lastSynced || card.id === 'local_only' || card.id === 'ready' || card.id === null ? card.count : '—'}
                 </div>
                 {isActive && (
-                  <div className="text-[10px] text-text-tertiary mt-1">click to clear</div>
+                  <div className="text-[10px] text-text-tertiary mt-1">active</div>
                 )}
               </button>
             );
@@ -985,8 +988,8 @@ export default function MerchantInventoryPage() {
                         ? 'No live Amazon listings found.'
                         : filterView === 'oos'
                           ? 'No out-of-stock Amazon listings.'
-                          : filterView === 'not_in_ledger'
-                            ? 'All Amazon listings have a matching local lot.'
+                          : filterView === 'inactive'
+                            ? 'No inactive listings found.'
                             : filterView === 'local_only'
                               ? 'All local lots have a matching Amazon listing.'
                               : filterView === 'ready'
