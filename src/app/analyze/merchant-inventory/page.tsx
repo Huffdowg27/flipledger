@@ -8,49 +8,76 @@ import { Search, Printer, X, Check, CheckCircle2, RefreshCw } from 'lucide-react
 // Types
 // ---------------------------------------------------------------------------
 
-interface InventoryRow {
-  id: number;
+type RowSource  = 'matched' | 'live_only' | 'local_only';
+type LiveState  = 'active' | 'oos' | 'inactive' | 'not_listed';
+type FilterView = 'live' | 'oos' | 'not_in_ledger' | 'local_only' | 'ready' | null;
+type ReceiveStatus = 'pending' | 'received' | 'inspected' | 'ready';
+
+interface MerchantRow {
+  row_key: string;
+  row_source: RowSource;
+
+  // Identity
   asin: string;
-  sku: string | null;
-  quantity: number;
-  quantity_remaining: number;
-  buy_price: number;
-  date_purchased: string;
+  sku: string;
+
+  // Amazon data — null for local_only rows
+  ml_id: number | null;
+  amazon_qty: number | null;
+  amazon_status: string | null;
+  amazon_list_price_cents: number | null;
+  last_synced: string | null;
+  live_state: LiveState;
+
+  // Local lot data — null for live_only rows
+  il_id: number | null;
+  quantity: number | null;
+  quantity_remaining: number | null;
+  buy_price: number | null;
+  date_purchased: string | null;
   bin_location: string | null;
   condition: string | null;
-  notes: string | null;
-  supplier_name: string | null;
-  product_name: string | null;
-  image_url: string | null;
-  category: string | null;
-  fnsku: string | null;
   quantity_received: number | null;
   received_at: string | null;
   inspected_at: string | null;
   receive_notes: string | null;
-  list_price_cents: number | null;
-  // Live listing data from merchant_listings (null if never synced or no match)
-  live_status: string | null;
-  live_quantity: number | null;
-  live_last_synced: string | null;
-  live_list_price_cents: number | null;
-  live_state: 'active' | 'inactive' | 'oos' | 'not_listed' | null;
+  il_list_price_cents: number | null;
+
+  // Product metadata
+  product_name: string | null;
+  image_url: string | null;
+  fnsku: string | null;
+  supplier_name: string | null;
+  category: string | null;
 }
 
-type ReceiveStatus = 'pending' | 'received' | 'inspected' | 'ready';
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
-function getStatus(row: InventoryRow): ReceiveStatus {
+function getReceiveStatus(row: MerchantRow): ReceiveStatus | null {
+  if (row.il_id == null) return null;
   const received = (row.quantity_received ?? 0) > 0 && row.received_at != null;
   const inspected = received && row.inspected_at != null;
   const ready =
     inspected &&
     !!(row.bin_location?.trim()) &&
     !!(row.condition?.trim()) &&
-    (row.list_price_cents ?? 0) > 0;
+    (row.il_list_price_cents ?? 0) > 0;
   if (ready) return 'ready';
   if (inspected) return 'inspected';
   if (received) return 'received';
   return 'pending';
+}
+
+function realFnsku(value: string | null | undefined): string | null {
+  const f = String(value || '').trim().toUpperCase();
+  return /^X00[A-Z0-9]+$/.test(f) ? f : null;
+}
+
+function openPrintWindow(specs: LabelSpec[]) {
+  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(specs))));
+  window.open(`/api/labels/print?d=${encodeURIComponent(encoded)}`, '_blank');
 }
 
 // ---------------------------------------------------------------------------
@@ -65,66 +92,53 @@ const CONDITIONS = [
   'Used - Acceptable',
 ];
 
-const STATUS_STYLES: Record<ReceiveStatus, string> = {
+const RECEIVE_STATUS_STYLES: Record<ReceiveStatus, string> = {
   pending:   'bg-bg-elevated text-text-tertiary border-border-subtle',
   received:  'bg-blue-500/10 text-blue-400 border-blue-500/30',
   inspected: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
   ready:     'bg-green-500/10 text-green-400 border-green-500/30',
 };
 
-const STATUS_LABELS: Record<ReceiveStatus, string> = {
+const RECEIVE_STATUS_LABELS: Record<ReceiveStatus, string> = {
   pending: 'Pending', received: 'Received', inspected: 'Inspected', ready: 'Ready',
 };
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function StatusBadge({ status }: { status: ReceiveStatus }) {
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${STATUS_STYLES[status]}`}>
-      {STATUS_LABELS[status]}
-    </span>
-  );
-}
-
-// Live Amazon listing state badge
-const LIVE_STATE_STYLES: Record<string, string> = {
+const LIVE_STATE_STYLES: Record<LiveState, string> = {
   active:     'bg-green-500/10 text-green-400 border-green-500/30',
   oos:        'bg-amber-500/10 text-amber-400 border-amber-500/30',
   inactive:   'bg-red-500/10 text-red-400 border-red-500/30',
   not_listed: 'bg-bg-elevated text-text-tertiary border-border-subtle',
 };
-const LIVE_STATE_LABELS: Record<string, string> = {
-  active:     'Active',
+
+const LIVE_STATE_LABELS: Record<LiveState, string> = {
+  active:     'Live',
   oos:        'OOS',
   inactive:   'Inactive',
   not_listed: 'Not Listed',
 };
 
-function LiveStateBadge({ state }: { state: string | null }) {
-  const key = state ?? 'not_listed';
-  const style = LIVE_STATE_STYLES[key] ?? LIVE_STATE_STYLES.not_listed;
-  const label = LIVE_STATE_LABELS[key] ?? 'Unknown';
+// ---------------------------------------------------------------------------
+// Badge components
+// ---------------------------------------------------------------------------
+
+function ReceiveStatusBadge({ status }: { status: ReceiveStatus }) {
   return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${style}`}>
-      {label}
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${RECEIVE_STATUS_STYLES[status]}`}>
+      {RECEIVE_STATUS_LABELS[status]}
     </span>
   );
 }
 
-function realFnsku(value: string | null | undefined): string | null {
-  const f = String(value || '').trim().toUpperCase();
-  return /^X00[A-Z0-9]+$/.test(f) ? f : null;
-}
-
-function openPrintWindow(specs: LabelSpec[]) {
-  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(specs))));
-  window.open(`/api/labels/print?d=${encodeURIComponent(encoded)}`, '_blank');
+function LiveStateBadge({ state }: { state: LiveState }) {
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${LIVE_STATE_STYLES[state]}`}>
+      {LIVE_STATE_LABELS[state]}
+    </span>
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Label types (unchanged from prior session)
+// Label types
 // ---------------------------------------------------------------------------
 
 type LabelMode = 'asin' | 'warehouse' | 'fnsku' | 'custom';
@@ -150,24 +164,24 @@ interface LabelSpec {
 // ---------------------------------------------------------------------------
 
 interface ReceiveModalProps {
-  row: InventoryRow;
+  row: MerchantRow;
   onClose: () => void;
   onSaved: () => void;
 }
 
 function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
-  const status = getStatus(row);
+  const status = getReceiveStatus(row) ?? 'pending';
   const isReceived = status !== 'pending';
   const isInspected = status === 'inspected' || status === 'ready';
 
   const [qtyReceived, setQtyReceived] = useState(
     row.quantity_received != null
       ? String(row.quantity_received)
-      : String(row.quantity_remaining)
+      : String(row.quantity_remaining ?? 0)
   );
   const [receiveNotes, setReceiveNotes] = useState(row.receive_notes ?? '');
   const [listPrice, setListPrice] = useState(
-    row.list_price_cents != null ? (row.list_price_cents / 100).toFixed(2) : ''
+    row.il_list_price_cents != null ? (row.il_list_price_cents / 100).toFixed(2) : ''
   );
   const [bin, setBin] = useState(row.bin_location ?? '');
   const [condition, setCondition] = useState(row.condition ?? '');
@@ -179,13 +193,12 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
   const listPriceNum = parseFloat(listPrice);
   const willBeReceived = isReceived || (Number.isFinite(qtyNum) && qtyNum > 0);
 
-  // Live readiness preview (reflects current form values)
   const preview = {
-    qty: Number.isFinite(qtyNum) && qtyNum > 0,
+    qty:       Number.isFinite(qtyNum) && qtyNum > 0,
     inspected: isInspected || (willBeReceived && markInspected),
-    bin: !!(bin.trim()),
+    bin:       !!(bin.trim()),
     condition: !!(condition.trim()),
-    price: !!(listPrice.trim()) && Number.isFinite(listPriceNum) && listPriceNum > 0,
+    price:     !!(listPrice.trim()) && Number.isFinite(listPriceNum) && listPriceNum > 0,
   };
   const allReady = Object.values(preview).every(Boolean);
 
@@ -202,7 +215,7 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
         return;
       }
 
-      const body: Record<string, unknown> = { id: row.id };
+      const body: Record<string, unknown> = { id: row.il_id };
 
       if (qtyReceived.trim() !== '') body.quantityReceived = qtyNum;
       body.receiveNotes = receiveNotes.trim() || null;
@@ -240,7 +253,6 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
         className="bg-bg-surface border border-border-subtle rounded-xl shadow-2xl w-[480px] max-h-[90vh] overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-text-primary">Receive Inventory</h2>
@@ -254,7 +266,6 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
         </div>
 
         <div className="px-5 py-4 space-y-5">
-
           {/* Lot summary */}
           <div className="flex items-center gap-3 py-2.5 px-3 bg-bg-elevated rounded-lg border border-border-subtle">
             {row.image_url
@@ -262,15 +273,16 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
               : <div className="w-10 h-10 bg-bg-surface rounded shrink-0" />}
             <div className="min-w-0 flex-1 space-y-0.5">
               <div className="text-[11px] font-mono text-text-tertiary">{row.asin}</div>
-              <div className="text-[11px] font-mono text-text-tertiary truncate">{row.sku || '—'}</div>
-              <div className="text-[11px] text-text-secondary">
-                {row.quantity} purchased · {formatCurrency(row.buy_price)}/unit
-              </div>
+              <div className="text-[11px] font-mono text-text-tertiary truncate">{row.sku}</div>
+              {row.quantity != null && row.buy_price != null && (
+                <div className="text-[11px] text-text-secondary">
+                  {row.quantity} purchased · {formatCurrency(row.buy_price)}/unit
+                </div>
+              )}
             </div>
-            <StatusBadge status={status} />
+            <ReceiveStatusBadge status={status} />
           </div>
 
-          {/* Ready banner */}
           {allReady && (
             <div className="flex items-center gap-2 px-3 py-2 bg-green-500/10 border border-green-500/30 rounded-lg text-green-400 text-xs font-medium">
               <CheckCircle2 size={14} />
@@ -278,24 +290,24 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
             </div>
           )}
 
-          {/* Receive section */}
+          {/* Receive */}
           <div>
             <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-2.5">Receive</div>
             <div className="space-y-3">
               <div>
                 <label className="block text-[11px] text-text-tertiary mb-1">
                   Quantity Received
-                  <span className="ml-1 text-text-tertiary/60">(default: {row.quantity_remaining} in stock)</span>
+                  <span className="ml-1 text-text-tertiary/60">
+                    (default: {row.quantity_remaining ?? 0} in stock)
+                  </span>
                 </label>
                 <input
-                  type="number"
-                  min="0"
-                  step="1"
+                  type="number" min="0" step="1"
                   value={qtyReceived}
                   onChange={e => setQtyReceived(e.target.value)}
                   className="w-full h-8 px-3 bg-bg-elevated border border-border-default rounded-md text-sm text-text-primary font-mono placeholder:text-text-tertiary focus:border-accent focus:outline-none"
                 />
-                {row.quantity_received != null && row.quantity_received !== row.quantity && (
+                {row.quantity_received != null && row.quantity != null && row.quantity_received !== row.quantity && (
                   <p className="text-[11px] text-amber-400 mt-1">
                     Previously received {row.quantity_received} of {row.quantity} purchased
                   </p>
@@ -319,7 +331,7 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
             </div>
           </div>
 
-          {/* Details section */}
+          {/* Details */}
           <div>
             <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-2.5">Details</div>
             <div className="space-y-3">
@@ -327,9 +339,7 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
                 <div>
                   <label className="block text-[11px] text-text-tertiary mb-1">List Price ($)</label>
                   <input
-                    type="number"
-                    min="0"
-                    step="0.01"
+                    type="number" min="0" step="0.01"
                     value={listPrice}
                     onChange={e => setListPrice(e.target.value)}
                     placeholder="e.g. 29.99"
@@ -355,15 +365,13 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
                   className="w-full h-8 px-3 bg-bg-elevated border border-border-default rounded-md text-sm text-text-primary focus:border-accent focus:outline-none"
                 >
                   <option value="">— select condition —</option>
-                  {CONDITIONS.map(c => (
-                    <option key={c} value={c}>{c}</option>
-                  ))}
+                  {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
             </div>
           </div>
 
-          {/* Inspection section */}
+          {/* Inspection */}
           <div>
             <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-2.5">Inspection</div>
             {isInspected && row.inspected_at ? (
@@ -382,9 +390,7 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
                 />
                 <span className="text-xs text-text-secondary">
                   Mark as inspected
-                  {!willBeReceived && (
-                    <span className="text-text-tertiary ml-1">— receive first</span>
-                  )}
+                  {!willBeReceived && <span className="text-text-tertiary ml-1">— receive first</span>}
                 </span>
               </label>
             )}
@@ -399,15 +405,12 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
               <div className="space-y-1.5">
                 {[
                   { label: 'Quantity received', met: preview.qty },
-                  { label: 'Inspected', met: preview.inspected },
-                  { label: 'Bin location', met: preview.bin },
-                  { label: 'Condition', met: preview.condition },
-                  { label: 'List price', met: preview.price },
+                  { label: 'Inspected',         met: preview.inspected },
+                  { label: 'Bin location',       met: preview.bin },
+                  { label: 'Condition',          met: preview.condition },
+                  { label: 'List price',         met: preview.price },
                 ].map(({ label, met }) => (
-                  <div
-                    key={label}
-                    className={`flex items-center gap-2 text-[11px] ${met ? 'text-green-400' : 'text-text-tertiary'}`}
-                  >
+                  <div key={label} className={`flex items-center gap-2 text-[11px] ${met ? 'text-green-400' : 'text-text-tertiary'}`}>
                     {met
                       ? <Check size={11} />
                       : <span className="w-[11px] h-[11px] rounded-full border border-text-tertiary/40 inline-block shrink-0" />}
@@ -421,7 +424,6 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
           {error && <p className="text-xs text-red-400">{error}</p>}
         </div>
 
-        {/* Footer */}
         <div className="flex gap-2 px-5 pb-5">
           <button
             onClick={onClose}
@@ -443,7 +445,7 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
 }
 
 // ---------------------------------------------------------------------------
-// PrintModal (unchanged)
+// PrintModal
 // ---------------------------------------------------------------------------
 
 const LABEL_MODES: { mode: LabelMode; label: string; desc: string }[] = [
@@ -454,7 +456,7 @@ const LABEL_MODES: { mode: LabelMode; label: string; desc: string }[] = [
 ];
 
 interface PrintModalProps {
-  selected: InventoryRow[];
+  selected: MerchantRow[];
   onClose: () => void;
 }
 
@@ -486,7 +488,7 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
       const specs: LabelSpec[] = selected.map(r => {
         const spec: LabelSpec = {
           labelMode: 'asin', size,
-          title: r.product_name || r.asin || '',
+          title: r.product_name || r.asin,
           asin: r.asin,
           condition: r.condition || undefined,
         };
@@ -500,11 +502,11 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
     if (labelMode === 'fnsku') {
       const rowsWithFnsku = selected
         .map(r => ({ row: r, fnsku: realFnsku(r.fnsku) }))
-        .filter((e): e is { row: InventoryRow; fnsku: string } => Boolean(e.fnsku));
+        .filter((e): e is { row: MerchantRow; fnsku: string } => Boolean(e.fnsku));
       if (rowsWithFnsku.length === 0) { alert('No selected items have a real FNSKU yet.'); return; }
       openPrintWindow(rowsWithFnsku.map(({ row, fnsku }) => ({
         labelMode: 'fnsku', size,
-        title: row.product_name || row.asin || '',
+        title: row.product_name || row.asin,
         asin: row.asin, fnsku,
         condition: row.condition || undefined,
       })));
@@ -513,11 +515,12 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
 
     openPrintWindow(selected.map(r => ({
       labelMode: 'warehouse', size,
-      title: r.product_name || r.asin || '',
+      title: r.product_name || r.asin,
       asin: r.asin, sku: r.sku || undefined,
       bin: r.bin_location || undefined,
       condition: r.condition || undefined,
-      priceCents: r.buy_price, showPrice,
+      priceCents: r.buy_price ?? 0,
+      showPrice,
     })));
   }
 
@@ -673,7 +676,7 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
                 {selected.length} item{selected.length !== 1 ? 's' : ''} selected
               </div>
               {selected.map(r => (
-                <div key={r.id} className="flex items-center gap-2 py-1 border-b border-border-subtle/50 last:border-0">
+                <div key={r.row_key} className="flex items-center gap-2 py-1 border-b border-border-subtle/50 last:border-0">
                   {r.image_url
                     ? <img src={r.image_url} alt="" className="w-7 h-7 object-contain rounded shrink-0" />
                     : <div className="w-7 h-7 bg-bg-elevated rounded shrink-0" />}
@@ -725,26 +728,26 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
 // ---------------------------------------------------------------------------
 
 export default function MerchantInventoryPage() {
-  const [rows, setRows] = useState<InventoryRow[]>([]);
-  const [liveOnlyCount, setLiveOnlyCount] = useState(0);
-  const [lastSynced, setLastSynced] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [search, setSearch] = useState('');
-  const [readyOnly, setReadyOnly] = useState(false);
-  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [listedRows, setListedRows]     = useState<MerchantRow[]>([]);
+  const [localOnlyRows, setLocalOnlyRows] = useState<MerchantRow[]>([]);
+  const [lastSynced, setLastSynced]     = useState<string | null>(null);
+  const [loading, setLoading]           = useState(true);
+  const [syncing, setSyncing]           = useState(false);
+  const [syncError, setSyncError]       = useState<string | null>(null);
+  const [search, setSearch]             = useState('');
+  const [filterView, setFilterView]     = useState<FilterView>(null);
+  const [selected, setSelected]         = useState<Set<string>>(new Set());
   const [showPrintModal, setShowPrintModal] = useState(false);
-  const [receiveRow, setReceiveRow] = useState<InventoryRow | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [receiveRow, setReceiveRow]     = useState<MerchantRow | null>(null);
+  const [refreshKey, setRefreshKey]     = useState(0);
 
   useEffect(() => {
     setLoading(true);
     fetch('/api/data/merchant-inventory')
       .then(r => r.json())
       .then(d => {
-        setRows(d.items || []);
-        setLiveOnlyCount((d.liveOnly || []).length);
+        setListedRows(d.listed || []);
+        setLocalOnlyRows(d.localOnly || []);
         setLastSynced(d.lastSynced ?? null);
         setLoading(false);
       })
@@ -769,38 +772,57 @@ export default function MerchantInventoryPage() {
     }
   }
 
-  const filtered = useMemo(() => {
-    let result = rows;
-    if (readyOnly) result = result.filter(r => getStatus(r) === 'ready');
-    if (!search.trim()) return result;
+  // Counts (always from full datasets, unaffected by filter/search)
+  const liveCount        = useMemo(() => listedRows.filter(r => r.live_state === 'active').length, [listedRows]);
+  const oosCount         = useMemo(() => listedRows.filter(r => r.live_state === 'oos').length, [listedRows]);
+  const notInLedgerCount = useMemo(() => listedRows.filter(r => r.row_source === 'live_only').length, [listedRows]);
+  const localOnlyCount   = localOnlyRows.length;
+  const readyCount       = useMemo(() =>
+    [...listedRows, ...localOnlyRows].filter(r => getReceiveStatus(r) === 'ready').length,
+  [listedRows, localOnlyRows]);
+
+  // Display rows based on active filter
+  const baseRows = useMemo((): MerchantRow[] => {
+    switch (filterView) {
+      case 'live':          return listedRows.filter(r => r.live_state === 'active');
+      case 'oos':           return listedRows.filter(r => r.live_state === 'oos');
+      case 'not_in_ledger': return listedRows.filter(r => r.row_source === 'live_only');
+      case 'local_only':    return localOnlyRows;
+      case 'ready':         return [...listedRows, ...localOnlyRows].filter(r => getReceiveStatus(r) === 'ready');
+      default:              return listedRows; // null = default: Amazon-primary view
+    }
+  }, [listedRows, localOnlyRows, filterView]);
+
+  const displayRows = useMemo(() => {
+    if (!search.trim()) return baseRows;
     const q = search.toLowerCase();
-    return result.filter(r =>
+    return baseRows.filter(r =>
       (r.product_name || '').toLowerCase().includes(q) ||
-      (r.asin || '').toLowerCase().includes(q) ||
-      (r.sku || '').toLowerCase().includes(q) ||
-      (r.supplier_name || '').toLowerCase().includes(q) ||
+      r.asin.toLowerCase().includes(q) ||
+      r.sku.toLowerCase().includes(q) ||
       (r.bin_location || '').toLowerCase().includes(q)
     );
-  }, [rows, search, readyOnly]);
+  }, [baseRows, search]);
 
-  const readyCount = useMemo(() => rows.filter(r => getStatus(r) === 'ready').length, [rows]);
-  const totalUnits = filtered.reduce((s, r) => s + r.quantity_remaining, 0);
-  const totalCogs  = filtered.reduce((s, r) => s + r.buy_price * r.quantity_remaining, 0);
+  function setFilter(v: FilterView) {
+    setFilterView(prev => prev === v ? null : v);
+    setSelected(new Set());
+  }
 
-  function toggleRow(id: number) {
+  function toggleRow(key: string) {
     setSelected(prev => {
       const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
+      next.has(key) ? next.delete(key) : next.add(key);
       return next;
     });
   }
 
   function toggleAll() {
-    if (selected.size === filtered.length) setSelected(new Set());
-    else setSelected(new Set(filtered.map(r => r.id)));
+    if (selected.size === displayRows.length) setSelected(new Set());
+    else setSelected(new Set(displayRows.map(r => r.row_key)));
   }
 
-  const selectedRows = filtered.filter(r => selected.has(r.id));
+  const selectedRows = displayRows.filter(r => selected.has(r.row_key));
 
   function actionLabel(status: ReceiveStatus): string {
     if (status === 'pending') return 'Receive';
@@ -814,6 +836,8 @@ export default function MerchantInventoryPage() {
     return 'text-text-tertiary border-border-subtle hover:bg-bg-hover';
   }
 
+  const hasData = !loading && (listedRows.length > 0 || localOnlyRows.length > 0);
+
   return (
     <div>
       {/* Page header */}
@@ -821,11 +845,11 @@ export default function MerchantInventoryPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Merchant Fulfilled Inventory</h1>
           <p className="text-sm text-text-tertiary mt-0.5">
-            Local FlipLedger lots (LV_ SKUs) · Amazon live status via Seller Central sync
+            Amazon MFN listings (LV_ SKUs) · local lot data enriched from FlipLedger
           </p>
         </div>
         <div className="flex items-center gap-3">
-          {/* Sync button + status */}
+          {/* Sync */}
           <div className="flex flex-col items-end gap-0.5">
             <button
               onClick={handleSync}
@@ -840,7 +864,7 @@ export default function MerchantInventoryPage() {
             )}
             {lastSynced && !syncError && (
               <p className="text-[10px] text-text-tertiary">
-                Last synced {new Date(lastSynced).toLocaleDateString()} {new Date(lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                Synced {new Date(lastSynced).toLocaleDateString()} {new Date(lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </p>
             )}
             {!lastSynced && !syncError && (
@@ -869,66 +893,44 @@ export default function MerchantInventoryPage() {
               type="text"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search title, ASIN, SKU, supplier, or bin…"
-              className="h-9 pl-9 pr-4 w-72 bg-bg-elevated border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+              placeholder="Search title, ASIN, SKU, or bin…"
+              className="h-9 pl-9 pr-4 w-64 bg-bg-elevated border border-border-default rounded-md text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
             />
           </div>
         </div>
       </div>
 
-      {/* Stats bar */}
-      {!loading && rows.length > 0 && (
-        <div className="grid grid-cols-5 gap-4 mb-4">
-          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
-            <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">In-Stock Lots</div>
-            <div className="text-2xl font-semibold font-mono text-text-primary">{filtered.length}</div>
-          </div>
-          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
-            <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">Total Units</div>
-            <div className="text-2xl font-semibold font-mono text-text-primary">{totalUnits}</div>
-          </div>
-          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
-            <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">COGS on Hand</div>
-            <div className="text-2xl font-semibold font-mono text-text-primary">{formatCurrency(totalCogs)}</div>
-          </div>
-          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
-            <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">Ready to Activate</div>
-            <div className="text-2xl font-semibold font-mono text-green-400">{readyCount}</div>
-          </div>
-          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
-            <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">Live on Amazon</div>
-            <div className="flex items-end gap-2">
-              <div className="text-2xl font-semibold font-mono text-text-primary">
-                {lastSynced ? rows.filter(r => r.live_state === 'active').length : '—'}
-              </div>
-              {liveOnlyCount > 0 && (
-                <div className="text-[10px] text-amber-400 mb-1 leading-tight">
-                  +{liveOnlyCount} not in ledger
+      {/* Filter / stat cards — also serve as clickable filters */}
+      {hasData && (
+        <div className="grid grid-cols-5 gap-3 mb-6">
+          {([
+            { id: 'live'          as FilterView, label: 'Live on Amazon',   count: liveCount,        activeColor: 'border-green-500/50 bg-green-500/5',  numColor: 'text-green-400' },
+            { id: 'oos'           as FilterView, label: 'OOS on Amazon',    count: oosCount,         activeColor: 'border-amber-500/50 bg-amber-500/5',  numColor: 'text-amber-400' },
+            { id: 'not_in_ledger' as FilterView, label: 'Not in Ledger',    count: notInLedgerCount, activeColor: 'border-blue-500/50 bg-blue-500/5',    numColor: 'text-blue-400'  },
+            { id: 'local_only'    as FilterView, label: 'Local Not Listed',  count: localOnlyCount,   activeColor: 'border-border-default bg-bg-elevated', numColor: 'text-text-secondary' },
+            { id: 'ready'         as FilterView, label: 'Ready to Activate', count: readyCount,       activeColor: 'border-green-500/50 bg-green-500/5',  numColor: 'text-green-400' },
+          ] as const).map(card => {
+            const isActive = filterView === card.id;
+            return (
+              <button
+                key={card.id}
+                onClick={() => setFilter(card.id)}
+                className={`text-left p-4 rounded-lg border transition-colors ${
+                  isActive
+                    ? card.activeColor
+                    : 'bg-bg-surface border-border-subtle hover:border-border-default hover:bg-bg-hover'
+                }`}
+              >
+                <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">{card.label}</div>
+                <div className={`text-2xl font-semibold font-mono ${isActive ? card.numColor : 'text-text-primary'}`}>
+                  {lastSynced || card.id === 'local_only' || card.id === 'ready' ? card.count : '—'}
                 </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Filter bar */}
-      {!loading && rows.length > 0 && (
-        <div className="flex items-center gap-3 mb-4">
-          <button
-            onClick={() => setReadyOnly(v => !v)}
-            className={`h-8 px-3 rounded-md text-xs font-medium border transition-colors ${
-              readyOnly
-                ? 'bg-green-500/10 text-green-400 border-green-500/30'
-                : 'bg-bg-elevated text-text-secondary border-border-subtle hover:border-border-default'
-            }`}
-          >
-            {readyOnly ? '✓ Ready Only' : 'Show Ready Only'}
-          </button>
-          {readyOnly && (
-            <span className="text-[11px] text-text-tertiary">
-              {filtered.length} lot{filtered.length !== 1 ? 's' : ''} ready to activate
-            </span>
-          )}
+                {isActive && (
+                  <div className="text-[10px] text-text-tertiary mt-1">click to clear</div>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
 
@@ -947,44 +949,56 @@ export default function MerchantInventoryPage() {
                 <th className="px-3 py-2.5 w-8">
                   <input
                     type="checkbox"
-                    checked={filtered.length > 0 && selected.size === filtered.length}
-                    ref={el => { if (el) el.indeterminate = selected.size > 0 && selected.size < filtered.length; }}
+                    checked={displayRows.length > 0 && selected.size === displayRows.length}
+                    ref={el => { if (el) el.indeterminate = selected.size > 0 && selected.size < displayRows.length; }}
                     onChange={toggleAll}
                     className="accent-accent cursor-pointer"
                   />
                 </th>
                 <th className="px-3 py-2.5 w-10" />
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Product</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Status</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Amazon</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Amazon</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Receive</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Bin</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Condition</th>
-                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-16">Stock</th>
-                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-16">Rcvd</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Condition</th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-16">Amz Qty</th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-16">Local</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">List</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Cost</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Action</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.length === 0 ? (
+              {displayRows.length === 0 ? (
                 <tr>
                   <td colSpan={12} className="px-4 py-10 text-center text-text-tertiary text-sm">
-                    {readyOnly
-                      ? 'No lots are ready to activate yet. Receive and inspect inventory first.'
-                      : search
-                        ? 'No items match your search.'
-                        : 'No in-stock inventory found.'}
+                    {!lastSynced
+                      ? 'No Amazon data yet — click Sync Amazon to pull live MFN listings.'
+                      : filterView === 'live'
+                        ? 'No live Amazon listings found.'
+                        : filterView === 'oos'
+                          ? 'No out-of-stock Amazon listings.'
+                          : filterView === 'not_in_ledger'
+                            ? 'All Amazon listings have a matching local lot.'
+                            : filterView === 'local_only'
+                              ? 'All local lots have a matching Amazon listing.'
+                              : filterView === 'ready'
+                                ? 'No lots are ready to activate yet.'
+                                : search
+                                  ? 'No items match your search.'
+                                  : 'No MFN listings found.'}
                   </td>
                 </tr>
               ) : (
-                filtered.map(row => {
-                  const isSelected = selected.has(row.id);
-                  const status = getStatus(row);
+                displayRows.map(row => {
+                  const isSelected = selected.has(row.row_key);
+                  const receiveStatus = getReceiveStatus(row);
+                  const listPrice = row.il_list_price_cents ?? row.amazon_list_price_cents;
+
                   return (
                     <tr
-                      key={row.id}
-                      onClick={() => toggleRow(row.id)}
+                      key={row.row_key}
+                      onClick={() => toggleRow(row.row_key)}
                       className={`border-b border-border-subtle/50 cursor-pointer transition-colors ${
                         isSelected ? 'bg-accent/5 hover:bg-accent/10' : 'hover:bg-bg-hover'
                       }`}
@@ -993,7 +1007,7 @@ export default function MerchantInventoryPage() {
                         <input
                           type="checkbox"
                           checked={isSelected}
-                          onChange={() => toggleRow(row.id)}
+                          onChange={() => toggleRow(row.row_key)}
                           className="accent-accent cursor-pointer"
                         />
                       </td>
@@ -1002,50 +1016,74 @@ export default function MerchantInventoryPage() {
                           ? <img src={row.image_url} alt="" className="w-8 h-8 object-contain rounded" />
                           : <div className="w-8 h-8 bg-bg-elevated rounded" />}
                       </td>
-                      <td className="px-4 py-2">
-                        <div className="text-sm text-text-primary font-medium truncate max-w-[240px]" title={row.product_name || row.asin}>
+                      <td className="px-4 py-2 max-w-[220px]">
+                        <div className="text-sm text-text-primary font-medium truncate" title={row.product_name || row.asin}>
                           {row.product_name || row.asin}
                         </div>
-                        <div className="text-[10px] text-text-tertiary font-mono">{row.asin}</div>
-                      </td>
-                      <td className="px-4 py-2">
-                        <StatusBadge status={status} />
-                      </td>
-                      <td className="px-4 py-2">
-                        <div className="flex flex-col gap-0.5">
-                          <LiveStateBadge state={row.live_state} />
-                          {row.live_quantity != null && row.live_state !== 'not_listed' && (
-                            <span className="text-[10px] font-mono text-text-tertiary">{row.live_quantity} live</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <a
+                            href={`https://www.amazon.com/dp/${row.asin}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={e => e.stopPropagation()}
+                            className="text-[10px] font-mono text-accent hover:underline"
+                          >
+                            {row.asin}
+                          </a>
+                          {row.sku && (
+                            <span className="text-[10px] font-mono text-text-tertiary truncate max-w-[120px]" title={row.sku}>
+                              {row.sku}
+                            </span>
                           )}
                         </div>
+                      </td>
+                      <td className="px-4 py-2">
+                        <LiveStateBadge state={row.live_state} />
+                      </td>
+                      <td className="px-4 py-2">
+                        {receiveStatus != null
+                          ? <ReceiveStatusBadge status={receiveStatus} />
+                          : <span className="text-text-tertiary text-xs">—</span>}
                       </td>
                       <td className="px-4 py-2">
                         {row.bin_location
                           ? <span className="inline-flex items-center px-2 py-0.5 rounded bg-accent/10 text-accent text-xs font-mono font-medium">{row.bin_location}</span>
                           : <span className="text-text-tertiary text-xs">—</span>}
                       </td>
-                      <td className="px-4 py-2 text-xs text-text-secondary">{row.condition || '—'}</td>
-                      <td className="px-4 py-2 text-right font-mono text-sm text-text-primary font-medium">{row.quantity_remaining}</td>
+                      <td className="px-4 py-2 text-xs text-text-secondary">
+                        {row.condition || <span className="text-text-tertiary">—</span>}
+                      </td>
                       <td className="px-4 py-2 text-right font-mono text-sm">
-                        {row.quantity_received != null
-                          ? <span className={row.quantity_received < row.quantity ? 'text-amber-400' : 'text-text-secondary'}>
-                              {row.quantity_received}
-                            </span>
+                        {row.amazon_qty != null
+                          ? <span className={row.amazon_qty === 0 ? 'text-amber-400' : 'text-text-primary font-medium'}>{row.amazon_qty}</span>
                           : <span className="text-text-tertiary">—</span>}
                       </td>
                       <td className="px-4 py-2 text-right font-mono text-sm">
-                        {row.list_price_cents != null
-                          ? <span className="text-text-primary">{formatCurrency(row.list_price_cents)}</span>
+                        {row.quantity_remaining != null
+                          ? <span className="text-text-secondary">{row.quantity_remaining}</span>
                           : <span className="text-text-tertiary">—</span>}
                       </td>
-                      <td className="px-4 py-2 text-right font-mono text-sm text-text-secondary">{formatCurrency(row.buy_price)}</td>
+                      <td className="px-4 py-2 text-right font-mono text-sm">
+                        {listPrice != null
+                          ? <span className="text-text-primary">{formatCurrency(listPrice)}</span>
+                          : <span className="text-text-tertiary">—</span>}
+                      </td>
+                      <td className="px-4 py-2 text-right font-mono text-sm">
+                        {row.buy_price != null
+                          ? <span className="text-text-secondary">{formatCurrency(row.buy_price)}</span>
+                          : <span className="text-text-tertiary">—</span>}
+                      </td>
                       <td className="px-4 py-2 text-right" onClick={e => e.stopPropagation()}>
-                        <button
-                          onClick={() => setReceiveRow(row)}
-                          className={`h-7 px-3 rounded-md text-xs font-medium border transition-colors ${actionClass(status)}`}
-                        >
-                          {actionLabel(status)}
-                        </button>
+                        {receiveStatus != null ? (
+                          <button
+                            onClick={() => setReceiveRow(row)}
+                            className={`h-7 px-3 rounded-md text-xs font-medium border transition-colors ${actionClass(receiveStatus)}`}
+                          >
+                            {actionLabel(receiveStatus)}
+                          </button>
+                        ) : (
+                          <span className="text-text-tertiary text-xs">—</span>
+                        )}
                       </td>
                     </tr>
                   );
@@ -1054,13 +1092,16 @@ export default function MerchantInventoryPage() {
             </tbody>
           </table>
 
-          {filtered.length > 0 && (
-            <div className="px-4 py-2 border-t border-border-subtle bg-bg-elevated/40 text-xs text-text-tertiary flex gap-4">
-              <span>{filtered.length} {filtered.length === 1 ? 'lot' : 'lots'}</span>
-              <span>{totalUnits} units in stock</span>
-              <span>{formatCurrency(totalCogs)} COGS on hand</span>
-              {readyCount > 0 && (
-                <span className="text-green-400">{readyCount} ready to activate</span>
+          {displayRows.length > 0 && (
+            <div className="px-4 py-2 border-t border-border-subtle bg-bg-elevated/40 text-xs text-text-tertiary flex gap-4 items-center">
+              <span>{displayRows.length} {displayRows.length === 1 ? 'listing' : 'listings'}</span>
+              {filterView && (
+                <button
+                  onClick={() => setFilter(filterView)}
+                  className="text-accent hover:underline"
+                >
+                  Clear filter
+                </button>
               )}
               {selected.size > 0 && (
                 <span className="ml-auto text-accent">{selected.size} selected</span>
