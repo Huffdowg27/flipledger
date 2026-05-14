@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download } from 'lucide-react';
+import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download, Eye } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,6 +56,26 @@ interface MerchantRow {
   parsed_order_qty: number | null;
   parsed_date: string | null;
   sku_parse_status: 'parsed' | 'unparsed';
+}
+
+// ---------------------------------------------------------------------------
+// Activation preview types — mirrors the API response shape
+// ---------------------------------------------------------------------------
+
+interface ActivationPreviewRow {
+  sku: string;
+  asin: string | null;
+  product_name: string | null;
+  current_qty: number | null;
+  current_price_cents: number | null;
+  current_status: string | null;
+  proposed_qty: number;
+  qty_source: 'received' | 'remaining' | 'none';
+  proposed_price_cents: number | null;
+  proposed_shipping_template: string;
+  il_id: number | null;
+  warnings: string[];
+  can_push: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -827,6 +847,155 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
 }
 
 // ---------------------------------------------------------------------------
+// PreviewModal — Phase 1 activation preview. DB-only. No Amazon writes.
+// ---------------------------------------------------------------------------
+
+interface PreviewModalProps {
+  rows: ActivationPreviewRow[];
+  shippingTemplate: string;
+  onClose: () => void;
+}
+
+function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
+  const pushableCount = rows.filter(r => r.can_push).length;
+  const warningCount  = rows.filter(r => r.warnings.length > 0).length;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60" onClick={onClose}>
+      <div
+        className="bg-bg-surface border border-border-subtle rounded-xl shadow-2xl w-[920px] max-h-[85vh] overflow-hidden flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle shrink-0">
+          <div>
+            <h2 className="text-sm font-semibold text-text-primary">Activation Preview</h2>
+            <p className="text-[11px] text-text-tertiary mt-0.5">
+              Dry run — no Amazon writes made.{' '}
+              <span className="text-green-400 font-medium">{pushableCount}</span> of {rows.length} rows ready to push.
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-bg-hover text-text-tertiary">
+            <X size={16} />
+          </button>
+        </div>
+
+        {/* Summary bar */}
+        <div className="px-5 py-2 bg-bg-elevated border-b border-border-subtle shrink-0 flex items-center gap-4 text-xs">
+          <span className="text-green-400 font-medium">{pushableCount} can push</span>
+          {warningCount > 0 && (
+            <span className="text-amber-400">{warningCount} with warnings</span>
+          )}
+          <span className="ml-auto text-text-tertiary">
+            Shipping template:{' '}
+            <span className="font-mono text-text-secondary">{shippingTemplate || '(not set)'}</span>
+          </span>
+        </div>
+
+        {/* Preview table */}
+        <div className="overflow-auto flex-1">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-bg-elevated z-10">
+              <tr className="border-b border-border-subtle">
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Product / SKU</th>
+                <th className="px-4 py-2.5 text-center text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Status</th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-20">Cur. Qty</th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-20">Prop. Qty</th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-26">Cur. Price</th>
+                <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-26">Prop. Price</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Warnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(row => (
+                <tr
+                  key={row.sku}
+                  className={`border-b border-border-subtle/50 transition-colors ${
+                    row.can_push ? 'hover:bg-bg-hover' : 'opacity-50'
+                  }`}
+                >
+                  <td className="px-4 py-2.5 max-w-[240px]">
+                    <div className="text-text-primary font-medium truncate" title={row.product_name || row.sku}>
+                      {row.product_name || row.asin || row.sku}
+                    </div>
+                    <div className="font-mono text-text-tertiary text-[10px] truncate mt-0.5">{row.sku}</div>
+                    {row.asin && (
+                      <div className="font-mono text-text-tertiary/60 text-[10px]">{row.asin}</div>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-center">
+                    {row.current_status ? (
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${
+                        row.current_status === 'Active'
+                          ? 'bg-green-500/10 text-green-400 border-green-500/30'
+                          : row.current_status === 'Inactive'
+                            ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                            : 'bg-bg-elevated text-text-tertiary border-border-subtle'
+                      }`}>
+                        {row.current_status}
+                      </span>
+                    ) : (
+                      <span className="text-text-tertiary">Not listed</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono">
+                    {row.current_qty != null
+                      ? row.current_qty
+                      : <span className="text-text-tertiary">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono">
+                    <span className={row.proposed_qty > 0 ? 'text-text-primary font-medium' : 'text-amber-400'}>
+                      {row.proposed_qty}
+                    </span>
+                    {row.qty_source === 'remaining' && (
+                      <span className="block text-[9px] text-amber-400/70 mt-0.5">ledger fallback</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono">
+                    {row.current_price_cents != null
+                      ? formatCurrency(row.current_price_cents)
+                      : <span className="text-text-tertiary">—</span>}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-mono">
+                    {row.proposed_price_cents != null
+                      ? <span className="text-text-primary font-medium">{formatCurrency(row.proposed_price_cents)}</span>
+                      : <span className="text-amber-400">No price</span>}
+                  </td>
+                  <td className="px-4 py-2.5">
+                    {row.warnings.length > 0 ? (
+                      <div className="space-y-0.5">
+                        {row.warnings.map((w, i) => (
+                          <div key={i} className="text-amber-400 text-[10px] leading-tight">{w}</div>
+                        ))}
+                      </div>
+                    ) : (
+                      <span className="text-green-400 text-[10px]">Ready</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Footer */}
+        <div className="px-5 py-3 border-t border-border-subtle shrink-0 flex items-center justify-between">
+          <p className="text-[11px] text-text-tertiary">
+            Phase 1 — preview only. No Amazon API calls made. Push will be available in Phase 2.
+          </p>
+          <button
+            onClick={onClose}
+            className="h-8 px-4 rounded-md border border-border-subtle text-sm text-text-secondary hover:bg-bg-hover transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -843,6 +1012,10 @@ export default function MerchantInventoryPage() {
   const [showPrintModal, setShowPrintModal] = useState(false);
   const [receiveRow, setReceiveRow]     = useState<MerchantRow | null>(null);
   const [refreshKey, setRefreshKey]     = useState(0);
+  const [previewRows, setPreviewRows]   = useState<ActivationPreviewRow[]>([]);
+  const [previewOpen, setPreviewOpen]   = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewTemplate, setPreviewTemplate] = useState('');
 
   useEffect(() => {
     setLoading(true);
@@ -872,6 +1045,30 @@ export default function MerchantInventoryPage() {
       setSyncError('Network error');
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handlePreview(targetRows: MerchantRow[]) {
+    if (targetRows.length === 0) return;
+    setPreviewLoading(true);
+    try {
+      const res = await fetch('/api/data/merchant-inventory/activation-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skus: targetRows.map(r => r.sku) }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        alert(data.error || 'Preview failed');
+        return;
+      }
+      setPreviewRows(data.rows || []);
+      setPreviewTemplate(data.shippingTemplate || '');
+      setPreviewOpen(true);
+    } catch {
+      alert('Network error — could not load preview');
+    } finally {
+      setPreviewLoading(false);
     }
   }
 
@@ -984,6 +1181,18 @@ export default function MerchantInventoryPage() {
               <p className="text-[10px] text-text-tertiary">Not yet synced</p>
             )}
           </div>
+          {readyForExport.length > 0 && (
+            <button
+              onClick={() => handlePreview(readyForExport)}
+              disabled={previewLoading}
+              className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-blue-500/50 text-blue-400 text-sm font-medium hover:bg-blue-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {previewLoading
+                ? <RefreshCw size={14} className="animate-spin" />
+                : <Eye size={14} />}
+              {previewLoading ? 'Loading…' : `Preview Amazon Updates (${readyForExport.length})`}
+            </button>
+          )}
           {readyForExport.length > 0 && (
             <button
               onClick={() => exportActivationCsv(readyForExport)}
@@ -1283,6 +1492,14 @@ export default function MerchantInventoryPage() {
           row={receiveRow}
           onClose={() => setReceiveRow(null)}
           onSaved={() => { setRefreshKey(k => k + 1); setReceiveRow(null); }}
+        />
+      )}
+
+      {previewOpen && previewRows.length > 0 && (
+        <PreviewModal
+          rows={previewRows}
+          shippingTemplate={previewTemplate}
+          onClose={() => setPreviewOpen(false)}
         />
       )}
     </div>
