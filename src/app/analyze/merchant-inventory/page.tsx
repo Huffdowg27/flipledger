@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useMemo } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, Printer, X, Check, CheckCircle2 } from 'lucide-react';
+import { Search, Printer, X, Check, CheckCircle2, RefreshCw } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -29,6 +29,12 @@ interface InventoryRow {
   inspected_at: string | null;
   receive_notes: string | null;
   list_price_cents: number | null;
+  // Live listing data from merchant_listings (null if never synced or no match)
+  live_status: string | null;
+  live_quantity: number | null;
+  live_last_synced: string | null;
+  live_list_price_cents: number | null;
+  live_state: 'active' | 'inactive' | 'oos' | 'not_listed' | null;
 }
 
 type ReceiveStatus = 'pending' | 'received' | 'inspected' | 'ready';
@@ -78,6 +84,31 @@ function StatusBadge({ status }: { status: ReceiveStatus }) {
   return (
     <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${STATUS_STYLES[status]}`}>
       {STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+// Live Amazon listing state badge
+const LIVE_STATE_STYLES: Record<string, string> = {
+  active:     'bg-green-500/10 text-green-400 border-green-500/30',
+  oos:        'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  inactive:   'bg-red-500/10 text-red-400 border-red-500/30',
+  not_listed: 'bg-bg-elevated text-text-tertiary border-border-subtle',
+};
+const LIVE_STATE_LABELS: Record<string, string> = {
+  active:     'Active',
+  oos:        'OOS',
+  inactive:   'Inactive',
+  not_listed: 'Not Listed',
+};
+
+function LiveStateBadge({ state }: { state: string | null }) {
+  const key = state ?? 'not_listed';
+  const style = LIVE_STATE_STYLES[key] ?? LIVE_STATE_STYLES.not_listed;
+  const label = LIVE_STATE_LABELS[key] ?? 'Unknown';
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${style}`}>
+      {label}
     </span>
   );
 }
@@ -695,7 +726,11 @@ function PrintModal({ selected, onClose }: PrintModalProps) {
 
 export default function MerchantInventoryPage() {
   const [rows, setRows] = useState<InventoryRow[]>([]);
+  const [liveOnlyCount, setLiveOnlyCount] = useState(0);
+  const [lastSynced, setLastSynced] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [readyOnly, setReadyOnly] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
@@ -707,9 +742,32 @@ export default function MerchantInventoryPage() {
     setLoading(true);
     fetch('/api/data/merchant-inventory')
       .then(r => r.json())
-      .then(d => { setRows(d.items || []); setLoading(false); })
+      .then(d => {
+        setRows(d.items || []);
+        setLiveOnlyCount((d.liveOnly || []).length);
+        setLastSynced(d.lastSynced ?? null);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   }, [refreshKey]);
+
+  async function handleSync() {
+    setSyncing(true);
+    setSyncError(null);
+    try {
+      const res = await fetch('/api/sync/merchant-listings', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) {
+        setSyncError(data.error || 'Sync failed');
+      } else {
+        setRefreshKey(k => k + 1);
+      }
+    } catch {
+      setSyncError('Network error');
+    } finally {
+      setSyncing(false);
+    }
+  }
 
   const filtered = useMemo(() => {
     let result = rows;
@@ -763,10 +821,32 @@ export default function MerchantInventoryPage() {
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Merchant Fulfilled Inventory</h1>
           <p className="text-sm text-text-tertiary mt-0.5">
-            Local FlipLedger lots (LV_ SKUs) · Amazon live MFN status not synced
+            Local FlipLedger lots (LV_ SKUs) · Amazon live status via Seller Central sync
           </p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Sync button + status */}
+          <div className="flex flex-col items-end gap-0.5">
+            <button
+              onClick={handleSync}
+              disabled={syncing}
+              className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-border-subtle text-sm text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+              {syncing ? 'Syncing…' : 'Sync Amazon'}
+            </button>
+            {syncError && (
+              <p className="text-[10px] text-red-400 max-w-[180px] text-right">{syncError}</p>
+            )}
+            {lastSynced && !syncError && (
+              <p className="text-[10px] text-text-tertiary">
+                Last synced {new Date(lastSynced).toLocaleDateString()} {new Date(lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </p>
+            )}
+            {!lastSynced && !syncError && (
+              <p className="text-[10px] text-text-tertiary">Not yet synced</p>
+            )}
+          </div>
           {selected.size > 0 && (
             <button
               onClick={() => setShowPrintModal(true)}
@@ -798,7 +878,7 @@ export default function MerchantInventoryPage() {
 
       {/* Stats bar */}
       {!loading && rows.length > 0 && (
-        <div className="grid grid-cols-4 gap-4 mb-4">
+        <div className="grid grid-cols-5 gap-4 mb-4">
           <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
             <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">In-Stock Lots</div>
             <div className="text-2xl font-semibold font-mono text-text-primary">{filtered.length}</div>
@@ -814,6 +894,19 @@ export default function MerchantInventoryPage() {
           <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
             <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">Ready to Activate</div>
             <div className="text-2xl font-semibold font-mono text-green-400">{readyCount}</div>
+          </div>
+          <div className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+            <div className="text-[11px] uppercase tracking-widest text-text-tertiary mb-1">Live on Amazon</div>
+            <div className="flex items-end gap-2">
+              <div className="text-2xl font-semibold font-mono text-text-primary">
+                {lastSynced ? rows.filter(r => r.live_state === 'active').length : '—'}
+              </div>
+              {liveOnlyCount > 0 && (
+                <div className="text-[10px] text-amber-400 mb-1 leading-tight">
+                  +{liveOnlyCount} not in ledger
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -863,6 +956,7 @@ export default function MerchantInventoryPage() {
                 <th className="px-3 py-2.5 w-10" />
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Product</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Status</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Amazon</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Bin</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Condition</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-16">Stock</th>
@@ -875,7 +969,7 @@ export default function MerchantInventoryPage() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={11} className="px-4 py-10 text-center text-text-tertiary text-sm">
+                  <td colSpan={12} className="px-4 py-10 text-center text-text-tertiary text-sm">
                     {readyOnly
                       ? 'No lots are ready to activate yet. Receive and inspect inventory first.'
                       : search
@@ -916,6 +1010,14 @@ export default function MerchantInventoryPage() {
                       </td>
                       <td className="px-4 py-2">
                         <StatusBadge status={status} />
+                      </td>
+                      <td className="px-4 py-2">
+                        <div className="flex flex-col gap-0.5">
+                          <LiveStateBadge state={row.live_state} />
+                          {row.live_quantity != null && row.live_state !== 'not_listed' && (
+                            <span className="text-[10px] font-mono text-text-tertiary">{row.live_quantity} live</span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-4 py-2">
                         {row.bin_location

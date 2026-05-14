@@ -599,6 +599,26 @@ export function initializeDatabase() {
       estimated_at TEXT NOT NULL,
       PRIMARY KEY (asin, marketplace)
     );
+
+    -- Live MFN listing state synced from GET_FLAT_FILE_OPEN_LISTINGS_DATA.
+    -- Separate from live_inventory (FBA-only). Source of truth for what
+    -- listings actually exist in Seller Central and their current status/qty.
+    CREATE TABLE IF NOT EXISTS merchant_listings (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      marketplace TEXT NOT NULL DEFAULT 'amazon',
+      status TEXT,
+      quantity INTEGER,
+      product_name TEXT,
+      condition TEXT,
+      list_price_cents INTEGER,
+      last_synced TEXT NOT NULL,
+      sync_report_id TEXT,
+      UNIQUE(asin, sku, marketplace)
+    );
+    CREATE INDEX IF NOT EXISTS idx_merchant_listings_sku ON merchant_listings(sku);
+    CREATE INDEX IF NOT EXISTS idx_merchant_listings_status ON merchant_listings(status);
   `);
 
   // Column migrations — SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
