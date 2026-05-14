@@ -107,7 +107,9 @@ export async function GET(request: NextRequest) {
         il.quantity_remaining,
         il.received_at,
         il.inspected_at,
-        il.merchant_shipping_group_name
+        il.merchant_shipping_group_name,
+        fec.referral_fee_cents,
+        fec.list_price_cents                         AS fee_list_price_cents
       FROM merchant_listings ml
       LEFT JOIN products p ON p.asin = ml.asin
       LEFT JOIN inventory_ledger il
@@ -119,6 +121,8 @@ export async function GET(request: NextRequest) {
           ORDER BY date_purchased DESC
           LIMIT 1
         )
+      LEFT JOIN fee_estimates_cache fec
+        ON fec.asin = ml.asin AND fec.marketplace LIKE '%:MFN'
       WHERE ml.marketplace = 'amazon'
         AND (ml.sku LIKE 'LV_%' OR ml.sku LIKE 'MF_LV_%')
         AND (

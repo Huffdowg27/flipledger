@@ -31,6 +31,8 @@ interface SearchResult {
   parsed_list_price_cents: number | null;
   parsed_order_qty: number | null;
   sku_parse_status: 'parsed' | 'unparsed';
+  referral_fee_cents: number | null;
+  fee_list_price_cents: number | null;
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -43,6 +45,7 @@ interface BatchItem extends SearchResult {
   draft_list_price: string;
   draft_buy_price: string;
   draft_shipping_template: string;
+  draft_shipping_est: string;
   save_state: SaveState;
   save_error: string | null;
   create_lot_state: CreateLotState;
@@ -88,11 +91,52 @@ function makeBatchItem(r: SearchResult): BatchItem {
     draft_list_price:        priceCents != null ? (priceCents / 100).toFixed(2) : '',
     draft_buy_price:         costCents   != null ? (costCents  / 100).toFixed(2) : '',
     draft_shipping_template: r.merchant_shipping_group_name ?? DEFAULT_SHIPPING_TEMPLATE,
+    draft_shipping_est:      '8.00',
     save_state:              'idle',
     save_error:              null,
     create_lot_state:        'idle',
     create_lot_error:        null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Profit calculator (display only — no DB writes)
+// ---------------------------------------------------------------------------
+
+interface ProfitCalc {
+  netCents: number | null;
+  roiPct: number | null;
+  listCents: number | null;
+  costCents: number | null;
+  shipCents: number;
+  feeCents: number | null;
+  hasFee: boolean;
+}
+
+function calcProfit(item: BatchItem): ProfitCalc {
+  const listRaw  = parseFloat(item.draft_list_price);
+  const listCents = Number.isFinite(listRaw) && listRaw > 0 ? Math.round(listRaw * 100) : null;
+
+  // For existing lots, cost is locked in from buy_price; for new lots use the draft field
+  const costRaw  = item.il_id != null
+    ? (item.buy_price ?? (item.draft_buy_price ? parseFloat(item.draft_buy_price) * 100 : null))
+    : (item.draft_buy_price ? parseFloat(item.draft_buy_price) * 100 : null);
+  const costCents = costRaw != null && Number.isFinite(costRaw) && costRaw >= 0
+    ? Math.round(costRaw) : null;
+
+  const shipRaw  = parseFloat(item.draft_shipping_est);
+  const shipCents = Number.isFinite(shipRaw) && shipRaw >= 0 ? Math.round(shipRaw * 100) : 800;
+
+  const feeCents = item.referral_fee_cents != null ? Number(item.referral_fee_cents) : null;
+  const hasFee   = feeCents != null;
+
+  if (listCents == null || costCents == null) {
+    return { netCents: null, roiPct: null, listCents, costCents, shipCents, feeCents, hasFee };
+  }
+
+  const netCents = listCents - costCents - shipCents - (feeCents ?? 0);
+  const roiPct   = costCents > 0 ? (netCents / costCents) * 100 : null;
+  return { netCents, roiPct, listCents, costCents, shipCents, feeCents, hasFee };
 }
 
 // ---------------------------------------------------------------------------
@@ -171,57 +215,100 @@ interface BatchItemCardProps {
 
 function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchItemCardProps) {
   const noLot = item.il_id == null;
+  const profit = calcProfit(item);
+
+  const borderClass = item.save_state === 'saved'
+    ? 'border-green-500/30 bg-green-500/5'
+    : item.save_state === 'error'
+      ? 'border-red-500/30 bg-red-500/5'
+      : noLot
+        ? 'border-amber-500/20 bg-bg-surface'
+        : 'border-border-subtle bg-bg-surface';
 
   return (
-    <div className={`rounded-xl border p-4 transition-colors ${
-      item.save_state === 'saved'
-        ? 'border-green-500/30 bg-green-500/5'
-        : item.save_state === 'error'
-          ? 'border-red-500/30 bg-red-500/5'
-          : noLot
-            ? 'border-amber-500/20 bg-bg-surface'
-            : 'border-border-subtle bg-bg-surface'
-    }`}>
+    <div className={`rounded-xl border p-4 transition-colors ${borderClass}`}>
+
       {/* Header */}
       <div className="flex items-start gap-3 mb-3">
         {item.image_url
-          ? <img src={item.image_url} alt="" className="w-10 h-10 object-contain rounded shrink-0 bg-bg-elevated" />
-          : <div className="w-10 h-10 bg-bg-elevated rounded shrink-0" />}
+          ? <img src={item.image_url} alt="" className="w-12 h-12 object-contain rounded shrink-0 bg-bg-elevated" />
+          : <div className="w-12 h-12 bg-bg-elevated rounded shrink-0" />}
 
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-text-primary leading-tight truncate" title={item.product_name ?? item.asin}>
+          <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
-          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
             <span className="text-[10px] font-mono text-accent">{item.asin}</span>
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
             {item.amazon_qty != null && (
-              <span className="text-[10px] text-text-tertiary">Amz: {item.amazon_qty}</span>
+              <span className="text-[10px] text-text-tertiary">Amz qty: {item.amazon_qty}</span>
             )}
           </div>
-          <div className="text-[10px] font-mono text-text-tertiary/60 truncate mt-0.5" title={item.sku}>
+          <div className="text-[10px] font-mono text-text-tertiary/50 truncate mt-0.5" title={item.sku}>
             {item.sku}
           </div>
         </div>
 
         <button
           onClick={onRemove}
-          className="shrink-0 p-1 text-text-tertiary/50 hover:text-text-tertiary rounded transition-colors"
+          className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded transition-colors"
           title="Remove from batch"
         >
           <X size={14} />
         </button>
       </div>
 
-      {/* No-lot info banner */}
+      {/* No-lot banner */}
       {noLot && (
         <div className="flex items-start gap-1.5 mb-3 px-2.5 py-2 bg-amber-500/8 border border-amber-500/20 rounded text-[11px] text-amber-400/90 leading-snug">
           <AlertCircle size={11} className="shrink-0 mt-0.5" />
-          <span>No local FlipLedger lot. Fill in the fields below and click <strong>Create Local Lot</strong> to register it. <em>Does not update Amazon.</em></span>
+          <span>No local lot. Fill in fields below and click <strong>Create Local Lot</strong> — does not update Amazon.</span>
         </div>
       )}
 
-      {/* Editable fields */}
+      {/* Profit strip */}
+      {profit.listCents != null && profit.costCents != null && (
+        <div className="mb-3 px-3 py-2.5 bg-bg-elevated rounded-lg border border-border-subtle">
+          <div className="flex items-center justify-between mb-1">
+            <div className="flex items-baseline gap-2">
+              <span className={`text-base font-semibold tabular-nums ${
+                profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {profit.netCents != null ? formatCurrency(profit.netCents) : '—'}
+              </span>
+              {profit.roiPct != null && (
+                <span className={`text-xs font-medium ${profit.roiPct > 0 ? 'text-green-400/80' : 'text-red-400/80'}`}>
+                  {profit.roiPct.toFixed(0)}% ROI
+                </span>
+              )}
+            </div>
+            {!profit.hasFee && (
+              <span className="text-[10px] text-text-tertiary/50 italic">excl. Amazon fee</span>
+            )}
+          </div>
+          <div className="flex items-center gap-1 text-[10px] text-text-tertiary flex-wrap">
+            <span>List {formatCurrency(profit.listCents)}</span>
+            <span className="text-text-tertiary/30">−</span>
+            <span>Cost {formatCurrency(profit.costCents)}</span>
+            <span className="text-text-tertiary/30">−</span>
+            <span>Ship {formatCurrency(profit.shipCents)}</span>
+            {profit.feeCents != null && (
+              <>
+                <span className="text-text-tertiary/30">−</span>
+                <span>
+                  Fee {formatCurrency(profit.feeCents)}
+                  {item.fee_list_price_cents != null && (
+                    <span className="text-text-tertiary/50"> at {formatCurrency(item.fee_list_price_cents)}</span>
+                  )}
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Input grid */}
       <div className="grid grid-cols-2 gap-2 mb-2">
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
@@ -265,23 +352,36 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
             {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
-      </div>
-
-      {/* Buy price — only shown when creating a new lot */}
-      {noLot && (
-        <div className="mb-2">
+        <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
-            Buy / Cost Price ($) <span className="text-amber-400 normal-case">(required to create lot)</span>
+            {noLot
+              ? <span>Cost ($) <span className="text-amber-400/80 normal-case font-normal">required</span></span>
+              : 'Cost (locked)'}
           </label>
           <input
             type="number" min="0" step="0.01"
             value={item.draft_buy_price}
-            onChange={e => onChange({ draft_buy_price: e.target.value })}
+            onChange={e => noLot ? onChange({ draft_buy_price: e.target.value }) : undefined}
+            readOnly={!noLot}
             placeholder="0.00"
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-amber-500/30 rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            className={`w-full h-8 px-2.5 rounded-md text-sm font-mono placeholder:text-text-tertiary focus:outline-none ${
+              noLot
+                ? 'bg-bg-elevated border border-amber-500/30 text-text-primary focus:border-accent'
+                : 'bg-bg-elevated/40 border border-border-subtle text-text-tertiary cursor-default'
+            }`}
           />
         </div>
-      )}
+        <div>
+          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Est. Shipping ($)</label>
+          <input
+            type="number" min="0" step="0.01"
+            value={item.draft_shipping_est}
+            onChange={e => onChange({ draft_shipping_est: e.target.value })}
+            placeholder="8.00"
+            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+          />
+        </div>
+      </div>
 
       <div className="mb-3">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
