@@ -100,7 +100,8 @@ export async function POST(request: NextRequest) {
         il.list_price_cents  AS il_list_price_cents,
         il.quantity_received,
         il.quantity_remaining,
-        il.inspected_at
+        il.inspected_at,
+        il.merchant_shipping_group_name
       FROM inventory_ledger il
       WHERE il.sku IN (${placeholders}) AND il.quantity_remaining > 0
       ORDER BY il.date_purchased DESC
@@ -157,7 +158,12 @@ export async function POST(request: NextRequest) {
         warnings.push('Item not inspected — not eligible to push');
       }
 
-      if (!shippingTemplate) {
+      // Shipping template: per-lot value takes priority over the batch default
+      const lotTemplate = il?.merchant_shipping_group_name != null
+        ? String(il.merchant_shipping_group_name).trim()
+        : '';
+      const proposedShippingTemplate = lotTemplate || shippingTemplate;
+      if (!proposedShippingTemplate) {
         warnings.push('Shipping template not configured — not eligible to push');
       }
 
@@ -173,7 +179,7 @@ export async function POST(request: NextRequest) {
         !!inspectedAt &&
         proposedPriceCents != null &&
         proposedPriceCents > 0 &&
-        !!shippingTemplate;
+        !!proposedShippingTemplate;
 
       const asin = ml
         ? String(ml.asin ?? '')
@@ -189,7 +195,7 @@ export async function POST(request: NextRequest) {
         proposed_qty: proposedQty,
         qty_source,
         proposed_price_cents: proposedPriceCents,
-        proposed_shipping_template: shippingTemplate,
+        proposed_shipping_template: proposedShippingTemplate,
         il_id: il ? Number(il.il_id) : null,
         warnings,
         can_push,

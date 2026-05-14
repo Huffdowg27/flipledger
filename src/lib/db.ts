@@ -437,6 +437,26 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_sales_rank_asin ON sales_rank_history(asin);
     CREATE INDEX IF NOT EXISTS idx_sales_rank_captured ON sales_rank_history(captured_date);
 
+    -- MFN activation push log. One row per SP-API PATCH attempt.
+    -- Append-only audit trail — rows are never modified after insert.
+    CREATE TABLE IF NOT EXISTS mfn_push_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      pushed_at TEXT NOT NULL,
+      sku TEXT NOT NULL,
+      asin TEXT,
+      il_id INTEGER,
+      proposed_qty INTEGER,
+      proposed_price_cents INTEGER,
+      proposed_shipping_template TEXT,
+      sp_api_status TEXT,
+      sp_api_submission_id TEXT,
+      sp_api_issues TEXT,
+      error_message TEXT,
+      dry_run INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_mfn_push_log_sku ON mfn_push_log(sku);
+    CREATE INDEX IF NOT EXISTS idx_mfn_push_log_pushed_at ON mfn_push_log(pushed_at);
+
     CREATE INDEX IF NOT EXISTS idx_orders_purchase_date ON orders(purchase_date);
     CREATE INDEX IF NOT EXISTS idx_orders_fulfillment ON orders(fulfillment_channel);
     CREATE INDEX IF NOT EXISTS idx_order_items_order_id ON order_items(order_id);
