@@ -17,6 +17,17 @@ function getDb() {
 // Dry-run preview of what would be sent to Amazon for the given SKUs.
 // DB-only: no SP-API calls, no Amazon writes, no DB writes.
 //
+// Push eligibility requires ALL of:
+//   - merchant_listings row exists for the SKU
+//   - Amazon status is Active (covers both live Active and OOS Active+qty=0)
+//   - quantity_received > 0 (explicitly received, not ledger fallback)
+//   - inspected_at is set
+//   - proposed price > 0
+//   - shipping template is set
+//   - sku is non-empty
+//
+// Fallback rows (qty_source=remaining) are shown in preview but can_push=false.
+//
 // Input:  { skus: string[], shippingTemplate?: string }
 // Output: { dryRun: true, amazonWriteMade: false, rows: ActivationPreviewRow[], shippingTemplate, timestamp }
 
@@ -88,7 +99,8 @@ export async function POST(request: NextRequest) {
         il.asin,
         il.list_price_cents  AS il_list_price_cents,
         il.quantity_received,
-        il.quantity_remaining
+        il.quantity_remaining,
+        il.inspected_at
       FROM inventory_ledger il
       WHERE il.sku IN (${placeholders}) AND il.quantity_remaining > 0
       ORDER BY il.date_purchased DESC
@@ -107,13 +119,16 @@ export async function POST(request: NextRequest) {
       const il = ilBySku.get(sku) ?? null;
       const warnings: string[] = [];
 
+      // --- Eligibility checks (ordered by severity) ---
+
       if (!ml) {
         warnings.push('No Amazon listing found — SKU is not in Seller Central');
       }
 
       const currentStatus = ml ? String(ml.current_status ?? '') || null : null;
-      if (currentStatus === 'Inactive' || currentStatus === 'Incomplete') {
-        warnings.push(`Listing is ${currentStatus} on Amazon — may need reactivation separately`);
+      const statusPushable = currentStatus === 'Active';
+      if (ml && !statusPushable) {
+        warnings.push(`Listing is ${currentStatus ?? 'unknown'} — must be Active to push`);
       }
 
       // Price: use locally-set receive price first; fall back to current Amazon price
@@ -122,38 +137,47 @@ export async function POST(request: NextRequest) {
       const proposedPriceCents = ilPriceCents ?? mlPriceCents;
 
       if (proposedPriceCents == null || proposedPriceCents <= 0) {
-        warnings.push('No list price set — price will be blank in upload');
+        warnings.push('No list price set — not eligible to push');
       }
 
-      // Qty: physical received count trumps ledger remaining
+      // Qty: physical received count is required for push eligibility
       const qtyReceived  = il ? (Number(il.quantity_received) || 0) : 0;
       const qtyRemaining = il ? (Number(il.quantity_remaining) || 0) : 0;
       const proposedQty  = qtyReceived > 0 ? qtyReceived : qtyRemaining;
 
       if (qtyReceived === 0 && qtyRemaining > 0) {
-        warnings.push('Using ledger quantity fallback — item has not been explicitly received. Verify count before pushing.');
+        warnings.push('Preview only — not push eligible until explicitly received.');
+      } else if (proposedQty <= 0) {
+        warnings.push('Quantity is 0 — not eligible to push');
       }
 
-      if (proposedQty <= 0) {
-        warnings.push('Quantity is 0 — row cannot be pushed');
+      // Inspection: required before any push
+      const inspectedAt = il?.inspected_at != null ? String(il.inspected_at).trim() : '';
+      if (il && !inspectedAt) {
+        warnings.push('Item not inspected — not eligible to push');
       }
 
       if (!shippingTemplate) {
-        warnings.push('Shipping template not configured');
+        warnings.push('Shipping template not configured — not eligible to push');
       }
+
+      const qty_source: 'received' | 'remaining' | 'none' =
+        qtyReceived > 0 ? 'received' : qtyRemaining > 0 ? 'remaining' : 'none';
+
+      // can_push: all conditions must hold
+      const can_push =
+        !!sku &&
+        !!ml &&
+        statusPushable &&
+        qtyReceived > 0 &&
+        !!inspectedAt &&
+        proposedPriceCents != null &&
+        proposedPriceCents > 0 &&
+        !!shippingTemplate;
 
       const asin = ml
         ? String(ml.asin ?? '')
         : il ? String(il.asin ?? '') : null;
-
-      const can_push =
-        !!ml &&
-        proposedQty > 0 &&
-        proposedPriceCents != null &&
-        proposedPriceCents > 0;
-
-      const qty_source: 'received' | 'remaining' | 'none' =
-        qtyReceived > 0 ? 'received' : qtyRemaining > 0 ? 'remaining' : 'none';
 
       return {
         sku,

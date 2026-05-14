@@ -882,7 +882,8 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
 
         {/* Summary bar */}
         <div className="px-5 py-2 bg-bg-elevated border-b border-border-subtle shrink-0 flex items-center gap-4 text-xs">
-          <span className="text-green-400 font-medium">{pushableCount} can push</span>
+          <span className="text-green-400 font-medium">{pushableCount} push eligible</span>
+          <span className="text-text-tertiary">{rows.length - pushableCount} not eligible</span>
           {warningCount > 0 && (
             <span className="text-amber-400">{warningCount} with warnings</span>
           )}
@@ -898,12 +899,13 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
             <thead className="sticky top-0 bg-bg-elevated z-10">
               <tr className="border-b border-border-subtle">
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Product / SKU</th>
-                <th className="px-4 py-2.5 text-center text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Status</th>
+                <th className="px-4 py-2.5 text-center text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Amz Status</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-20">Cur. Qty</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-20">Prop. Qty</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-26">Cur. Price</th>
                 <th className="px-4 py-2.5 text-right text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-26">Prop. Price</th>
-                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Warnings</th>
+                <th className="px-4 py-2.5 text-center text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Eligible</th>
+                <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Blockers</th>
               </tr>
             </thead>
             <tbody>
@@ -911,10 +913,10 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
                 <tr
                   key={row.sku}
                   className={`border-b border-border-subtle/50 transition-colors ${
-                    row.can_push ? 'hover:bg-bg-hover' : 'opacity-50'
+                    row.can_push ? 'hover:bg-bg-hover' : 'opacity-60'
                   }`}
                 >
-                  <td className="px-4 py-2.5 max-w-[240px]">
+                  <td className="px-4 py-2.5 max-w-[200px]">
                     <div className="text-text-primary font-medium truncate" title={row.product_name || row.sku}>
                       {row.product_name || row.asin || row.sku}
                     </div>
@@ -935,7 +937,7 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
                         {row.current_status}
                       </span>
                     ) : (
-                      <span className="text-text-tertiary">Not listed</span>
+                      <span className="text-text-tertiary text-[10px]">Not listed</span>
                     )}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono">
@@ -950,6 +952,9 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
                     {row.qty_source === 'remaining' && (
                       <span className="block text-[9px] text-amber-400/70 mt-0.5">ledger fallback</span>
                     )}
+                    {row.qty_source === 'received' && (
+                      <span className="block text-[9px] text-green-400/60 mt-0.5">received</span>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-right font-mono">
                     {row.current_price_cents != null
@@ -961,6 +966,19 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
                       ? <span className="text-text-primary font-medium">{formatCurrency(row.proposed_price_cents)}</span>
                       : <span className="text-amber-400">No price</span>}
                   </td>
+                  <td className="px-4 py-2.5 text-center">
+                    {row.can_push ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border bg-green-500/10 text-green-400 border-green-500/30">
+                        <Check size={9} />
+                        Eligible
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium border bg-bg-elevated text-text-tertiary border-border-subtle">
+                        <X size={9} />
+                        Not eligible
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5">
                     {row.warnings.length > 0 ? (
                       <div className="space-y-0.5">
@@ -969,7 +987,7 @@ function PreviewModal({ rows, shippingTemplate, onClose }: PreviewModalProps) {
                         ))}
                       </div>
                     ) : (
-                      <span className="text-green-400 text-[10px]">Ready</span>
+                      <span className="text-green-400 text-[10px]">All checks pass</span>
                     )}
                   </td>
                 </tr>
