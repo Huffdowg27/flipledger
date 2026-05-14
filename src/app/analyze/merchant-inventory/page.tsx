@@ -288,11 +288,12 @@ interface LabelSpec {
 
 interface ReceiveModalProps {
   row: MerchantRow;
+  title?: string;
   onClose: () => void;
   onSaved: () => void;
 }
 
-function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
+function ReceiveModal({ row, title = 'Update Stock', onClose, onSaved }: ReceiveModalProps) {
   const status = getReceiveStatus(row) ?? 'pending';
   const isReceived = status !== 'pending';
   const isInspected = status === 'inspected' || status === 'ready';
@@ -378,7 +379,7 @@ function ReceiveModal({ row, onClose, onSaved }: ReceiveModalProps) {
       >
         <div className="flex items-center justify-between px-5 py-4 border-b border-border-subtle">
           <div className="min-w-0 flex-1">
-            <h2 className="text-sm font-semibold text-text-primary">Receive Inventory</h2>
+            <h2 className="text-sm font-semibold text-text-primary">{title}</h2>
             <p className="text-[11px] text-text-tertiary mt-0.5 truncate">
               {row.product_name || row.asin}
             </p>
@@ -1028,8 +1029,9 @@ export default function MerchantInventoryPage() {
   const [filterView, setFilterView]     = useState<FilterView>('live');
   const [selected, setSelected]         = useState<Set<string>>(new Set());
   const [showPrintModal, setShowPrintModal] = useState(false);
-  const [receiveRow, setReceiveRow]     = useState<MerchantRow | null>(null);
-  const [refreshKey, setRefreshKey]     = useState(0);
+  const [receiveRow, setReceiveRow]         = useState<MerchantRow | null>(null);
+  const [receiveModalTitle, setReceiveModalTitle] = useState('Update Stock');
+  const [refreshKey, setRefreshKey]         = useState(0);
   const [previewRows, setPreviewRows]   = useState<ActivationPreviewRow[]>([]);
   const [previewOpen, setPreviewOpen]   = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1152,16 +1154,74 @@ export default function MerchantInventoryPage() {
     return [];
   }, [selected, selectedRows, filterView, displayRows]);
 
-  function actionLabel(status: ReceiveStatus): string {
-    if (status === 'pending') return 'Receive';
-    if (status === 'received') return 'Inspect';
-    return 'Edit';
-  }
+  // Stock action — determines the Action column button for each row.
+  // Rules:
+  //   no il_id        → null (no local lot, can't edit)
+  //   active (live)   → Edit Stock (neutral)
+  //   oos             → Restock (amber — highest priority workflow)
+  //   inactive        → Review (neutral, low priority)
+  //   not_listed      → Receive / Inspect / Edit based on receive status
+  function getStockAction(row: MerchantRow): {
+    label: string;
+    cls: string;
+    modalTitle: string;
+  } | null {
+    if (row.il_id == null) return null;
 
-  function actionClass(status: ReceiveStatus): string {
-    if (status === 'pending') return 'text-accent border-accent/40 hover:bg-accent/10';
-    if (status === 'received') return 'text-amber-400 border-amber-400/40 hover:bg-amber-400/10';
-    return 'text-text-tertiary border-border-subtle hover:bg-bg-hover';
+    if (row.live_state === 'active') {
+      // Live rows: only prompt action if local receive work is still needed
+      const status = getReceiveStatus(row);
+      if (!status) return null;
+      return {
+        label: status === 'pending' ? 'Receive' : status === 'received' ? 'Inspect' : 'Edit Local',
+        cls:
+          status === 'pending'
+            ? 'text-accent border-accent/40 hover:bg-accent/10'
+            : status === 'received'
+              ? 'text-amber-400 border-amber-400/40 hover:bg-amber-400/10'
+              : 'text-text-tertiary border-border-subtle hover:bg-bg-hover',
+        modalTitle: 'Update Stock',
+      };
+    }
+    if (row.live_state === 'oos') {
+      const status = getReceiveStatus(row);
+      return {
+        label: !status || status === 'pending' ? 'Receive' : status === 'received' ? 'Inspect' : 'Edit Local',
+        cls:
+          !status || status === 'pending'
+            ? 'text-amber-400 border-amber-400/40 hover:bg-amber-400/10'
+            : status === 'received'
+              ? 'text-amber-400 border-amber-400/40 hover:bg-amber-400/10'
+              : 'text-text-tertiary border-border-subtle hover:bg-bg-hover',
+        modalTitle: 'Restock Item',
+      };
+    }
+    if (row.live_state === 'inactive') {
+      const status = getReceiveStatus(row);
+      return {
+        label: !status || status === 'pending' ? 'Receive' : status === 'received' ? 'Inspect' : 'Edit Local',
+        cls:
+          !status || status === 'pending'
+            ? 'text-accent border-accent/40 hover:bg-accent/10'
+            : status === 'received'
+              ? 'text-amber-400 border-amber-400/40 hover:bg-amber-400/10'
+              : 'text-text-tertiary border-border-subtle hover:bg-bg-hover',
+        modalTitle: 'Update Stock',
+      };
+    }
+    // not_listed (local_only)
+    const status = getReceiveStatus(row);
+    if (!status) return null;
+    return {
+      label: status === 'pending' ? 'Receive' : status === 'received' ? 'Inspect' : 'Edit Local',
+      cls:
+        status === 'pending'
+          ? 'text-accent border-accent/40 hover:bg-accent/10'
+          : status === 'received'
+            ? 'text-amber-400 border-amber-400/40 hover:bg-amber-400/10'
+            : 'text-text-tertiary border-border-subtle hover:bg-bg-hover',
+      modalTitle: 'Receive Inventory',
+    };
   }
 
   const hasData = !loading && (listedRows.length > 0 || localOnlyRows.length > 0);
@@ -1284,6 +1344,19 @@ export default function MerchantInventoryPage() {
         </div>
       )}
 
+      {/* OOS restock banner */}
+      {filterView === 'oos' && !loading && (
+        <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 bg-amber-500/5 border border-amber-500/20 rounded-lg text-xs text-text-secondary">
+          <RefreshCw size={13} className="text-amber-400 shrink-0 mt-0.5" />
+          <span>
+            <span className="font-medium text-text-primary">Out of Stock on Amazon</span>{' '}
+            — these listings are Active but Amazon quantity is 0.
+            Click <span className="font-medium text-amber-400">Restock</span> to enter received quantity, bin location, condition, and list price.
+            Once all fields are set, the row moves to <span className="font-medium text-text-primary">Ready to Activate</span>.
+          </span>
+        </div>
+      )}
+
       {/* Activation workflow banner — shown only in Ready filter */}
       {filterView === 'ready' && !loading && (
         <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 bg-bg-elevated border border-border-subtle rounded-lg text-xs text-text-secondary">
@@ -1359,10 +1432,8 @@ export default function MerchantInventoryPage() {
               ) : (
                 displayRows.map(row => {
                   const isSelected = selected.has(row.row_key);
-                  // Suppress receive workflow for items already live on Amazon — they're
-                  // already active and don't need retroactive receive stamping.
-                  const alreadyLive = row.live_state === 'active';
-                  const receiveStatus = alreadyLive ? null : getReceiveStatus(row);
+                  const stockAction = getStockAction(row);
+                  const localReceiveStatus = row.il_id != null ? getReceiveStatus(row) : null;
                   // List price: Amazon source of truth first, then parsed from MSKU, then ledger value.
                   const listPrice = row.amazon_list_price_cents ?? row.parsed_list_price_cents ?? row.il_list_price_cents;
                   // Cost: ledger buy_price is authoritative; fall back to MSKU-parsed cost.
@@ -1426,9 +1497,11 @@ export default function MerchantInventoryPage() {
                         <LiveStateBadge state={row.live_state} />
                       </td>
                       <td className="px-4 py-2">
-                        {receiveStatus != null
-                          ? <ReceiveStatusBadge status={receiveStatus} />
-                          : <span className="text-text-tertiary text-xs">—</span>}
+                        {localReceiveStatus != null
+                          ? <ReceiveStatusBadge status={localReceiveStatus} />
+                          : row.il_id == null
+                            ? <span className="text-text-tertiary text-[10px] italic">No local lot</span>
+                            : <span className="text-text-tertiary text-xs">—</span>}
                       </td>
                       <td className="px-4 py-2">
                         {row.bin_location
@@ -1461,13 +1534,18 @@ export default function MerchantInventoryPage() {
                           : <span className="text-text-tertiary">—</span>}
                       </td>
                       <td className="px-4 py-2 text-right" onClick={e => e.stopPropagation()}>
-                        {receiveStatus != null ? (
+                        {stockAction ? (
                           <button
-                            onClick={() => setReceiveRow(row)}
-                            className={`h-7 px-3 rounded-md text-xs font-medium border transition-colors ${actionClass(receiveStatus)}`}
+                            onClick={() => {
+                              setReceiveModalTitle(stockAction.modalTitle);
+                              setReceiveRow(row);
+                            }}
+                            className={`h-7 px-3 rounded-md text-xs font-medium border transition-colors ${stockAction.cls}`}
                           >
-                            {actionLabel(receiveStatus)}
+                            {stockAction.label}
                           </button>
+                        ) : row.il_id == null ? (
+                          <span className="text-text-tertiary text-[10px]">No local lot</span>
                         ) : (
                           <span className="text-text-tertiary text-xs">—</span>
                         )}
@@ -1508,6 +1586,7 @@ export default function MerchantInventoryPage() {
       {receiveRow && (
         <ReceiveModal
           row={receiveRow}
+          title={receiveModalTitle}
           onClose={() => setReceiveRow(null)}
           onSaved={() => { setRefreshKey(k => k + 1); setReceiveRow(null); }}
         />
