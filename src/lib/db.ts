@@ -636,6 +636,13 @@ export function initializeDatabase() {
     `ALTER TABLE inventory_ledger ADD COLUMN inspected_at TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN receive_notes TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN list_price_cents INTEGER`,
+    // merchant_listings new columns — populated by GET_MERCHANT_LISTINGS_ALL_DATA
+    `ALTER TABLE merchant_listings ADD COLUMN listing_id TEXT`,
+    `ALTER TABLE merchant_listings ADD COLUMN item_name TEXT`,
+    `ALTER TABLE merchant_listings ADD COLUMN fulfillment_channel TEXT`,
+    `ALTER TABLE merchant_listings ADD COLUMN open_date TEXT`,
+    `ALTER TABLE merchant_listings ADD COLUMN item_condition TEXT`,
+    `ALTER TABLE merchant_listings ADD COLUMN source_report_type TEXT`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }

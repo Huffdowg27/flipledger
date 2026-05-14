@@ -51,7 +51,7 @@ export async function GET() {
         il.inspected_at,
         il.receive_notes,
         il.list_price_cents               AS il_list_price_cents,
-        COALESCE(p.name, ml.product_name) AS product_name,
+        COALESCE(p.name, ml.item_name, ml.product_name) AS product_name,
         p.image_url,
         p.category,
         lbi.fnsku,

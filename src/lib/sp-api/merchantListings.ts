@@ -1,9 +1,10 @@
 /**
  * SP-API MFN listings sync.
  *
- * Pulls GET_FLAT_FILE_OPEN_LISTINGS_DATA — a snapshot of every open listing
- * in the seller's account. Upserts into merchant_listings, which is the
- * source of truth for live Seller Central listing status and quantity.
+ * Pulls GET_MERCHANT_LISTINGS_ALL_DATA — a snapshot of every listing in the
+ * seller's account (active AND inactive), with status, title, condition, and
+ * fulfillment channel. Upserts into merchant_listings, which is the source of
+ * truth for live Seller Central listing status and quantity.
  *
  * Read-only from Amazon's perspective: no listing updates, no quantity writes.
  *
@@ -15,6 +16,8 @@ import { downloadReport } from './reports';
 import Database from 'better-sqlite3';
 import path from 'path';
 import type { SPAPICredentials } from './types';
+
+const REPORT_TYPE = 'GET_MERCHANT_LISTINGS_ALL_DATA';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -41,11 +44,15 @@ function toCents(s: string): number | null {
 export interface MerchantListingRow {
   sku: string;
   asin: string;
-  productName: string | null;
-  condition: string | null;
+  listingId: string | null;
+  itemName: string | null;
+  itemCondition: string | null;
   listPriceCents: number | null;
   quantity: number;
   status: string | null;
+  fulfillmentChannel: string | null;
+  openDate: string | null;
+  sourceReportType: string;
 }
 
 export async function createMerchantListingsReport(
@@ -54,10 +61,10 @@ export async function createMerchantListingsReport(
   const endpoint = getEndpoint(credentials.marketplaceId);
   const accessToken = await getAccessToken(credentials);
 
-  // GET_FLAT_FILE_OPEN_LISTINGS_DATA is a current-state snapshot report:
+  // GET_MERCHANT_LISTINGS_ALL_DATA is a current-state snapshot report:
   // no dataStartTime/dataEndTime needed or supported.
   const body = {
-    reportType: 'GET_FLAT_FILE_OPEN_LISTINGS_DATA',
+    reportType: REPORT_TYPE,
     marketplaceIds: [credentials.marketplaceId],
   };
 
@@ -108,16 +115,22 @@ export function parseMerchantListingsReport(tsv: string): MerchantListingRow[] {
   const headers = lines[0].split('\t').map(unquote);
   const idx = (name: string) => headers.findIndex(h => h.toLowerCase() === name.toLowerCase());
 
-  const iSku       = idx('sku');
-  const iAsin      = idx('asin');
-  const iName      = idx('product-name');
-  const iCondition = idx('condition');
-  const iPrice     = idx('list-price');
-  const iQty       = idx('quantity');
-  const iStatus    = idx('status');
+  // ALL_DATA column names differ from OPEN_LISTINGS:
+  //   sku → seller-sku, asin → asin1, price → price (not list-price),
+  //   product-name → item-name, condition → item-condition
+  const iSku               = idx('seller-sku');
+  const iAsin              = idx('asin1');
+  const iListingId         = idx('listing-id');
+  const iItemName          = idx('item-name');
+  const iItemCondition     = idx('item-condition');
+  const iPrice             = idx('price');
+  const iQty               = idx('quantity');
+  const iStatus            = idx('status');
+  const iFulfillmentChannel = idx('fulfillment-channel');
+  const iOpenDate          = idx('open-date');
 
   if (iSku < 0 || iAsin < 0) {
-    console.warn('[merchantListings] parseMerchantListingsReport: missing sku or asin column — got headers:', headers.join(', '));
+    console.warn('[merchantListings] parseMerchantListingsReport: missing seller-sku or asin1 column — got headers:', headers.join(', '));
     return [];
   }
 
@@ -131,11 +144,15 @@ export function parseMerchantListingsReport(tsv: string): MerchantListingRow[] {
     rows.push({
       sku,
       asin,
-      productName: iName >= 0 ? (cols[iName] || null) : null,
-      condition:   iCondition >= 0 ? (cols[iCondition] || null) : null,
-      listPriceCents: iPrice >= 0 ? toCents(cols[iPrice] ?? '') : null,
-      quantity:    iQty >= 0 ? (parseInt(cols[iQty] ?? '0', 10) || 0) : 0,
-      status:      iStatus >= 0 ? (cols[iStatus] || null) : null,
+      listingId:         iListingId >= 0         ? (cols[iListingId] || null)         : null,
+      itemName:          iItemName >= 0           ? (cols[iItemName] || null)           : null,
+      itemCondition:     iItemCondition >= 0      ? (cols[iItemCondition] || null)      : null,
+      listPriceCents:    iPrice >= 0              ? toCents(cols[iPrice] ?? '')          : null,
+      quantity:          iQty >= 0               ? (parseInt(cols[iQty] ?? '0', 10) || 0) : 0,
+      status:            iStatus >= 0             ? (cols[iStatus] || null)             : null,
+      fulfillmentChannel: iFulfillmentChannel >= 0 ? (cols[iFulfillmentChannel] || null) : null,
+      openDate:          iOpenDate >= 0           ? (cols[iOpenDate] || null)           : null,
+      sourceReportType:  REPORT_TYPE,
     });
   }
   return rows;
@@ -163,16 +180,26 @@ export async function syncMerchantListings(
   const now = new Date().toISOString();
 
   const upsert = db.prepare(`
-    INSERT INTO merchant_listings (asin, sku, marketplace, status, quantity, product_name, condition, list_price_cents, last_synced, sync_report_id)
-    VALUES (?, ?, 'amazon', ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO merchant_listings (
+      asin, sku, marketplace,
+      status, quantity,
+      product_name, condition, list_price_cents,
+      listing_id, item_name, fulfillment_channel, open_date, item_condition, source_report_type,
+      last_synced, sync_report_id
+    )
+    VALUES (?, ?, 'amazon', ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(asin, sku, marketplace) DO UPDATE SET
-      status          = excluded.status,
-      quantity        = excluded.quantity,
-      product_name    = COALESCE(excluded.product_name, merchant_listings.product_name),
-      condition       = COALESCE(excluded.condition, merchant_listings.condition),
-      list_price_cents = COALESCE(excluded.list_price_cents, merchant_listings.list_price_cents),
-      last_synced     = excluded.last_synced,
-      sync_report_id  = excluded.sync_report_id
+      status              = excluded.status,
+      quantity            = excluded.quantity,
+      list_price_cents    = COALESCE(excluded.list_price_cents, merchant_listings.list_price_cents),
+      listing_id          = excluded.listing_id,
+      item_name           = excluded.item_name,
+      fulfillment_channel = excluded.fulfillment_channel,
+      open_date           = excluded.open_date,
+      item_condition      = excluded.item_condition,
+      source_report_type  = excluded.source_report_type,
+      last_synced         = excluded.last_synced,
+      sync_report_id      = excluded.sync_report_id
   `);
 
   let inserted = 0;
@@ -183,7 +210,8 @@ export async function syncMerchantListings(
       const result = upsert.run(
         r.asin, r.sku,
         r.status, r.quantity,
-        r.productName, r.condition, r.listPriceCents,
+        r.listPriceCents,
+        r.listingId, r.itemName, r.fulfillmentChannel, r.openDate, r.itemCondition, r.sourceReportType,
         now, reportId
       );
       if (result.changes === 1) inserted++;
