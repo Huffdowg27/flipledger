@@ -261,6 +261,43 @@ interface BatchSummary {
   warnCounts: Record<WarnLabel, number>;
 }
 
+// Client-only receive-state classifier for the filter strip. Returns one
+// bucket per item using priority order: over > needs-work > complete > ready.
+// All buckets are mutually exclusive. Print All / Preview & Push do NOT
+// use this — they keep using their own eligibility logic on the full batch.
+type ReceiveState = 'over' | 'needs-work' | 'complete' | 'ready';
+
+function getBatchItemState(item: BatchItem): ReceiveState {
+  const progress = getReceiveProgress(item);
+
+  // 1. Over-received is the most urgent — surface even on otherwise clean rows.
+  if (progress && progress.isOver) return 'over';
+
+  // 2. Any hard blocker (no lot / no price / not inspected) OR operational
+  //    gap (no bin / no condition) routes to Needs work.
+  const chips = chipsForBatchItem(item);
+  const hasBlocker = chips.some(c => c.tone === 'blocker');
+  const hasOperationalGap = chips.some(c => c.label === 'No bin' || c.label === 'No condition');
+  if (hasBlocker || hasOperationalGap) return 'needs-work';
+
+  // 3. Complete: saved row, receive progress hit 100%, no needs-work issues
+  //    (already excluded above).
+  if (item.save_state === 'saved' && progress && progress.pct >= 100) return 'complete';
+
+  // 4. Ready to push: saved + lot + qty_received > 0 + inspected_at + valid price.
+  //    Stale Amazon status does NOT block this.
+  if (item.save_state === 'saved' && item.il_id != null) {
+    const qty = item.quantity_received != null ? Number(item.quantity_received) : 0;
+    const priceNum = parseFloat(item.draft_list_price);
+    const validPrice = Number.isFinite(priceNum) && priceNum > 0;
+    if (qty > 0 && item.inspected_at && validPrice) return 'ready';
+  }
+
+  // Fallback: unsaved items with no issues still need a Save click — that's
+  // work to do, so they land here.
+  return 'needs-work';
+}
+
 function summarizeBatch(items: BatchItem[]): BatchSummary {
   let totalQty = 0;
   let totalListCents = 0;
@@ -1021,6 +1058,9 @@ export default function MfnBatchReceivePage() {
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
   const [printAllMsg, setPrintAllMsg] = useState<string | null>(null);
+  // Client-only receive-state filter for the visible batch list. Defaults
+  // to 'all' so newly added items are never accidentally hidden.
+  const [receiveFilter, setReceiveFilter] = useState<'all' | ReceiveState>('all');
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string; sku: string } | null>(null);
   const [previewOpen, setPreviewOpen]       = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1356,6 +1396,15 @@ export default function MfnBatchReceivePage() {
   const saveable     = batchArray.filter(i => i.il_id != null && i.save_state !== 'saved');
   const hasUnsaved   = saveable.length > 0;
 
+  // Receive-state counts (always from full batch — counts don't change with the active filter).
+  const stateCounts = { 'needs-work': 0, ready: 0, complete: 0, over: 0 } as Record<ReceiveState, number>;
+  for (const i of batchArray) stateCounts[getBatchItemState(i)]++;
+
+  // Apply the active filter only to the visible card list.
+  const visibleBatch = receiveFilter === 'all'
+    ? batchArray
+    : batchArray.filter(i => getBatchItemState(i) === receiveFilter);
+
   return (
     <div className="flex flex-col h-full">
       {/* Page header */}
@@ -1542,8 +1591,49 @@ export default function MfnBatchReceivePage() {
                 )}
               </div>
 
+            {/* Client-only receive-state filter strip. Counts always reflect the full batch. */}
+            <div className="mb-2 flex items-center gap-1.5 flex-wrap text-[11px]">
+              {([
+                { key: 'all' as const,         label: 'All',           count: batchArray.length },
+                { key: 'needs-work' as const,  label: 'Needs work',    count: stateCounts['needs-work'] },
+                { key: 'ready' as const,       label: 'Ready to push', count: stateCounts['ready'] },
+                { key: 'complete' as const,    label: 'Complete',      count: stateCounts['complete'] },
+                { key: 'over' as const,        label: 'Over received', count: stateCounts['over'] },
+              ]).map(f => {
+                const active = receiveFilter === f.key;
+                const isOver = f.key === 'over';
+                const isNeeds = f.key === 'needs-work';
+                const accentCls = active
+                  ? isOver
+                    ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                    : isNeeds
+                      ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+                      : f.key === 'complete'
+                        ? 'bg-green-500/15 text-green-400 border-green-500/40'
+                        : 'bg-accent/15 text-accent border-accent/40'
+                  : 'bg-bg-elevated text-text-tertiary border-border-subtle hover:text-text-secondary hover:bg-bg-hover';
+                return (
+                  <button
+                    key={f.key}
+                    type="button"
+                    onClick={() => setReceiveFilter(f.key)}
+                    disabled={f.count === 0 && f.key !== 'all'}
+                    className={`flex items-center gap-1.5 h-6 px-2 rounded-md border font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${accentCls}`}
+                  >
+                    {f.label}
+                    <span className="font-mono tabular-nums text-[10px] opacity-80">{f.count}</span>
+                  </button>
+                );
+              })}
+              {receiveFilter !== 'all' && (
+                <span className="ml-1 text-text-tertiary/80 italic">
+                  Showing {visibleBatch.length} of {batchArray.length}
+                </span>
+              )}
+            </div>
+
             <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
-              {batchArray.map(item => (
+              {visibleBatch.map(item => (
                 <BatchItemCard
                   key={item.sku}
                   item={item}
