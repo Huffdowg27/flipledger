@@ -228,9 +228,10 @@ interface SearchResultCardProps {
   result: SearchResult;
   inBatch: boolean;
   onAdd: () => void;
+  onImageClick: () => void;
 }
 
-function SearchResultCard({ result, inBatch, onAdd }: SearchResultCardProps) {
+function SearchResultCard({ result, inBatch, onAdd, onImageClick }: SearchResultCardProps) {
   const displayCost = result.buy_price ?? result.parsed_cost_cents;
   const displayPrice = result.amazon_list_price_cents ?? result.parsed_list_price_cents ?? result.il_list_price_cents;
 
@@ -239,8 +240,17 @@ function SearchResultCard({ result, inBatch, onAdd }: SearchResultCardProps) {
       inBatch ? 'border-accent/30 bg-accent/5' : 'border-border-subtle bg-bg-surface hover:bg-bg-hover'
     }`}>
       {result.image_url
-        ? <img src={result.image_url} alt="" className="w-12 h-12 object-contain rounded shrink-0 bg-bg-elevated" />
-        : <div className="w-12 h-12 bg-bg-elevated rounded shrink-0" />}
+        ? (
+            <button
+              type="button"
+              onClick={onImageClick}
+              className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+              title="View larger"
+            >
+              <img src={result.image_url} alt="" className="w-14 h-14 object-contain block" />
+            </button>
+          )
+        : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0" />}
 
       <div className="min-w-0 flex-1">
         <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
@@ -293,11 +303,12 @@ interface BatchItemCardProps {
   onSave: () => void;
   onCreateLot: () => void;
   onPrintLabel: () => void;
+  onImageClick: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onImageClick, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -325,7 +336,16 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
     return (
       <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
         {item.image_url
-          ? <img src={item.image_url} alt="" className="w-8 h-8 object-contain rounded shrink-0 bg-bg-elevated" />
+          ? (
+              <button
+                type="button"
+                onClick={onImageClick}
+                className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+                title="View larger"
+              >
+                <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
+              </button>
+            )
           : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium text-text-primary truncate">{item.product_name || item.asin}</div>
@@ -364,8 +384,17 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       {/* Header */}
       <div className="flex items-start gap-3 mb-3">
         {item.image_url
-          ? <img src={item.image_url} alt="" className="w-12 h-12 object-contain rounded shrink-0 bg-bg-elevated" />
-          : <div className="w-12 h-12 bg-bg-elevated rounded shrink-0" />}
+          ? (
+              <button
+                type="button"
+                onClick={onImageClick}
+                className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+                title="View larger"
+              >
+                <img src={item.image_url} alt="" className="w-16 h-16 object-contain block" />
+              </button>
+            )
+          : <div className="w-16 h-16 bg-bg-elevated rounded shrink-0" />}
 
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
@@ -622,6 +651,7 @@ export default function MfnBatchReceivePage() {
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
   const [printAllMsg, setPrintAllMsg] = useState<string | null>(null);
+  const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string; sku: string } | null>(null);
   const [previewOpen, setPreviewOpen]       = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewRows, setPreviewRows]       = useState<ActivationPreviewRow[]>([]);
@@ -630,6 +660,14 @@ export default function MfnBatchReceivePage() {
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
+
+  // Esc closes the lightbox
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox]);
 
   // Debounced search
   const doSearch = useCallback(async (q: string) => {
@@ -974,6 +1012,12 @@ export default function MfnBatchReceivePage() {
                 result={r}
                 inBatch={batch.has(r.sku)}
                 onAdd={() => addToBatch(r)}
+                onImageClick={() => r.image_url && setLightbox({
+                  src: r.image_url,
+                  title: r.product_name || r.asin || r.sku,
+                  asin: r.asin || '',
+                  sku: r.sku,
+                })}
               />
             ))}
           </div>
@@ -998,6 +1042,12 @@ export default function MfnBatchReceivePage() {
                   onSave={() => saveItem(item.sku)}
                   onCreateLot={() => createLot(item.sku)}
                   onPrintLabel={() => openLabelPrint([item])}
+                  onImageClick={() => item.image_url && setLightbox({
+                    src: item.image_url,
+                    title: item.product_name || item.asin || item.sku,
+                    asin: item.asin || '',
+                    sku: item.sku,
+                  })}
                   focusQty={focusQtySku === item.sku}
                   onQtyFocused={() => setFocusQtySku(null)}
                 />
@@ -1024,6 +1074,44 @@ export default function MfnBatchReceivePage() {
           onClose={() => setPreviewOpen(false)}
           onPushComplete={() => { setPreviewOpen(false); }}
         />
+      )}
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="bg-bg-surface border border-border-subtle rounded-xl shadow-2xl max-w-[560px] w-full overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between px-4 py-3 border-b border-border-subtle gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={lightbox.title}>
+                  {lightbox.title}
+                </div>
+                <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-text-tertiary">
+                  {lightbox.asin && <span className="text-accent/80">{lightbox.asin}</span>}
+                  <span className="truncate" title={lightbox.sku}>{lightbox.sku}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setLightbox(null)}
+                className="shrink-0 p-1.5 rounded hover:bg-bg-hover text-text-tertiary"
+                title="Close (Esc)"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="bg-bg-elevated flex items-center justify-center p-4">
+              <img
+                src={lightbox.src}
+                alt={lightbox.title}
+                className="max-w-full max-h-[60vh] object-contain"
+              />
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
