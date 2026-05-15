@@ -930,7 +930,26 @@ export default function MfnBatchReceivePage() {
         updateBatchItem(sku, { save_state: 'error', save_error: `${errMsg} (HTTP ${res.status})` });
       } else {
         console.log(`[saveItem] ok sku=${sku} elapsed=${elapsed}ms`);
-        updateBatchItem(sku, { save_state: 'saved', save_error: null });
+        // Mirror just-saved drafts back onto the local row so the
+        // collapsed view and batch summary reflect the new values
+        // without waiting for a refetch. Only mirror fields that were
+        // actually sent (same conditionals as the PATCH body above).
+        const mirror: Partial<BatchItem> = { save_state: 'saved', save_error: null };
+        if (Number.isFinite(qtyNum) && qtyNum >= 0) {
+          mirror.quantity_received = qtyNum;
+          if (qtyNum > 0 && !item.received_at) {
+            mirror.received_at = new Date().toISOString();
+          }
+        }
+        if (item.draft_bin.trim())       mirror.bin_location = item.draft_bin.trim();
+        if (item.draft_condition.trim()) mirror.condition    = item.draft_condition.trim();
+        if (Number.isFinite(priceNum) && priceNum > 0) {
+          mirror.il_list_price_cents = Math.round(priceNum * 100);
+        }
+        if (item.draft_shipping_template.trim()) {
+          mirror.merchant_shipping_group_name = item.draft_shipping_template.trim();
+        }
+        updateBatchItem(sku, mirror);
       }
     } catch (err) {
       const elapsed = Date.now() - t0;
