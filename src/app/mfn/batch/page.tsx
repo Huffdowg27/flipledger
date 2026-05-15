@@ -236,6 +236,73 @@ function chipsForResult(r: SearchResult): Chip[] {
   return chips;
 }
 
+type WarnLabel = 'No lot' | 'Not inspected' | 'Stale status' | 'Fee unknown' | 'No bin' | 'No condition';
+const WARN_LABELS: WarnLabel[] = ['No lot', 'Not inspected', 'Stale status', 'Fee unknown', 'No bin', 'No condition'];
+
+interface BatchSummary {
+  total: number;
+  saved: number;
+  unsaved: number;
+  totalQty: number;
+  totalListCents: number;
+  totalCostCents: number;
+  totalShipCents: number;
+  totalFeeCents: number;
+  totalNetCents: number;
+  roiPct: number | null;
+  marginPct: number | null;
+  feeIncomplete: boolean;
+  warnCounts: Record<WarnLabel, number>;
+}
+
+function summarizeBatch(items: BatchItem[]): BatchSummary {
+  let totalQty = 0;
+  let totalListCents = 0;
+  let totalCostCents = 0;
+  let totalShipCents = 0;
+  let totalFeeCents = 0;
+  let totalNetCents = 0;
+  let feeIncomplete = false;
+  let saved = 0;
+  const warnCounts: Record<WarnLabel, number> = {
+    'No lot': 0, 'Not inspected': 0, 'Stale status': 0,
+    'Fee unknown': 0, 'No bin': 0, 'No condition': 0,
+  };
+
+  for (const item of items) {
+    if (item.save_state === 'saved') saved++;
+
+    const p = calcProfit(item);
+    // Saved items: use the persisted quantity_received. Otherwise the draft qty.
+    const qty = (item.quantity_received ?? parseInt(item.draft_qty, 10)) || 0;
+    totalQty += Math.max(qty, 0);
+
+    if (qty > 0) {
+      if (p.listCents != null) totalListCents += p.listCents * qty;
+      if (p.costCents != null) totalCostCents += p.costCents * qty;
+      totalShipCents += p.shipCents * qty;
+      if (p.feeCents != null) totalFeeCents += p.feeCents * qty;
+      if (p.netCents != null) totalNetCents += p.netCents * qty;
+    }
+    if (!p.hasFee && p.listCents != null && p.costCents != null) feeIncomplete = true;
+
+    for (const c of chipsForBatchItem(item)) {
+      if ((WARN_LABELS as string[]).includes(c.label)) {
+        warnCounts[c.label as WarnLabel]++;
+      }
+    }
+  }
+
+  const roiPct    = totalCostCents > 0 ? (totalNetCents / totalCostCents) * 100 : null;
+  const marginPct = totalListCents > 0 ? (totalNetCents / totalListCents) * 100 : null;
+
+  return {
+    total: items.length, saved, unsaved: items.length - saved,
+    totalQty, totalListCents, totalCostCents, totalShipCents, totalFeeCents,
+    totalNetCents, roiPct, marginPct, feeIncomplete, warnCounts,
+  };
+}
+
 function chipsForBatchItem(item: BatchItem): Chip[] {
   const chips: Chip[] = [];
   if (item.il_id == null) {
@@ -979,6 +1046,7 @@ export default function MfnBatchReceivePage() {
 
   const batchArray   = Array.from(batch.values());
   const savedCount   = batchArray.filter(i => i.save_state === 'saved').length;
+  const summary      = summarizeBatch(batchArray);
   const saveable     = batchArray.filter(i => i.il_id != null && i.save_state !== 'saved');
   const hasUnsaved   = saveable.length > 0;
 
@@ -1103,6 +1171,69 @@ export default function MfnBatchReceivePage() {
               <p className="text-xs mt-1 max-w-[200px]">Search for items on the left and add them to this batch</p>
             </div>
           ) : (
+            <>
+              {/* Compact summary bar */}
+              <div className="mb-2 px-3 py-2 rounded-lg bg-bg-elevated border border-border-subtle text-[11px] text-text-secondary">
+                <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
+                  <span className="text-text-tertiary">
+                    <span className="text-text-primary font-medium">{summary.total}</span> item{summary.total !== 1 ? 's' : ''}
+                    {summary.saved > 0 && <span className="text-text-tertiary"> · <span className="text-green-400/90">{summary.saved} saved</span></span>}
+                    {summary.unsaved > 0 && <span className="text-text-tertiary"> · <span className="text-amber-400/80">{summary.unsaved} unsaved</span></span>}
+                  </span>
+                  <span className="text-text-tertiary">Qty <span className="text-text-primary font-mono">{summary.totalQty}</span></span>
+                  <span className="text-text-tertiary">Rev <span className="text-text-primary font-mono">{formatCurrency(summary.totalListCents)}</span></span>
+                  <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono">{formatCurrency(summary.totalCostCents)}</span></span>
+                  <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono">{formatCurrency(summary.totalShipCents)}</span></span>
+                  <span className="text-text-tertiary">
+                    Fees{summary.feeIncomplete ? '*' : ''} <span className={`font-mono ${summary.feeIncomplete ? 'text-amber-400' : 'text-text-primary'}`}>{formatCurrency(summary.totalFeeCents)}</span>
+                  </span>
+                  <span className="text-text-tertiary">
+                    Net <span className={`font-mono font-semibold ${
+                      summary.feeIncomplete
+                        ? 'text-amber-400'
+                        : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
+                    }`}>
+                      {formatCurrency(summary.totalNetCents)}{summary.feeIncomplete ? '*' : ''}
+                    </span>
+                  </span>
+                  {summary.roiPct != null && (
+                    <span className="text-text-tertiary">
+                      ROI <span className={`font-mono ${summary.feeIncomplete ? 'text-amber-400/90' : summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                        {summary.roiPct.toFixed(1)}%{summary.feeIncomplete ? '*' : ''}
+                      </span>
+                    </span>
+                  )}
+                  {summary.marginPct != null && (
+                    <span className="text-text-tertiary">
+                      Margin <span className={`font-mono ${summary.feeIncomplete ? 'text-amber-400/90' : 'text-text-secondary'}`}>
+                        {summary.marginPct.toFixed(1)}%{summary.feeIncomplete ? '*' : ''}
+                      </span>
+                    </span>
+                  )}
+                </div>
+                {/* Warning counts — only render the labels that have a non-zero count */}
+                {WARN_LABELS.some(l => summary.warnCounts[l] > 0) && (
+                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    {WARN_LABELS.filter(l => summary.warnCounts[l] > 0).map(l => {
+                      const isBlocker = l === 'No lot' || l === 'Not inspected';
+                      const cls = isBlocker
+                        ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                        : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
+                      return (
+                        <span key={l} className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border ${cls}`}>
+                          {l} <span className="ml-1 font-mono opacity-80">×{summary.warnCounts[l]}</span>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {summary.feeIncomplete && (
+                  <div className="text-[10px] text-amber-400/70 mt-1.5 italic">
+                    * Some items have no cached Amazon fee — net/ROI/margin are estimates.
+                  </div>
+                )}
+              </div>
+
             <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
               {batchArray.map(item => (
                 <BatchItemCard
@@ -1124,6 +1255,7 @@ export default function MfnBatchReceivePage() {
                 />
               ))}
             </div>
+            </>
           )}
         </div>
       </div>
