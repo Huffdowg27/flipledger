@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus } from 'lucide-react';
+import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,6 +70,40 @@ const SHIPPING_TEMPLATES = [
   'Under 1lb 7.99',
   'Video Games $5.99',
 ] as const;
+
+// ---------------------------------------------------------------------------
+// Label printing
+// ---------------------------------------------------------------------------
+
+interface LabelSpec {
+  labelMode: 'asin';
+  size: '2x1';
+  asin?: string;
+  title?: string;
+  condition?: string;
+  bin?: string;
+  showBin?: boolean;
+}
+
+function openLabelPrint(items: BatchItem[]): void {
+  const specs: LabelSpec[] = items.flatMap(item => {
+    const qty = Math.min(Math.max((item.quantity_received ?? parseInt(item.draft_qty, 10)) || 1, 1), 50);
+    const bin = item.draft_bin.trim() || item.bin_location || undefined;
+    const spec: LabelSpec = {
+      labelMode: 'asin',
+      size: '2x1',
+      asin: item.asin || undefined,
+      title: item.product_name || undefined,
+      condition: item.draft_condition.trim() || item.condition || undefined,
+      bin,
+      showBin: !!bin,
+    };
+    return Array<LabelSpec>(qty).fill(spec);
+  });
+  if (specs.length === 0) return;
+  const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(specs))));
+  window.open(`/api/labels/print?d=${encodeURIComponent(encoded)}`, '_blank');
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -220,11 +254,12 @@ interface BatchItemCardProps {
   onRemove: () => void;
   onSave: () => void;
   onCreateLot: () => void;
+  onPrintLabel: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -265,6 +300,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty
         <span className="flex items-center gap-1 text-[10px] text-green-400 shrink-0 font-medium">
           <CheckCircle2 size={11} /> Saved
         </span>
+        <button
+          onClick={onPrintLabel}
+          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+          title="Print ASIN label"
+        >
+          <Printer size={14} />
+        </button>
         <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
           <X size={14} />
         </button>
@@ -513,6 +555,7 @@ export default function MfnBatchReceivePage() {
   const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
+  const [printAllMsg, setPrintAllMsg] = useState<string | null>(null);
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
@@ -663,6 +706,19 @@ export default function MfnBatchReceivePage() {
     setSavingAll(false);
   }
 
+  function printAll() {
+    const all    = Array.from(batch.values());
+    const saved  = all.filter(i => i.save_state === 'saved' && i.asin);
+    const skipped = all.length - saved.length;
+    if (saved.length === 0) return;
+    openLabelPrint(saved);
+    if (skipped > 0) {
+      const msg = `Skipped ${skipped} unsaved item${skipped !== 1 ? 's' : ''}`;
+      setPrintAllMsg(msg);
+      setTimeout(() => setPrintAllMsg(null), 4000);
+    }
+  }
+
   const batchArray   = Array.from(batch.values());
   const savedCount   = batchArray.filter(i => i.save_state === 'saved').length;
   const saveable     = batchArray.filter(i => i.il_id != null && i.save_state !== 'saved');
@@ -681,9 +737,23 @@ export default function MfnBatchReceivePage() {
         <div className="flex items-center gap-2">
           {batchArray.length > 0 && (
             <>
-              <span className="text-xs text-text-tertiary">
-                {batchArray.length} in batch{savedCount > 0 ? ` · ${savedCount} saved` : ''}
-              </span>
+              <div className="flex flex-col items-end gap-0.5">
+                <span className="text-xs text-text-tertiary">
+                  {batchArray.length} in batch{savedCount > 0 ? ` · ${savedCount} saved` : ''}
+                </span>
+                {printAllMsg && (
+                  <span className="text-[10px] text-text-tertiary/70">{printAllMsg}</span>
+                )}
+              </div>
+              {savedCount > 0 && (
+                <button
+                  onClick={printAll}
+                  className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-border-subtle text-sm text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                >
+                  <Printer size={14} />
+                  Print All ({savedCount})
+                </button>
+              )}
               {hasUnsaved && (
                 <button
                   onClick={saveAll}
@@ -766,6 +836,7 @@ export default function MfnBatchReceivePage() {
                   onRemove={() => removeFromBatch(item.sku)}
                   onSave={() => saveItem(item.sku)}
                   onCreateLot={() => createLot(item.sku)}
+                  onPrintLabel={() => openLabelPrint([item])}
                   focusQty={focusQtySku === item.sku}
                   onQtyFocused={() => setFocusQtySku(null)}
                 />
