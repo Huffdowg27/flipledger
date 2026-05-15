@@ -1652,6 +1652,12 @@ export default function MfnBatchReceivePage() {
               )}
             </div>
 
+            {receiveFilter !== 'all' && (
+              <div className="mb-2 -mt-1 text-[10px] text-text-tertiary/60 italic">
+                Filters only change visible rows; Print All and Preview &amp; Push use the full saved batch.
+              </div>
+            )}
+
             <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
               {visibleBatch.map(item => (
                 <BatchItemCard
