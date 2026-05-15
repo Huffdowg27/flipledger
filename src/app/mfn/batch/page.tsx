@@ -211,19 +211,63 @@ interface BatchItemCardProps {
   onRemove: () => void;
   onSave: () => void;
   onCreateLot: () => void;
+  focusQty: boolean;
+  onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
-  const borderClass = item.save_state === 'saved'
-    ? 'border-green-500/30 bg-green-500/5'
-    : item.save_state === 'error'
-      ? 'border-red-500/30 bg-red-500/5'
-      : noLot
-        ? 'border-amber-500/20 bg-bg-surface'
-        : 'border-border-subtle bg-bg-surface';
+  const qtyRef              = useRef<HTMLInputElement>(null);
+  const binRef              = useRef<HTMLInputElement>(null);
+  const listPriceRef        = useRef<HTMLInputElement>(null);
+  const conditionRef        = useRef<HTMLSelectElement>(null);
+  const shippingTemplateRef = useRef<HTMLInputElement>(null);
+  const saveRef             = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (focusQty && qtyRef.current) {
+      qtyRef.current.focus();
+      qtyRef.current.select();
+      onQtyFocused();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusQty]);
+
+  // Collapsed view for saved items — keeps the batch scannable
+  if (item.save_state === 'saved') {
+    const savedQty   = item.quantity_received ?? (parseInt(item.draft_qty, 10) || null);
+    const savedPrice = item.il_list_price_cents
+      ?? (item.draft_list_price ? Math.round(parseFloat(item.draft_list_price) * 100) : null);
+    return (
+      <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
+        {item.image_url
+          ? <img src={item.image_url} alt="" className="w-8 h-8 object-contain rounded shrink-0 bg-bg-elevated" />
+          : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-medium text-text-primary truncate">{item.product_name || item.asin}</div>
+          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-text-tertiary">
+            <span className="font-mono text-accent/80">{item.asin}</span>
+            {savedQty != null && <span>Qty {savedQty}</span>}
+            {savedPrice != null && <span>{formatCurrency(savedPrice)}</span>}
+          </div>
+        </div>
+        <span className="flex items-center gap-1 text-[10px] text-green-400 shrink-0 font-medium">
+          <CheckCircle2 size={11} /> Saved
+        </span>
+        <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
+          <X size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  const borderClass = item.save_state === 'error'
+    ? 'border-red-500/30 bg-red-500/5'
+    : noLot
+      ? 'border-amber-500/20 bg-bg-surface'
+      : 'border-border-subtle bg-bg-surface';
 
   return (
     <div className={`rounded-xl border p-4 transition-colors ${borderClass}`}>
@@ -308,25 +352,29 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
         </div>
       )}
 
-      {/* Input grid */}
+      {/* Input grid — keyboard flow: Qty → Bin → List Price → Condition → Shipping Template → Save */}
       <div className="grid grid-cols-2 gap-2 mb-2">
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
             {noLot ? 'Qty on Hand' : 'Qty Received'}
           </label>
           <input
+            ref={qtyRef}
             type="number" min="0" step="1"
             value={item.draft_qty}
             onChange={e => onChange({ draft_qty: e.target.value, save_state: 'idle' })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); binRef.current?.focus(); } }}
             className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-accent focus:outline-none"
           />
         </div>
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Bin Location</label>
           <input
+            ref={binRef}
             type="text"
             value={item.draft_bin}
             onChange={e => onChange({ draft_bin: e.target.value, save_state: 'idle' })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); listPriceRef.current?.focus(); } }}
             placeholder="e.g. S1-B3"
             className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
           />
@@ -334,9 +382,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">List Price ($)</label>
           <input
+            ref={listPriceRef}
             type="number" min="0" step="0.01"
             value={item.draft_list_price}
             onChange={e => onChange({ draft_list_price: e.target.value, save_state: 'idle' })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); conditionRef.current?.focus(); } }}
             placeholder="0.00"
             className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
           />
@@ -344,6 +394,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Condition</label>
           <select
+            ref={conditionRef}
             value={item.draft_condition}
             onChange={e => onChange({ draft_condition: e.target.value, save_state: 'idle' })}
             className="w-full h-8 px-2 bg-bg-elevated border border-border-default rounded-md text-xs text-text-primary focus:border-accent focus:outline-none"
@@ -363,6 +414,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
             value={item.draft_buy_price}
             onChange={e => noLot ? onChange({ draft_buy_price: e.target.value }) : undefined}
             readOnly={!noLot}
+            tabIndex={noLot ? 0 : -1}
             placeholder="0.00"
             className={`w-full h-8 px-2.5 rounded-md text-sm font-mono placeholder:text-text-tertiary focus:outline-none ${
               noLot
@@ -386,57 +438,45 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
       <div className="mb-3">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
         <input
+          ref={shippingTemplateRef}
           type="text"
           value={item.draft_shipping_template}
           onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveRef.current?.click(); } }}
           className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
         />
       </div>
 
-      {/* Action row */}
-      <div className="flex items-center justify-between">
-        <div className="text-[10px]">
-          {item.save_state === 'saved' && (
-            <span className="flex items-center gap-1 text-green-400">
-              <CheckCircle2 size={11} /> Saved to FlipLedger
-            </span>
-          )}
-          {item.save_state === 'error' && (
-            <span className="text-red-400">{item.save_error || 'Save failed'}</span>
-          )}
-          {item.create_lot_state === 'error' && (
-            <span className="text-red-400">{item.create_lot_error || 'Create failed'}</span>
-          )}
-        </div>
+      {/* Error message */}
+      {(item.save_state === 'error' || item.create_lot_state === 'error') && (
+        <p className="text-[10px] text-red-400 mb-2">
+          {item.save_state === 'error' ? (item.save_error || 'Save failed') : (item.create_lot_error || 'Create failed')}
+        </p>
+      )}
 
-        {noLot ? (
-          <button
-            onClick={onCreateLot}
-            disabled={item.create_lot_state === 'creating'}
-            className="flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium border border-amber-500/40 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
-          >
-            {item.create_lot_state === 'creating'
-              ? <><Loader2 size={11} className="animate-spin" /> Creating…</>
-              : <><PackagePlus size={11} /> Create Local Lot</>}
-          </button>
-        ) : (
-          <button
-            onClick={onSave}
-            disabled={item.save_state === 'saving' || item.save_state === 'saved'}
-            className={`flex items-center gap-1.5 h-7 px-3 rounded-md text-xs font-medium border transition-colors ${
-              item.save_state === 'saved'
-                ? 'border-green-500/30 text-green-400 cursor-default'
-                : 'border-accent/50 text-accent hover:bg-accent/10'
-            }`}
-          >
-            {item.save_state === 'saving'
-              ? <><Loader2 size={11} className="animate-spin" /> Saving…</>
-              : item.save_state === 'saved'
-                ? <><CheckCircle2 size={11} /> Saved</>
-                : <><Save size={11} /> Save</>}
-          </button>
-        )}
-      </div>
+      {/* Save / Create button — full width, prominent */}
+      {noLot ? (
+        <button
+          onClick={onCreateLot}
+          disabled={item.create_lot_state === 'creating'}
+          className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-medium border border-amber-500/50 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
+        >
+          {item.create_lot_state === 'creating'
+            ? <><Loader2 size={13} className="animate-spin" /> Creating…</>
+            : <><PackagePlus size={13} /> Create Local Lot</>}
+        </button>
+      ) : (
+        <button
+          ref={saveRef}
+          onClick={onSave}
+          disabled={item.save_state === 'saving'}
+          className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
+        >
+          {item.save_state === 'saving'
+            ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+            : <><Save size={13} /> Save to FlipLedger</>}
+        </button>
+      )}
     </div>
   );
 }
@@ -447,11 +487,12 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot }: BatchI
 
 export default function MfnBatchReceivePage() {
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [query, setQuery]         = useState('');
-  const [results, setResults]     = useState<SearchResult[]>([]);
-  const [searching, setSearching] = useState(false);
-  const [batch, setBatch]         = useState<Map<string, BatchItem>>(new Map());
-  const [savingAll, setSavingAll] = useState(false);
+  const [query, setQuery]           = useState('');
+  const [results, setResults]       = useState<SearchResult[]>([]);
+  const [searching, setSearching]   = useState(false);
+  const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
+  const [savingAll, setSavingAll]   = useState(false);
+  const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
@@ -476,13 +517,14 @@ export default function MfnBatchReceivePage() {
     return () => clearTimeout(t);
   }, [query, doSearch]);
 
-  function addToBatch(result: SearchResult) {
+  function addToBatch(result: SearchResult, focusOnAdd = false) {
     setBatch(prev => {
       if (prev.has(result.sku)) return prev;
       const next = new Map(prev);
       next.set(result.sku, makeBatchItem(result));
       return next;
     });
+    if (focusOnAdd) setFocusQtySku(result.sku);
   }
 
   function updateBatchItem(sku: string, updates: Partial<BatchItem>) {
@@ -660,7 +702,7 @@ export default function MfnBatchReceivePage() {
               onChange={e => setQuery(e.target.value)}
               onKeyDown={e => {
                 if (e.key === 'Enter' && results.length > 0) {
-                  addToBatch(results[0]);
+                  addToBatch(results[0], true);
                   setQuery('');
                   setResults([]);
                 }
@@ -704,6 +746,8 @@ export default function MfnBatchReceivePage() {
                   onRemove={() => removeFromBatch(item.sku)}
                   onSave={() => saveItem(item.sku)}
                   onCreateLot={() => createLot(item.sku)}
+                  focusQty={focusQtySku === item.sku}
+                  onQtyFocused={() => setFocusQtySku(null)}
                 />
               ))}
             </div>
