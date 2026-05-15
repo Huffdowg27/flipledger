@@ -1235,7 +1235,7 @@ export default function MfnBatchReceivePage() {
                 {WARN_LABELS.some(l => summary.warnCounts[l] > 0) && (
                   <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
                     {WARN_LABELS.filter(l => summary.warnCounts[l] > 0).map(l => {
-                      const isBlocker = l === 'No lot' || l === 'Not inspected';
+                      const isBlocker = l === 'No lot' || l === 'Not inspected' || l === 'No price';
                       const cls = isBlocker
                         ? 'bg-red-500/10 text-red-400 border-red-500/30'
                         : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
