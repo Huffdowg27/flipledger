@@ -16,6 +16,7 @@ interface SearchResult {
   sku: string;
   amazon_qty: number | null;
   amazon_status: string | null;
+  fulfillment_channel: string | null;
   amazon_list_price_cents: number | null;
   product_name: string | null;
   image_url: string | null;
@@ -357,6 +358,75 @@ function WarningChip({ chip }: { chip: Chip }) {
   );
 }
 
+// Channel badge — DEFAULT = MFN, AMAZON_NA = FBA. Sourced from
+// merchant_listings.fulfillment_channel. Display only.
+function ChannelBadge({ channel }: { channel: string | null | undefined }) {
+  if (!channel) return null;
+  const isFba = channel === 'AMAZON_NA';
+  const label = isFba ? 'FBA' : channel === 'DEFAULT' ? 'MFN' : channel;
+  const cls = isFba
+    ? 'bg-sky-500/10 text-sky-400 border-sky-500/30'
+    : 'bg-purple-500/10 text-purple-400 border-purple-500/30';
+  return (
+    <span className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border ${cls}`} title={`Fulfillment channel: ${channel}`}>
+      {label}
+    </span>
+  );
+}
+
+// Receive progress derived from existing fields — display only.
+// total    = parsed_order_qty (from MSKU) ?? quantity_received (best local proxy)
+// received = quantity_received
+// remaining = max(0, total - received)
+// Returns null when there's no lot OR no usable signal for total.
+interface ReceiveProgress { total: number; received: number; remaining: number; pct: number }
+
+function getReceiveProgress(item: BatchItem): ReceiveProgress | null {
+  if (item.il_id == null) return null;
+  const parsedTotal = item.parsed_order_qty != null && item.parsed_order_qty > 0 ? Number(item.parsed_order_qty) : null;
+  const received    = item.quantity_received != null ? Math.max(0, Number(item.quantity_received)) : 0;
+  const total       = parsedTotal ?? (received > 0 ? received : null);
+  if (total == null || total <= 0) return null;
+  const cappedReceived = Math.min(received, total);
+  const remaining = Math.max(0, total - cappedReceived);
+  const pct = Math.round((cappedReceived / total) * 100);
+  return { total, received: cappedReceived, remaining, pct };
+}
+
+function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: ReceiveProgress; variant?: 'compact' | 'full' }) {
+  const isFull = progress.pct >= 100;
+  const fillCls = isFull ? 'bg-green-500/70' : 'bg-amber-500/70';
+  if (variant === 'compact') {
+    return (
+      <span className="inline-flex items-center gap-1.5" title={`Received ${progress.received} of ${progress.total} · ${progress.remaining} remaining`}>
+        <span className="font-mono text-text-tertiary">Recv {progress.received}/{progress.total}</span>
+        <span className="inline-block w-12 h-1 bg-bg-elevated rounded-full overflow-hidden">
+          <span className={`block h-full rounded-full transition-all ${fillCls}`} style={{ width: `${progress.pct}%` }} />
+        </span>
+      </span>
+    );
+  }
+  return (
+    <div className="mb-3 px-3 py-2 bg-bg-elevated/50 rounded-lg border border-border-subtle">
+      <div className="flex items-center justify-between text-[11px] mb-1.5">
+        <span className="text-text-tertiary">Receive progress</span>
+        <span className="tabular-nums">
+          <span className="text-green-400/90 font-mono">Received {progress.received}</span>
+          <span className="text-text-tertiary/50 mx-1.5">·</span>
+          <span className={`font-mono ${progress.remaining > 0 ? 'text-amber-400/80' : 'text-text-tertiary'}`}>
+            Remaining {progress.remaining}
+          </span>
+          <span className="text-text-tertiary/50 mx-1.5">/</span>
+          <span className="font-mono text-text-secondary">{progress.total}</span>
+        </span>
+      </div>
+      <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
+        <div className={`h-full rounded-full transition-all ${fillCls}`} style={{ width: `${progress.pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
 function UpcChip({ upc }: { upc: string }) {
   return (
     <span
@@ -407,6 +477,7 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick }: SearchResult
         <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
           <span className="text-[10px] font-mono text-accent">{result.asin}</span>
           {liveStateBadge(result.amazon_status, result.amazon_qty)}
+          <ChannelBadge channel={result.fulfillment_channel} />
           {result.amazon_qty != null && (
             <span className="text-[10px] text-text-tertiary">Amz: {result.amazon_qty}</span>
           )}
@@ -507,7 +578,9 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
             <span className="font-mono text-accent/80">{item.asin}</span>
             <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
+            <ChannelBadge channel={item.fulfillment_channel} />
             {savedQty != null && <span className="font-mono">Qty {savedQty}</span>}
+            {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
             {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
             {savedCond && <span className="text-text-secondary">{savedCond}</span>}
             {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
@@ -567,6 +640,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
             <span className="text-[10px] font-mono text-accent">{item.asin}</span>
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
+            <ChannelBadge channel={item.fulfillment_channel} />
             {item.amazon_qty != null && (
               <span className="text-[10px] text-text-tertiary">Amz qty: {item.amazon_qty}</span>
             )}
@@ -662,6 +736,9 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           </div>
         </div>
       )}
+
+      {/* Receive progress — only when there's a lot AND a usable total signal */}
+      {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="full" /> : null; })()}
 
       {/* Input grid — keyboard flow: Qty → Bin → List Price → Condition → Shipping Template → Save */}
       <div className="grid grid-cols-2 gap-2 mb-2">

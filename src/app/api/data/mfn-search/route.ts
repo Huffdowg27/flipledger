@@ -97,6 +97,7 @@ const LISTING_SELECT = `
     ml.asin,
     ml.quantity                                  AS amazon_qty,
     ml.status                                    AS amazon_status,
+    ml.fulfillment_channel                       AS fulfillment_channel,
     ml.list_price_cents                          AS amazon_list_price_cents,
     ml.last_synced,
     COALESCE(p.name, ml.item_name)               AS product_name,
