@@ -446,6 +446,94 @@ function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: Recei
   );
 }
 
+// Inline qty quick-edit for the saved row. Local UI state; commits via
+// the parent's onSave (which only touches quantity_received via the
+// existing inventory-lots PATCH route).
+interface InlineQtyEditProps {
+  value: number | null;
+  onSave: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
+}
+
+function InlineQtyEdit({ value, onSave }: InlineQtyEditProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft]     = useState('');
+  const [saving, setSaving]   = useState(false);
+  const [error, setError]     = useState<string | null>(null);
+  // Guards Enter + blur double-fire (and rapid clicks). Reset on each open.
+  const committedRef = useRef(false);
+
+  function start() {
+    if (saving) return;
+    setDraft(String(value ?? 0));
+    committedRef.current = false;
+    setError(null);
+    setEditing(true);
+  }
+
+  function cancel() {
+    committedRef.current = true;
+    setEditing(false);
+    setError(null);
+  }
+
+  async function commit() {
+    if (committedRef.current) return;
+    committedRef.current = true;
+    const n = parseInt(draft, 10);
+    if (!Number.isFinite(n) || n < 0) {
+      setEditing(false);
+      return;
+    }
+    if (n === value) {
+      setEditing(false);
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    const result = await onSave(n);
+    setSaving(false);
+    if (result.ok) {
+      setEditing(false);
+    } else {
+      setError(result.error ?? 'Save failed');
+      // Allow retry — clear the guard so Enter/blur can re-fire on the next attempt.
+      committedRef.current = false;
+    }
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1">
+        <input
+          type="number" min="0" autoFocus
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === 'Enter')      { e.preventDefault(); commit(); }
+            else if (e.key === 'Escape'){ e.preventDefault(); cancel(); }
+          }}
+          onBlur={() => commit()}
+          disabled={saving}
+          className="w-12 h-5 px-1.5 bg-bg-elevated border border-accent/40 rounded text-[10px] font-mono text-text-primary focus:outline-none focus:border-accent disabled:opacity-50"
+        />
+        {saving && <Loader2 size={9} className="animate-spin text-text-tertiary/70" />}
+        {error && <span className="text-[9px] text-red-400" title={error}>!</span>}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={start}
+      className="font-mono inline-flex items-center hover:text-text-secondary px-1 -mx-1 rounded hover:bg-bg-elevated/50 transition-colors"
+      title="Click to edit received qty"
+    >
+      Qty {value ?? '—'}
+    </button>
+  );
+}
+
 function UpcChip({ upc }: { upc: string }) {
   return (
     <span
@@ -541,12 +629,13 @@ interface BatchItemCardProps {
   onCreateLot: () => void;
   onPrintLabel: () => void;
   onEdit: () => void;
+  onSaveQty: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
   onImageClick: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onImageClick, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onImageClick, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -598,7 +687,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             <span className="font-mono text-accent/80">{item.asin}</span>
             <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
             <ChannelBadge channel={item.fulfillment_channel} />
-            {savedQty != null && <span className="font-mono">Qty {savedQty}</span>}
+            <InlineQtyEdit value={savedQty} onSave={onSaveQty} />
             {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
             {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
             {savedCond && <span className="text-text-secondary">{savedCond}</span>}
@@ -1145,6 +1234,61 @@ export default function MfnBatchReceivePage() {
     setSavingAll(false);
   }
 
+  // Inline qty edit on saved rows — narrow PATCH that only updates
+  // quantity_received (and received_at once if missing). Does NOT touch
+  // save_state, so the row stays collapsed. Bin/condition/price/template
+  // are not sent — the route's per-field `!== undefined` gate leaves
+  // those columns alone. Returns { ok, error? } so InlineQtyEdit can
+  // restore the previous value on failure.
+  async function saveQtyOnly(sku: string, newQty: number): Promise<{ ok: boolean; error?: string }> {
+    const item = batch.get(sku);
+    if (!item || item.il_id == null) return { ok: false, error: 'No lot' };
+
+    const t0 = Date.now();
+    console.log(`[saveQtyOnly] start sku=${sku} il_id=${item.il_id} qty=${newQty}`);
+
+    const body: Record<string, unknown> = {
+      id: item.il_id,
+      quantityReceived: newQty,
+      markReceived: newQty > 0,
+    };
+
+    try {
+      const res = await fetch('/api/data/inventory-lots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const elapsed = Date.now() - t0;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        let errMsg = 'Save failed';
+        try { errMsg = JSON.parse(text).error || errMsg; } catch { /* keep default */ }
+        console.error(`[saveQtyOnly] fail sku=${sku} status=${res.status} elapsed=${elapsed}ms body=${text}`);
+        return { ok: false, error: `${errMsg} (HTTP ${res.status})` };
+      }
+      console.log(`[saveQtyOnly] ok sku=${sku} elapsed=${elapsed}ms`);
+
+      // Mirror the just-saved qty back onto the local row so the saved
+      // row, summary, progress, and warning chips reflect the new value
+      // immediately. Keep draft_qty in sync too so a later Edit opens
+      // with the right number.
+      const mirror: Partial<BatchItem> = {
+        quantity_received: newQty,
+        draft_qty: String(newQty),
+      };
+      if (newQty > 0 && !item.received_at) {
+        mirror.received_at = new Date().toISOString();
+      }
+      updateBatchItem(sku, mirror);
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[saveQtyOnly] network sku=${sku} err=${msg}`);
+      return { ok: false, error: `Network error: ${msg}` };
+    }
+  }
+
   function printAll() {
     const all    = Array.from(batch.values());
     const saved  = all.filter(i => i.save_state === 'saved' && i.asin);
@@ -1397,6 +1541,7 @@ export default function MfnBatchReceivePage() {
                   onCreateLot={() => createLot(item.sku)}
                   onPrintLabel={() => openLabelPrint([item])}
                   onEdit={() => updateBatchItem(item.sku, { save_state: 'idle', save_error: null })}
+                  onSaveQty={(q) => saveQtyOnly(item.sku, q)}
                   onImageClick={() => item.image_url && setLightbox({
                     src: item.image_url,
                     title: item.product_name || item.asin || item.sku,
