@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer } from 'lucide-react';
+import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send } from 'lucide-react';
+import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -89,10 +90,11 @@ interface LabelSpec {
 }
 
 function openLabelPrint(items: BatchItem[]): void {
-  const specs: LabelSpec[] = items.flatMap(item => {
-    const qty = Math.min(Math.max((item.quantity_received ?? parseInt(item.draft_qty, 10)) || 1, 1), 50);
+  // One label per saved item by default. The print preview tab still has
+  // browser-native controls to print multiple copies if the user needs more.
+  const specs: LabelSpec[] = items.map(item => {
     const bin = item.draft_bin.trim() || item.bin_location || undefined;
-    const spec: LabelSpec = {
+    return {
       labelMode: 'asin',
       size: '2x1',
       asin: item.asin || undefined,
@@ -101,7 +103,6 @@ function openLabelPrint(items: BatchItem[]): void {
       bin,
       showBin: !!bin,
     };
-    return Array<LabelSpec>(qty).fill(spec);
   });
   if (specs.length === 0) return;
   const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(specs))));
@@ -621,6 +622,11 @@ export default function MfnBatchReceivePage() {
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
   const [printAllMsg, setPrintAllMsg] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen]       = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewRows, setPreviewRows]       = useState<ActivationPreviewRow[]>([]);
+  const [previewTemplate, setPreviewTemplate] = useState('');
+  const [previewError, setPreviewError]     = useState<string | null>(null);
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
@@ -826,6 +832,42 @@ export default function MfnBatchReceivePage() {
     }
   }
 
+  async function previewAndPush() {
+    const savedSkus = Array.from(batch.values())
+      .filter(i => i.save_state === 'saved' && i.il_id != null)
+      .map(i => i.sku);
+    if (savedSkus.length === 0) return;
+
+    setPreviewLoading(true);
+    setPreviewError(null);
+    const t0 = Date.now();
+    console.log(`[previewAndPush] start skus=${savedSkus.length}`);
+    try {
+      const res = await fetch('/api/data/merchant-inventory/activation-preview', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skus: savedSkus }),
+      });
+      const data = await res.json();
+      const elapsed = Date.now() - t0;
+      if (!res.ok) {
+        console.error(`[previewAndPush] fail status=${res.status} elapsed=${elapsed}ms`, data);
+        setPreviewError((data as { error?: string }).error || `Preview failed (HTTP ${res.status})`);
+        return;
+      }
+      console.log(`[previewAndPush] ok elapsed=${elapsed}ms rows=${(data.rows ?? []).length}`);
+      setPreviewRows(data.rows || []);
+      setPreviewTemplate(data.shippingTemplate || '');
+      setPreviewOpen(true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[previewAndPush] network', msg);
+      setPreviewError(`Network error: ${msg}`);
+    } finally {
+      setPreviewLoading(false);
+    }
+  }
+
   const batchArray   = Array.from(batch.values());
   const savedCount   = batchArray.filter(i => i.save_state === 'saved').length;
   const saveable     = batchArray.filter(i => i.il_id != null && i.save_state !== 'saved');
@@ -859,6 +901,18 @@ export default function MfnBatchReceivePage() {
                 >
                   <Printer size={14} />
                   Print All ({savedCount})
+                </button>
+              )}
+              {savedCount > 0 && (
+                <button
+                  onClick={previewAndPush}
+                  disabled={previewLoading}
+                  className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-blue-500/50 text-blue-400 text-sm font-medium hover:bg-blue-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {previewLoading
+                    ? <Loader2 size={14} className="animate-spin" />
+                    : <Send size={14} />}
+                  {previewLoading ? 'Loading…' : `Preview & Push (${savedCount})`}
                 </button>
               )}
               {hasUnsaved && (
@@ -952,6 +1006,25 @@ export default function MfnBatchReceivePage() {
           )}
         </div>
       </div>
+
+      {previewError && (
+        <div className="fixed bottom-4 right-4 z-40 max-w-md px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-400 shadow-lg flex items-start gap-2">
+          <AlertCircle size={14} className="shrink-0 mt-0.5" />
+          <span className="flex-1">{previewError}</span>
+          <button onClick={() => setPreviewError(null)} className="shrink-0 p-1 hover:bg-red-500/10 rounded">
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {previewOpen && previewRows.length > 0 && (
+        <PreviewModal
+          rows={previewRows}
+          shippingTemplate={previewTemplate}
+          onClose={() => setPreviewOpen(false)}
+          onPushComplete={() => { setPreviewOpen(false); }}
+        />
+      )}
     </div>
   );
 }
