@@ -179,7 +179,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
             <AlertTriangle size={12} className="shrink-0 mt-0.5" />
             <span>
               <span className="font-medium">Shipping template is stored locally only.</span>{' '}
-              The push sends quantity and price to Amazon. Set the shipping template
+              Amazon push updates quantity and price. Set the shipping template
               for each SKU in Seller Central directly.
             </span>
           </div>

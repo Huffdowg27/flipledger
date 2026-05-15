@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
       const currentStatus = ml ? String(ml.current_status ?? '') || null : null;
       const statusPushable = currentStatus === 'Active';
       if (ml && !statusPushable) {
-        warnings.push(`Listing is ${currentStatus ?? 'unknown'} — must be Active to push`);
+        warnings.push('Local Amazon status is stale/inactive — push will attempt quantity/price update because SKU exists.');
       }
 
       // Price: use locally-set receive price first; fall back to current Amazon price
@@ -171,12 +171,16 @@ export async function POST(request: NextRequest) {
       const qty_source: 'received' | 'remaining' | 'none' =
         qtyReceived > 0 ? 'received' : qtyRemaining > 0 ? 'remaining' : 'none';
 
-      // can_push: all conditions must hold. Shipping template is intentionally
-      // excluded — it's not pushed to Amazon (see mfnActivation.ts).
+      // can_push: real blockers only. Stale local merchant_listings.status
+      // is downgraded to a warning — Seller Central may show the SKU as
+      // Active while the local row hasn't synced yet. The SP-API PATCH
+      // sends qty + price regardless of local status; activation-push
+      // mirrors merchant_listings to Active after an ACCEPTED response.
+      // Shipping template is intentionally excluded — it's not pushed to
+      // Amazon (see mfnActivation.ts).
       const can_push =
         !!sku &&
         !!ml &&
-        statusPushable &&
         qtyReceived > 0 &&
         !!inspectedAt &&
         proposedPriceCents != null &&

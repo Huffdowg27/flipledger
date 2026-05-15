@@ -138,8 +138,11 @@ export async function POST(request: NextRequest) {
       const reasons: string[] = [];
 
       if (!ml) reasons.push('No Amazon listing found');
+      // Local merchant_listings.status may be stale relative to Seller Central.
+      // The SP-API PATCH sends qty + price regardless of local status; after
+      // an ACCEPTED response we mirror status back to Active. Stale status is
+      // therefore not a blocker — only a warning in the preview.
       const currentStatus = ml ? String(ml.current_status ?? '') || null : null;
-      if (ml && currentStatus !== 'Active') reasons.push(`Listing is ${currentStatus ?? 'unknown'} — must be Active`);
 
       const ilPriceCents = il?.il_list_price_cents != null ? Number(il.il_list_price_cents) : null;
       const mlPriceCents = ml?.current_price_cents  != null ? Number(ml.current_price_cents)  : null;
