@@ -379,7 +379,7 @@ function ChannelBadge({ channel }: { channel: string | null | undefined }) {
 // received = quantity_received
 // remaining = max(0, total - received)
 // Returns null when there's no lot OR no usable signal for total.
-interface ReceiveProgress { total: number; received: number; remaining: number; pct: number }
+interface ReceiveProgress { total: number; received: number; remaining: number; pct: number; isOver: boolean }
 
 function getReceiveProgress(item: BatchItem): ReceiveProgress | null {
   if (item.il_id == null) return null;
@@ -387,19 +387,29 @@ function getReceiveProgress(item: BatchItem): ReceiveProgress | null {
   const received    = item.quantity_received != null ? Math.max(0, Number(item.quantity_received)) : 0;
   const total       = parsedTotal ?? (received > 0 ? received : null);
   if (total == null || total <= 0) return null;
-  const cappedReceived = Math.min(received, total);
-  const remaining = Math.max(0, total - cappedReceived);
-  const pct = Math.round((cappedReceived / total) * 100);
-  return { total, received: cappedReceived, remaining, pct };
+  // Keep `received` as the actual quantity_received. Cap the bar's pct at 100% but
+  // surface the over-receive condition so callers can flag it visually.
+  const remaining = Math.max(0, total - received);
+  const pct = Math.min(100, Math.round((Math.min(received, total) / total) * 100));
+  const isOver = received > total;
+  return { total, received, remaining, pct, isOver };
 }
 
 function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: ReceiveProgress; variant?: 'compact' | 'full' }) {
-  const isFull = progress.pct >= 100;
-  const fillCls = isFull ? 'bg-green-500/70' : 'bg-amber-500/70';
+  const fillCls = progress.isOver
+    ? 'bg-amber-500/70'
+    : progress.pct >= 100 ? 'bg-green-500/70' : 'bg-amber-500/70';
+  const recvCls = progress.isOver ? 'text-amber-400 font-medium' : 'text-text-tertiary';
+  const overTitle = progress.isOver
+    ? `Over-received: ${progress.received - progress.total} extra (received ${progress.received} of ${progress.total})`
+    : `Received ${progress.received} of ${progress.total} · ${progress.remaining} remaining`;
+
   if (variant === 'compact') {
     return (
-      <span className="inline-flex items-center gap-1.5" title={`Received ${progress.received} of ${progress.total} · ${progress.remaining} remaining`}>
-        <span className="font-mono text-text-tertiary">Recv {progress.received}/{progress.total}</span>
+      <span className="inline-flex items-center gap-1.5" title={overTitle}>
+        <span className={`font-mono ${recvCls}`}>
+          Recv {progress.received}/{progress.total}{progress.isOver ? ' · Over' : ''}
+        </span>
         <span className="inline-block w-12 h-1 bg-bg-elevated rounded-full overflow-hidden">
           <span className={`block h-full rounded-full transition-all ${fillCls}`} style={{ width: `${progress.pct}%` }} />
         </span>
@@ -409,9 +419,18 @@ function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: Recei
   return (
     <div className="mb-3 px-3 py-2 bg-bg-elevated/50 rounded-lg border border-border-subtle">
       <div className="flex items-center justify-between text-[11px] mb-1.5">
-        <span className="text-text-tertiary">Receive progress</span>
+        <span className="text-text-tertiary">
+          Receive progress
+          {progress.isOver && (
+            <span className="ml-2 text-amber-400/90 font-medium" title={overTitle}>
+              · Over by {progress.received - progress.total}
+            </span>
+          )}
+        </span>
         <span className="tabular-nums">
-          <span className="text-green-400/90 font-mono">Received {progress.received}</span>
+          <span className={`font-mono ${progress.isOver ? 'text-amber-400/90' : 'text-green-400/90'}`}>
+            Received {progress.received}
+          </span>
           <span className="text-text-tertiary/50 mx-1.5">·</span>
           <span className={`font-mono ${progress.remaining > 0 ? 'text-amber-400/80' : 'text-text-tertiary'}`}>
             Remaining {progress.remaining}
