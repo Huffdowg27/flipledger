@@ -295,9 +295,11 @@ function isReadyToPush(item: BatchItem): boolean {
   return true;
 }
 
-// Needs work = any hard blocker chip (No lot / Not inspected / No price)
-// or missing operational field chip (No bin / No condition).
+// Needs work = unsaved (needs a Save click before Print All / Preview &
+// Push will include it), OR any hard blocker chip (No lot / Not inspected
+// / No price), OR missing operational field chip (No bin / No condition).
 function needsWork(item: BatchItem): boolean {
+  if (item.save_state !== 'saved') return true;
   const chips = chipsForBatchItem(item);
   if (chips.some(c => c.tone === 'blocker')) return true;
   if (chips.some(c => c.label === 'No bin' || c.label === 'No condition')) return true;
