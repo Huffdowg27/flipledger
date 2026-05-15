@@ -158,19 +158,21 @@ export async function POST(request: NextRequest) {
         warnings.push('Item not inspected — not eligible to push');
       }
 
-      // Shipping template: per-lot value takes priority over the batch default
+      // Shipping template: per-lot value takes priority over the batch default.
+      // The template is stored locally only and is NOT pushed to Amazon — the
+      // user must set it manually in Seller Central. We always emit a soft
+      // warning so users see this in the preview UI.
       const lotTemplate = il?.merchant_shipping_group_name != null
         ? String(il.merchant_shipping_group_name).trim()
         : '';
       const proposedShippingTemplate = lotTemplate || shippingTemplate;
-      if (!proposedShippingTemplate) {
-        warnings.push('Shipping template not configured — not eligible to push');
-      }
+      warnings.push('Shipping template is stored locally only — set it in Seller Central');
 
       const qty_source: 'received' | 'remaining' | 'none' =
         qtyReceived > 0 ? 'received' : qtyRemaining > 0 ? 'remaining' : 'none';
 
-      // can_push: all conditions must hold
+      // can_push: all conditions must hold. Shipping template is intentionally
+      // excluded — it's not pushed to Amazon (see mfnActivation.ts).
       const can_push =
         !!sku &&
         !!ml &&
@@ -178,8 +180,7 @@ export async function POST(request: NextRequest) {
         qtyReceived > 0 &&
         !!inspectedAt &&
         proposedPriceCents != null &&
-        proposedPriceCents > 0 &&
-        !!proposedShippingTemplate;
+        proposedPriceCents > 0;
 
       const asin = ml
         ? String(ml.asin ?? '')

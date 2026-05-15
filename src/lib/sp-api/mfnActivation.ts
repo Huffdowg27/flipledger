@@ -1,10 +1,17 @@
 /**
- * MFN Activation Push — PATCH qty, price, and shipping template on
- * an existing Merchant Fulfilled listing via Listings Items API 2021-08-01.
+ * MFN Activation Push — PATCH qty and price on an existing Merchant
+ * Fulfilled listing via Listings Items API 2021-08-01.
  *
- * Uses PATCH (not PUT) so only the three offer attributes are written;
+ * Uses PATCH (not PUT) so only the offer attributes are written;
  * compliance attributes, product type, and catalog data on the existing
  * listing are left exactly as they are.
+ *
+ * NOTE: merchant_shipping_group_name is NOT pushed via this call. The
+ * exact string Amazon expects depends on per-account template metadata
+ * that the Listings Items API rejects when sent verbatim. The shipping
+ * template is stored locally on inventory_ledger.merchant_shipping_group_name
+ * and surfaced in /mfn/batch, but it must currently be set in Seller
+ * Central directly.
  *
  * Amazon's PATCH response mirrors the PUT shape:
  *   { sku, status: 'ACCEPTED'|'INVALID'|'VALID', submissionId?, issues[] }
@@ -18,7 +25,6 @@ export interface MfnPatchParams {
   sku: string;
   quantity: number;
   listPriceCents: number;
-  merchantShippingGroupName: string;
   productType?: string;   // defaults to 'PRODUCT' — only used for routing, not catalog attrs
 }
 
@@ -37,11 +43,12 @@ export interface MfnPatchResult {
 }
 
 /**
- * Patch an existing MFN listing: quantity + price + shipping template.
+ * Patch an existing MFN listing: quantity + price.
  *
- * The three patches are sent atomically in one PATCH call. If Amazon
- * rejects any attribute, the whole call returns INVALID and issues[]
- * describes the specific problem.
+ * Both patches are sent atomically in one PATCH call. If Amazon rejects
+ * any attribute, the whole call returns INVALID and issues[] describes
+ * the specific problem. Warnings on a successful ACCEPTED response are
+ * also returned in issues[] for logging.
  */
 export async function patchMfnListing(
   credentials: SPAPICredentials,
@@ -77,11 +84,9 @@ export async function patchMfnListing(
           },
         ],
       },
-      {
-        op: 'replace',
-        path: '/attributes/merchant_shipping_group_name',
-        value: [{ value: params.merchantShippingGroupName, marketplace_id: credentials.marketplaceId }],
-      },
+      // merchant_shipping_group_name intentionally NOT patched here.
+      // It's stored locally on inventory_ledger.merchant_shipping_group_name
+      // and configured manually in Seller Central.
     ],
   };
 

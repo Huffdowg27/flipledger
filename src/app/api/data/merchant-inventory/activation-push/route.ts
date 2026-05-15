@@ -153,11 +153,14 @@ export async function POST(request: NextRequest) {
       const inspectedAt = il?.inspected_at != null ? String(il.inspected_at).trim() : '';
       if (il && !inspectedAt) reasons.push('Item not inspected');
 
+      // Shipping template is stored locally only — not pushed to Amazon.
+      // Captured here for the audit log and UI display, but never blocks
+      // eligibility. The exact template name must be configured in Seller
+      // Central directly.
       const lotTemplate = il?.merchant_shipping_group_name != null
         ? String(il.merchant_shipping_group_name).trim()
         : '';
       const proposedShippingTemplate = lotTemplate || DEFAULT_MFN_SHIPPING_TEMPLATE;
-      if (!proposedShippingTemplate) reasons.push('Shipping template not configured');
 
       const proposedQty = qtyReceived > 0 ? qtyReceived : qtyRemaining;
       const asin = ml ? String(ml.asin ?? '') : il ? String(il.asin ?? '') : null;
@@ -224,7 +227,8 @@ export async function POST(request: NextRequest) {
         continue;
       }
 
-      // Attempt the SP-API PATCH
+      // Attempt the SP-API PATCH — pushes qty + price only. Shipping
+      // template is intentionally not sent (see mfnActivation.ts).
       let spResult: Awaited<ReturnType<typeof patchMfnListing>> | null = null;
       let errorMessage: string | null = null;
 
@@ -233,7 +237,6 @@ export async function POST(request: NextRequest) {
           sku: item.sku,
           quantity: item.proposed_qty,
           listPriceCents: item.proposed_price_cents!,
-          merchantShippingGroupName: item.proposed_shipping_template,
         });
       } catch (err) {
         errorMessage = String(err);
@@ -242,6 +245,12 @@ export async function POST(request: NextRequest) {
       const spStatus = spResult?.status ?? 'ERROR';
       const spSubmissionId = spResult?.submissionId ?? null;
       const spIssues = spResult?.issues ?? [];
+
+      // Surface Amazon's issues[] in logs regardless of status — warnings on
+      // an ACCEPTED push are useful diagnostic signal but do not fail the row.
+      if (spIssues.length > 0) {
+        console.warn(`[activation-push] sku=${item.sku} status=${spStatus} issues=${JSON.stringify(spIssues)}`);
+      }
 
       const logId = db.prepare(`
         INSERT INTO mfn_push_log

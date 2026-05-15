@@ -173,6 +173,18 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
           </span>
         </div>
 
+        {/* Shipping-template scope banner — appears in preview phase only */}
+        {(pushPhase === 'preview' || pushPhase === 'confirm') && (
+          <div className="px-5 py-2 bg-amber-500/5 border-b border-amber-500/20 shrink-0 flex items-start gap-2 text-[11px] text-amber-400/90">
+            <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+            <span>
+              <span className="font-medium">Shipping template is stored locally only.</span>{' '}
+              The push sends quantity and price to Amazon. Set the shipping template
+              for each SKU in Seller Central directly.
+            </span>
+          </div>
+        )}
+
         {/* Confirm overlay */}
         {pushPhase === 'confirm' && (
           <div className="px-5 py-4 bg-amber-500/5 border-b border-amber-500/20 shrink-0">
