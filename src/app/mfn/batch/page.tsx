@@ -261,41 +261,47 @@ interface BatchSummary {
   warnCounts: Record<WarnLabel, number>;
 }
 
-// Client-only receive-state classifier for the filter strip. Returns one
-// bucket per item using priority order: over > needs-work > complete > ready.
-// All buckets are mutually exclusive. Print All / Preview & Push do NOT
-// use this — they keep using their own eligibility logic on the full batch.
-type ReceiveState = 'over' | 'needs-work' | 'complete' | 'ready';
+// Independent receive-state predicates for the filter strip. Each predicate
+// is evaluated per item independently — buckets are NOT mutually exclusive
+// (e.g. a clean 1/1 saved row is both Complete and Ready to push). Print All
+// and Preview & Push do NOT use these — they keep their own eligibility
+// logic on the full batch.
+type FilterKey = 'over' | 'needs-work' | 'complete' | 'ready';
 
-function getBatchItemState(item: BatchItem): ReceiveState {
-  const progress = getReceiveProgress(item);
+function isOverReceived(item: BatchItem): boolean {
+  const p = getReceiveProgress(item);
+  return p != null && p.isOver;
+}
 
-  // 1. Over-received is the most urgent — surface even on otherwise clean rows.
-  if (progress && progress.isOver) return 'over';
+// Complete = saved row whose receive progress hit 100% and is not over.
+// Can overlap with Ready to push — that's intentional.
+function isComplete(item: BatchItem): boolean {
+  if (item.save_state !== 'saved') return false;
+  const p = getReceiveProgress(item);
+  return p != null && p.pct >= 100 && !p.isOver;
+}
 
-  // 2. Any hard blocker (no lot / no price / not inspected) OR operational
-  //    gap (no bin / no condition) routes to Needs work.
+// Ready to push = saved + has local lot + quantity_received > 0 +
+// inspected_at + valid price. Stale local Amazon status does NOT
+// disqualify. A 100%-received row is still Ready (overlaps with Complete).
+function isReadyToPush(item: BatchItem): boolean {
+  if (item.save_state !== 'saved') return false;
+  if (item.il_id == null) return false;
+  const qty = item.quantity_received != null ? Number(item.quantity_received) : 0;
+  if (qty <= 0) return false;
+  if (!item.inspected_at) return false;
+  const priceNum = parseFloat(item.draft_list_price);
+  if (!Number.isFinite(priceNum) || priceNum <= 0) return false;
+  return true;
+}
+
+// Needs work = any hard blocker chip (No lot / Not inspected / No price)
+// or missing operational field chip (No bin / No condition).
+function needsWork(item: BatchItem): boolean {
   const chips = chipsForBatchItem(item);
-  const hasBlocker = chips.some(c => c.tone === 'blocker');
-  const hasOperationalGap = chips.some(c => c.label === 'No bin' || c.label === 'No condition');
-  if (hasBlocker || hasOperationalGap) return 'needs-work';
-
-  // 3. Complete: saved row, receive progress hit 100%, no needs-work issues
-  //    (already excluded above).
-  if (item.save_state === 'saved' && progress && progress.pct >= 100) return 'complete';
-
-  // 4. Ready to push: saved + lot + qty_received > 0 + inspected_at + valid price.
-  //    Stale Amazon status does NOT block this.
-  if (item.save_state === 'saved' && item.il_id != null) {
-    const qty = item.quantity_received != null ? Number(item.quantity_received) : 0;
-    const priceNum = parseFloat(item.draft_list_price);
-    const validPrice = Number.isFinite(priceNum) && priceNum > 0;
-    if (qty > 0 && item.inspected_at && validPrice) return 'ready';
-  }
-
-  // Fallback: unsaved items with no issues still need a Save click — that's
-  // work to do, so they land here.
-  return 'needs-work';
+  if (chips.some(c => c.tone === 'blocker')) return true;
+  if (chips.some(c => c.label === 'No bin' || c.label === 'No condition')) return true;
+  return false;
 }
 
 function summarizeBatch(items: BatchItem[]): BatchSummary {
@@ -1060,7 +1066,7 @@ export default function MfnBatchReceivePage() {
   const [printAllMsg, setPrintAllMsg] = useState<string | null>(null);
   // Client-only receive-state filter for the visible batch list. Defaults
   // to 'all' so newly added items are never accidentally hidden.
-  const [receiveFilter, setReceiveFilter] = useState<'all' | ReceiveState>('all');
+  const [receiveFilter, setReceiveFilter] = useState<'all' | FilterKey>('all');
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string; sku: string } | null>(null);
   const [previewOpen, setPreviewOpen]       = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1396,14 +1402,26 @@ export default function MfnBatchReceivePage() {
   const saveable     = batchArray.filter(i => i.il_id != null && i.save_state !== 'saved');
   const hasUnsaved   = saveable.length > 0;
 
-  // Receive-state counts (always from full batch — counts don't change with the active filter).
-  const stateCounts = { 'needs-work': 0, ready: 0, complete: 0, over: 0 } as Record<ReceiveState, number>;
-  for (const i of batchArray) stateCounts[getBatchItemState(i)]++;
+  // Receive-state counts — independent predicates, may overlap (e.g. a
+  // clean 1/1 saved row is counted under both Complete and Ready to push).
+  // Always from the full batch — counts don't change with the active filter.
+  const stateCounts: Record<FilterKey, number> = {
+    'needs-work': batchArray.filter(needsWork).length,
+    ready:        batchArray.filter(isReadyToPush).length,
+    complete:     batchArray.filter(isComplete).length,
+    over:         batchArray.filter(isOverReceived).length,
+  };
 
   // Apply the active filter only to the visible card list.
+  const predicateFor: Record<FilterKey, (i: BatchItem) => boolean> = {
+    'needs-work': needsWork,
+    ready:        isReadyToPush,
+    complete:     isComplete,
+    over:         isOverReceived,
+  };
   const visibleBatch = receiveFilter === 'all'
     ? batchArray
-    : batchArray.filter(i => getBatchItemState(i) === receiveFilter);
+    : batchArray.filter(predicateFor[receiveFilter]);
 
   return (
     <div className="flex flex-col h-full">
