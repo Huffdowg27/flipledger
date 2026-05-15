@@ -317,18 +317,24 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-baseline gap-2">
               <span className={`text-base font-semibold tabular-nums ${
-                profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
+                !profit.hasFee
+                  ? 'text-amber-400'
+                  : profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
               }`}>
                 {profit.netCents != null ? formatCurrency(profit.netCents) : '—'}
               </span>
               {profit.roiPct != null && (
-                <span className={`text-xs font-medium ${profit.roiPct > 0 ? 'text-green-400/80' : 'text-red-400/80'}`}>
-                  {profit.roiPct.toFixed(0)}% ROI
+                <span className={`text-xs font-medium ${
+                  !profit.hasFee ? 'text-amber-400/80' : profit.roiPct > 0 ? 'text-green-400/80' : 'text-red-400/80'
+                }`}>
+                  {profit.roiPct.toFixed(0)}%{!profit.hasFee ? '?' : ''} ROI
                 </span>
               )}
             </div>
             {!profit.hasFee && (
-              <span className="text-[10px] text-text-tertiary/50 italic">excl. Amazon fee</span>
+              <span className="flex items-center gap-1 text-[10px] text-amber-400/80 font-medium">
+                <AlertCircle size={10} /> Fee unknown
+              </span>
             )}
           </div>
           <div className="flex items-center gap-1 text-[10px] text-text-tertiary flex-wrap">
@@ -337,16 +343,16 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty
             <span>Cost {formatCurrency(profit.costCents)}</span>
             <span className="text-text-tertiary/30">−</span>
             <span>Ship {formatCurrency(profit.shipCents)}</span>
-            {profit.feeCents != null && (
-              <>
-                <span className="text-text-tertiary/30">−</span>
-                <span>
-                  Fee {formatCurrency(profit.feeCents)}
-                  {item.fee_list_price_cents != null && (
-                    <span className="text-text-tertiary/50"> at {formatCurrency(item.fee_list_price_cents)}</span>
-                  )}
-                </span>
-              </>
+            <span className="text-text-tertiary/30">−</span>
+            {profit.feeCents != null ? (
+              <span>
+                Fee {formatCurrency(profit.feeCents)}
+                {item.fee_list_price_cents != null && (
+                  <span className="text-text-tertiary/50"> at {formatCurrency(item.fee_list_price_cents)}</span>
+                )}
+              </span>
+            ) : (
+              <span className="text-amber-400/70 font-medium">Fee missing</span>
             )}
           </div>
         </div>
