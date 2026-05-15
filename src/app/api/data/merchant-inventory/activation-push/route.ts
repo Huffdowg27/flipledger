@@ -267,6 +267,23 @@ export async function POST(request: NextRequest) {
         errorMessage
       ).lastInsertRowid;
 
+      // Mirror the pushed offer state back to merchant_listings so the next
+      // preview sees the SKU as Active without waiting for the next listings
+      // report sync to catch up. Only runs on ACCEPTED — never on INVALID,
+      // ERROR, SKIPPED, or DRY_RUN. Does not touch inventory_ledger, FIFO,
+      // COGS, or any other ledger state.
+      if (spStatus === 'ACCEPTED' && item.proposed_price_cents != null) {
+        const upd = db.prepare(`
+          UPDATE merchant_listings
+          SET status = 'Active',
+              quantity = ?,
+              list_price_cents = ?,
+              last_synced = ?
+          WHERE sku = ? AND marketplace = 'amazon'
+        `).run(item.proposed_qty, item.proposed_price_cents, now, item.sku);
+        console.log(`[activation-push] mirror sku=${item.sku} rows_updated=${upd.changes} qty=${item.proposed_qty} price_cents=${item.proposed_price_cents}`);
+      }
+
       results.push({
         ...item,
         sp_status: spStatus as PushResult['sp_status'],
