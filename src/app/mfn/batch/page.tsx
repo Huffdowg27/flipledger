@@ -479,9 +479,18 @@ function InlineQtyEdit({ value, onSave }: InlineQtyEditProps) {
   async function commit() {
     if (committedRef.current) return;
     committedRef.current = true;
-    const n = parseInt(draft, 10);
+    // Strict whole-integer validation. Rejects blank, decimal, negative,
+    // Infinity, NaN, scientific notation, signs, and any non-digit.
+    const trimmed = draft.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      setError('Whole number ≥ 0');
+      committedRef.current = false; // keep open, allow retry
+      return;
+    }
+    const n = parseInt(trimmed, 10);
     if (!Number.isFinite(n) || n < 0) {
-      setEditing(false);
+      setError('Whole number ≥ 0');
+      committedRef.current = false;
       return;
     }
     if (n === value) {
@@ -505,16 +514,19 @@ function InlineQtyEdit({ value, onSave }: InlineQtyEditProps) {
     return (
       <span className="inline-flex items-center gap-1">
         <input
-          type="number" min="0" autoFocus
+          type="number" min="0" step={1} inputMode="numeric" autoFocus
           value={draft}
-          onChange={e => setDraft(e.target.value)}
+          onChange={e => { setDraft(e.target.value); if (error) setError(null); }}
           onKeyDown={e => {
             if (e.key === 'Enter')      { e.preventDefault(); commit(); }
             else if (e.key === 'Escape'){ e.preventDefault(); cancel(); }
           }}
           onBlur={() => commit()}
           disabled={saving}
-          className="w-12 h-5 px-1.5 bg-bg-elevated border border-accent/40 rounded text-[10px] font-mono text-text-primary focus:outline-none focus:border-accent disabled:opacity-50"
+          aria-invalid={error ? true : undefined}
+          className={`w-12 h-5 px-1.5 bg-bg-elevated rounded text-[10px] font-mono text-text-primary focus:outline-none disabled:opacity-50 border ${
+            error ? 'border-red-500/60 focus:border-red-500' : 'border-accent/40 focus:border-accent'
+          }`}
         />
         {saving && <Loader2 size={9} className="animate-spin text-text-tertiary/70" />}
         {error && <span className="text-[9px] text-red-400" title={error}>!</span>}
