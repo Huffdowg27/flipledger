@@ -62,6 +62,15 @@ const CONDITIONS = [
 
 const DEFAULT_SHIPPING_TEMPLATE = 'DEFAULT MFN USE THIS ONE';
 
+const SHIPPING_TEMPLATES = [
+  'DEFAULT MFN USE THIS ONE',
+  'DO NOT USE SSA ONLY',
+  'Over 1lb 12.99 SSA',
+  'SSA (Jason)',
+  'Under 1lb 7.99',
+  'Video Games $5.99',
+] as const;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -223,7 +232,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty
   const binRef              = useRef<HTMLInputElement>(null);
   const listPriceRef        = useRef<HTMLInputElement>(null);
   const conditionRef        = useRef<HTMLSelectElement>(null);
-  const shippingTemplateRef = useRef<HTMLInputElement>(null);
+  const shippingTemplateRef = useRef<HTMLSelectElement>(null);
   const saveRef             = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -443,14 +452,19 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, focusQty
 
       <div className="mb-3">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
-        <input
+        <select
           ref={shippingTemplateRef}
-          type="text"
-          value={item.draft_shipping_template}
+          value={SHIPPING_TEMPLATES.includes(item.draft_shipping_template as typeof SHIPPING_TEMPLATES[number])
+            ? item.draft_shipping_template
+            : DEFAULT_SHIPPING_TEMPLATE}
           onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
           onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveRef.current?.click(); } }}
-          className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-        />
+          className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-accent focus:outline-none appearance-none cursor-pointer"
+        >
+          {SHIPPING_TEMPLATES.map(t => (
+            <option key={t} value={t}>{t}</option>
+          ))}
+        </select>
       </div>
 
       {/* Error message */}
