@@ -236,8 +236,8 @@ function chipsForResult(r: SearchResult): Chip[] {
   return chips;
 }
 
-type WarnLabel = 'No lot' | 'Not inspected' | 'Stale status' | 'Fee unknown' | 'No bin' | 'No condition';
-const WARN_LABELS: WarnLabel[] = ['No lot', 'Not inspected', 'Stale status', 'Fee unknown', 'No bin', 'No condition'];
+type WarnLabel = 'No lot' | 'Not inspected' | 'Stale status' | 'No price' | 'Fee unknown' | 'No bin' | 'No condition';
+const WARN_LABELS: WarnLabel[] = ['No lot', 'Not inspected', 'Stale status', 'No price', 'Fee unknown', 'No bin', 'No condition'];
 
 interface BatchSummary {
   total: number;
@@ -251,7 +251,12 @@ interface BatchSummary {
   totalNetCents: number;
   roiPct: number | null;
   marginPct: number | null;
+  // True if any qty>0 item is missing fee (but has list+cost). Narrower flag for messaging.
   feeIncomplete: boolean;
+  // True if any qty>0 item is missing list, cost, or net entirely. Broader flag.
+  priceOrCostIncomplete: boolean;
+  // Combined: drives the asterisk + amber color on Fees/Net/ROI/Margin.
+  profitIncomplete: boolean;
   warnCounts: Record<WarnLabel, number>;
 }
 
@@ -263,10 +268,11 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
   let totalFeeCents = 0;
   let totalNetCents = 0;
   let feeIncomplete = false;
+  let priceOrCostIncomplete = false;
   let saved = 0;
   const warnCounts: Record<WarnLabel, number> = {
     'No lot': 0, 'Not inspected': 0, 'Stale status': 0,
-    'Fee unknown': 0, 'No bin': 0, 'No condition': 0,
+    'No price': 0, 'Fee unknown': 0, 'No bin': 0, 'No condition': 0,
   };
 
   for (const item of items) {
@@ -278,13 +284,19 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
     totalQty += Math.max(qty, 0);
 
     if (qty > 0) {
+      // Track WHICH inputs are missing so the footnote can be specific.
+      if (p.listCents == null || p.costCents == null || p.netCents == null) {
+        priceOrCostIncomplete = true;
+      } else if (!p.hasFee) {
+        feeIncomplete = true;
+      }
+
       if (p.listCents != null) totalListCents += p.listCents * qty;
       if (p.costCents != null) totalCostCents += p.costCents * qty;
       totalShipCents += p.shipCents * qty;
       if (p.feeCents != null) totalFeeCents += p.feeCents * qty;
       if (p.netCents != null) totalNetCents += p.netCents * qty;
     }
-    if (!p.hasFee && p.listCents != null && p.costCents != null) feeIncomplete = true;
 
     for (const c of chipsForBatchItem(item)) {
       if ((WARN_LABELS as string[]).includes(c.label)) {
@@ -295,11 +307,14 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
 
   const roiPct    = totalCostCents > 0 ? (totalNetCents / totalCostCents) * 100 : null;
   const marginPct = totalListCents > 0 ? (totalNetCents / totalListCents) * 100 : null;
+  const profitIncomplete = feeIncomplete || priceOrCostIncomplete;
 
   return {
     total: items.length, saved, unsaved: items.length - saved,
     totalQty, totalListCents, totalCostCents, totalShipCents, totalFeeCents,
-    totalNetCents, roiPct, marginPct, feeIncomplete, warnCounts,
+    totalNetCents, roiPct, marginPct,
+    feeIncomplete, priceOrCostIncomplete, profitIncomplete,
+    warnCounts,
   };
 }
 
@@ -309,6 +324,11 @@ function chipsForBatchItem(item: BatchItem): Chip[] {
     chips.push({ label: 'No lot', tone: 'blocker', title: 'No local lot yet — create one before save/push' });
   } else if (!item.inspected_at) {
     chips.push({ label: 'Not inspected', tone: 'blocker', title: 'Inspection required before pushing to Amazon' });
+  }
+  // List price is a true push blocker — surface it as red.
+  const priceNum = parseFloat(item.draft_list_price);
+  if (!Number.isFinite(priceNum) || priceNum <= 0) {
+    chips.push({ label: 'No price', tone: 'blocker', title: 'No list price set — required to push' });
   }
   if (item.amazon_status && item.amazon_status !== 'Active') {
     chips.push({ label: 'Stale status', tone: 'warn', title: `Local Amazon status is "${item.amazon_status}" — push will still attempt qty/price update` });
@@ -1185,28 +1205,28 @@ export default function MfnBatchReceivePage() {
                   <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono">{formatCurrency(summary.totalCostCents)}</span></span>
                   <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono">{formatCurrency(summary.totalShipCents)}</span></span>
                   <span className="text-text-tertiary">
-                    Fees{summary.feeIncomplete ? '*' : ''} <span className={`font-mono ${summary.feeIncomplete ? 'text-amber-400' : 'text-text-primary'}`}>{formatCurrency(summary.totalFeeCents)}</span>
+                    Fees{summary.profitIncomplete ? '*' : ''} <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400' : 'text-text-primary'}`}>{formatCurrency(summary.totalFeeCents)}</span>
                   </span>
                   <span className="text-text-tertiary">
                     Net <span className={`font-mono font-semibold ${
-                      summary.feeIncomplete
+                      summary.profitIncomplete
                         ? 'text-amber-400'
                         : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
                     }`}>
-                      {formatCurrency(summary.totalNetCents)}{summary.feeIncomplete ? '*' : ''}
+                      {formatCurrency(summary.totalNetCents)}{summary.profitIncomplete ? '*' : ''}
                     </span>
                   </span>
                   {summary.roiPct != null && (
                     <span className="text-text-tertiary">
-                      ROI <span className={`font-mono ${summary.feeIncomplete ? 'text-amber-400/90' : summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
-                        {summary.roiPct.toFixed(1)}%{summary.feeIncomplete ? '*' : ''}
+                      ROI <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                        {summary.roiPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
                       </span>
                     </span>
                   )}
                   {summary.marginPct != null && (
                     <span className="text-text-tertiary">
-                      Margin <span className={`font-mono ${summary.feeIncomplete ? 'text-amber-400/90' : 'text-text-secondary'}`}>
-                        {summary.marginPct.toFixed(1)}%{summary.feeIncomplete ? '*' : ''}
+                      Margin <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : 'text-text-secondary'}`}>
+                        {summary.marginPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
                       </span>
                     </span>
                   )}
@@ -1227,9 +1247,11 @@ export default function MfnBatchReceivePage() {
                     })}
                   </div>
                 )}
-                {summary.feeIncomplete && (
+                {summary.profitIncomplete && (
                   <div className="text-[10px] text-amber-400/70 mt-1.5 italic">
-                    * Some items have no cached Amazon fee — net/ROI/margin are estimates.
+                    {summary.priceOrCostIncomplete
+                      ? '* Some items are missing price, cost, or Amazon fee — profit totals are estimates.'
+                      : '* Some items have no cached Amazon fee — net/ROI/margin are estimates.'}
                   </div>
                 )}
               </div>
