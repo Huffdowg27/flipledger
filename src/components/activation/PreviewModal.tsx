@@ -193,7 +193,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-text-primary">This will write to Amazon Seller Central</p>
                 <p className="text-[11px] text-text-tertiary mt-1">
-                  A test push will update quantity, price, and shipping template for{' '}
+                  A test push will update quantity and price for{' '}
                   <span className="font-medium text-text-secondary">{pushableRows[0]?.product_name || pushableRows[0]?.sku}</span>{' '}
                   on one live listing. If the test passes, you can push the remaining {pushableCount - 1} SKUs.
                 </p>
@@ -238,7 +238,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
                   {pushPhase === 'preview' || pushPhase === 'confirm' ? 'Eligible' : 'Push Status'}
                 </th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">
-                  {pushPhase === 'preview' || pushPhase === 'confirm' ? 'Blockers' : 'Details'}
+                  {pushPhase === 'preview' || pushPhase === 'confirm' ? 'Notes' : 'Details'}
                 </th>
               </tr>
             </thead>

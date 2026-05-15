@@ -17,14 +17,19 @@ function getDb() {
 // Dry-run preview of what would be sent to Amazon for the given SKUs.
 // DB-only: no SP-API calls, no Amazon writes, no DB writes.
 //
-// Push eligibility requires ALL of:
+// Push eligibility (can_push) requires ALL of:
+//   - sku is non-empty
 //   - merchant_listings row exists for the SKU
-//   - Amazon status is Active (covers both live Active and OOS Active+qty=0)
 //   - quantity_received > 0 (explicitly received, not ledger fallback)
 //   - inspected_at is set
 //   - proposed price > 0
-//   - shipping template is set
-//   - sku is non-empty
+//
+// Soft warnings (do NOT block push):
+//   - Local Amazon status is stale/inactive. The SP-API PATCH sends qty +
+//     price regardless; activation-push mirrors status back to Active on
+//     ACCEPTED.
+//   - Shipping template is stored locally only and is NOT pushed to Amazon —
+//     it must be set in Seller Central directly.
 //
 // Fallback rows (qty_source=remaining) are shown in preview but can_push=false.
 //

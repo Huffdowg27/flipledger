@@ -53,9 +53,17 @@ export interface PushResult {
 
 // POST /api/data/merchant-inventory/activation-push
 //
-// Pushes qty, price, and shipping template for eligible MFN SKUs to Amazon.
-// Eligibility mirrors activation-preview: Active status + received + inspected
-// + price > 0 + shipping template set.
+// Pushes quantity and price for eligible MFN SKUs to Amazon via the
+// Listings Items API PATCH. merchant_shipping_group_name is NOT sent —
+// it's stored locally on inventory_ledger and must be configured in
+// Seller Central directly.
+//
+// Eligibility mirrors activation-preview's can_push: merchant listing row
+// exists + quantity_received > 0 + inspected_at set + price > 0.
+// Local merchant_listings.status is informational only — stale status
+// does NOT block the push (Seller Central may be ahead of our last
+// synced row). After an ACCEPTED response, this route mirrors
+// merchant_listings to status='Active' with the pushed qty/price.
 //
 // dryRun=true  → eligibility check only; no SP-API calls; no DB writes.
 // dryRun=false → calls PATCH on each eligible SKU; logs every attempt.
