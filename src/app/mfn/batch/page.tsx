@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send } from 'lucide-react';
+import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
@@ -450,12 +450,13 @@ interface BatchItemCardProps {
   onSave: () => void;
   onCreateLot: () => void;
   onPrintLabel: () => void;
+  onEdit: () => void;
   onImageClick: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onImageClick, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onImageClick, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -480,6 +481,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
     const savedQty   = item.quantity_received ?? (parseInt(item.draft_qty, 10) || null);
     const savedPrice = item.il_list_price_cents
       ?? (item.draft_list_price ? Math.round(parseFloat(item.draft_list_price) * 100) : null);
+    const savedBin   = item.bin_location || item.draft_bin.trim() || null;
+    const savedCond  = item.condition    || item.draft_condition.trim() || null;
     return (
       <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
         {item.image_url
@@ -495,24 +498,36 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             )
           : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-text-primary truncate">{item.product_name || item.asin}</div>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <CheckCircle2 size={11} className="text-green-400 shrink-0" />
+            <div className="text-xs font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
+              {item.product_name || item.asin}
+            </div>
+          </div>
           <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
             <span className="font-mono text-accent/80">{item.asin}</span>
-            {savedQty != null && <span>Qty {savedQty}</span>}
-            {savedPrice != null && <span>{formatCurrency(savedPrice)}</span>}
+            <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
+            {savedQty != null && <span className="font-mono">Qty {savedQty}</span>}
+            {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
+            {savedCond && <span className="text-text-secondary">{savedCond}</span>}
+            {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
             {item.upc && <UpcChip upc={item.upc} />}
             {chipsForBatchItem(item).map(c => <WarningChip key={c.label} chip={c} />)}
           </div>
         </div>
-        <span className="flex items-center gap-1 text-[10px] text-green-400 shrink-0 font-medium">
-          <CheckCircle2 size={11} /> Saved
-        </span>
         <button
           onClick={onPrintLabel}
           className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
           title="Print ASIN label"
         >
           <Printer size={14} />
+        </button>
+        <button
+          onClick={onEdit}
+          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+          title="Edit (reopens this card)"
+        >
+          <Pencil size={14} />
         </button>
         <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
           <X size={14} />
@@ -1266,6 +1281,7 @@ export default function MfnBatchReceivePage() {
                   onSave={() => saveItem(item.sku)}
                   onCreateLot={() => createLot(item.sku)}
                   onPrintLabel={() => openLabelPrint([item])}
+                  onEdit={() => updateBatchItem(item.sku, { save_state: 'idle', save_error: null })}
                   onImageClick={() => item.image_url && setLightbox({
                     src: item.image_url,
                     title: item.product_name || item.asin || item.sku,
