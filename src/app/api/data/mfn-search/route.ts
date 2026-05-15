@@ -192,6 +192,8 @@ export async function GET(request: NextRequest) {
         ...row,
         // Prefer DB image; fall back to catalog image returned for this barcode
         image_url: (row.image_url as string | null) || catalogImageByAsin.get(String(row.asin)) || null,
+        // Echo the searched UPC so the client can display it without a separate lookup
+        upc: q,
         ...parseSku(String(row.sku ?? '')),
       }));
 

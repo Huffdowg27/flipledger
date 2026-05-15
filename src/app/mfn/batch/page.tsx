@@ -35,6 +35,7 @@ interface SearchResult {
   fee_cents: number | null;
   referral_fee_cents: number | null;
   fee_list_price_cents: number | null;
+  upc?: string | null;
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -221,6 +222,66 @@ function calcProfit(item: BatchItem): ProfitCalc {
 }
 
 // ---------------------------------------------------------------------------
+// Warning chips — compact per-item status indicators for the batch row
+// ---------------------------------------------------------------------------
+
+type ChipTone = 'blocker' | 'warn';
+interface Chip { label: string; tone: ChipTone; title?: string }
+
+function chipsForResult(r: SearchResult): Chip[] {
+  const chips: Chip[] = [];
+  if (r.il_id == null) chips.push({ label: 'No lot', tone: 'blocker', title: 'No local inventory_ledger lot — create one to make this push-eligible' });
+  if (r.amazon_status && r.amazon_status !== 'Active') chips.push({ label: 'Stale status', tone: 'warn', title: `Local Amazon status is "${r.amazon_status}" — may be out of sync with Seller Central` });
+  if (r.referral_fee_cents == null) chips.push({ label: 'Fee unknown', tone: 'warn', title: 'No cached referral fee — ROI estimate excludes Amazon fee' });
+  return chips;
+}
+
+function chipsForBatchItem(item: BatchItem): Chip[] {
+  const chips: Chip[] = [];
+  if (item.il_id == null) {
+    chips.push({ label: 'No lot', tone: 'blocker', title: 'No local lot yet — create one before save/push' });
+  } else if (!item.inspected_at) {
+    chips.push({ label: 'Not inspected', tone: 'blocker', title: 'Inspection required before pushing to Amazon' });
+  }
+  if (item.amazon_status && item.amazon_status !== 'Active') {
+    chips.push({ label: 'Stale status', tone: 'warn', title: `Local Amazon status is "${item.amazon_status}" — push will still attempt qty/price update` });
+  }
+  if (item.referral_fee_cents == null) {
+    chips.push({ label: 'Fee unknown', tone: 'warn', title: 'No cached referral fee — ROI excludes Amazon fee' });
+  }
+  const binSet = !!(item.bin_location || item.draft_bin.trim());
+  if (!binSet) chips.push({ label: 'No bin', tone: 'warn', title: 'Bin location not set' });
+  const condSet = !!(item.condition || item.draft_condition.trim());
+  if (!condSet) chips.push({ label: 'No condition', tone: 'warn', title: 'Condition not set' });
+  return chips;
+}
+
+function WarningChip({ chip }: { chip: Chip }) {
+  const cls = chip.tone === 'blocker'
+    ? 'bg-red-500/10 text-red-400 border-red-500/30'
+    : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
+  return (
+    <span
+      className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border tabular-nums ${cls}`}
+      title={chip.title}
+    >
+      {chip.label}
+    </span>
+  );
+}
+
+function UpcChip({ upc }: { upc: string }) {
+  return (
+    <span
+      className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-mono font-medium border bg-bg-elevated text-text-tertiary border-border-subtle"
+      title="UPC"
+    >
+      UPC {upc}
+    </span>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SearchResultCard
 // ---------------------------------------------------------------------------
 
@@ -262,6 +323,8 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick }: SearchResult
           {result.amazon_qty != null && (
             <span className="text-[10px] text-text-tertiary">Amz: {result.amazon_qty}</span>
           )}
+          {result.upc && <UpcChip upc={result.upc} />}
+          {chipsForResult(result).map(c => <WarningChip key={c.label} chip={c} />)}
         </div>
         <div className="flex items-center gap-2 mt-0.5">
           {displayCost != null && (
@@ -269,9 +332,6 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick }: SearchResult
           )}
           {displayPrice != null && (
             <span className="text-[10px] text-text-tertiary">List: {formatCurrency(displayPrice)}</span>
-          )}
-          {result.il_id == null && (
-            <span className="text-[10px] text-amber-400/80">No local lot</span>
           )}
         </div>
       </div>
@@ -349,10 +409,12 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
         <div className="min-w-0 flex-1">
           <div className="text-xs font-medium text-text-primary truncate">{item.product_name || item.asin}</div>
-          <div className="flex items-center gap-2 mt-0.5 text-[10px] text-text-tertiary">
+          <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
             <span className="font-mono text-accent/80">{item.asin}</span>
             {savedQty != null && <span>Qty {savedQty}</span>}
             {savedPrice != null && <span>{formatCurrency(savedPrice)}</span>}
+            {item.upc && <UpcChip upc={item.upc} />}
+            {chipsForBatchItem(item).map(c => <WarningChip key={c.label} chip={c} />)}
           </div>
         </div>
         <span className="flex items-center gap-1 text-[10px] text-green-400 shrink-0 font-medium">
@@ -406,10 +468,19 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             {item.amazon_qty != null && (
               <span className="text-[10px] text-text-tertiary">Amz qty: {item.amazon_qty}</span>
             )}
+            {item.upc && <UpcChip upc={item.upc} />}
           </div>
           <div className="text-[10px] font-mono text-text-tertiary/50 truncate mt-0.5" title={item.sku}>
             {item.sku}
           </div>
+          {(() => {
+            const chips = chipsForBatchItem(item);
+            return chips.length > 0 ? (
+              <div className="flex items-center gap-1 mt-1 flex-wrap">
+                {chips.map(c => <WarningChip key={c.label} chip={c} />)}
+              </div>
+            ) : null;
+          })()}
         </div>
 
         <button
