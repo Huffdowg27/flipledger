@@ -40,6 +40,7 @@ function getDb() {
 //          date_purchased, created_at }
 // }
 export async function POST(request: NextRequest) {
+  const t0 = Date.now();
   let body: Record<string, unknown>;
   try {
     body = await request.json();
@@ -78,6 +79,7 @@ export async function POST(request: NextRequest) {
     const now = new Date().toISOString();
 
     // --- Guard: return existing lot if one already exists ---
+    const tGuard = Date.now();
     const existing = db.prepare(`
       SELECT
         id, sku, asin, buy_price, quantity, quantity_remaining,
@@ -89,8 +91,11 @@ export async function POST(request: NextRequest) {
       ORDER BY date_purchased DESC
       LIMIT 1
     `).get(sku) as Record<string, unknown> | undefined;
+    const guardMs = Date.now() - tGuard;
 
     if (existing) {
+      const totalMs = Date.now() - t0;
+      console.log(`[create-mfn-local-lot] sku=${sku} existing-lot-returned total=${totalMs}ms guard=${guardMs}ms`);
       return NextResponse.json({
         created: false,
         existingLotUsed: true,
@@ -108,6 +113,7 @@ export async function POST(request: NextRequest) {
       ? Math.round(listPriceCents)
       : null;
 
+    const tInsert = Date.now();
     const result = db.prepare(`
       INSERT INTO inventory_ledger (
         asin, sku, buy_price, quantity, quantity_remaining,
@@ -131,10 +137,12 @@ export async function POST(request: NextRequest) {
       markReceived ? Math.round(quantity) : null,  // quantity_received
       now
     );
+    const insertMs = Date.now() - tInsert;
 
     const newId = Number(result.lastInsertRowid);
 
     // Read back the inserted row to return to the client
+    const tReadback = Date.now();
     const lot = db.prepare(`
       SELECT
         id, sku, asin, buy_price, quantity, quantity_remaining,
@@ -143,15 +151,23 @@ export async function POST(request: NextRequest) {
         quantity_received, date_purchased, created_at
       FROM inventory_ledger WHERE id = ?
     `).get(newId) as Record<string, unknown>;
+    const readbackMs = Date.now() - tReadback;
 
     db.close();
 
     // Recalculate FIFO for this SKU so any past sales pick up the new lot
+    const tFifo = Date.now();
     recalculateFIFO({ sku, asin: asin ?? undefined });
+    const fifoMs = Date.now() - tFifo;
+
+    const totalMs = Date.now() - t0;
+    console.log(`[create-mfn-local-lot] sku=${sku} created lot_id=${newId} total=${totalMs}ms (guard=${guardMs}ms insert=${insertMs}ms readback=${readbackMs}ms fifo=${fifoMs}ms)`);
 
     return NextResponse.json({ created: true, existingLotUsed: false, lot });
   } catch (err) {
     db.close();
+    const totalMs = Date.now() - t0;
+    console.error(`[create-mfn-local-lot] sku=${sku} error total=${totalMs}ms err=${String(err)}`);
     return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }

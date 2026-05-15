@@ -49,8 +49,10 @@ interface BatchItem extends SearchResult {
   draft_shipping_est: string;
   save_state: SaveState;
   save_error: string | null;
+  slow_save: boolean;            // true once save has been in-flight > 3s
   create_lot_state: CreateLotState;
   create_lot_error: string | null;
+  slow_create_lot: boolean;      // true once create-lot has been in-flight > 3s
 }
 
 const CONDITIONS = [
@@ -138,8 +140,10 @@ function makeBatchItem(r: SearchResult): BatchItem {
     draft_shipping_est:      '8.00',
     save_state:              'idle',
     save_error:              null,
+    slow_save:               false,
     create_lot_state:        'idle',
     create_lot_error:        null,
+    slow_create_lot:         false,
   };
 }
 
@@ -565,26 +569,40 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
       {/* Save / Create button — full width, prominent */}
       {noLot ? (
-        <button
-          onClick={onCreateLot}
-          disabled={item.create_lot_state === 'creating'}
-          className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-medium border border-amber-500/50 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
-        >
-          {item.create_lot_state === 'creating'
-            ? <><Loader2 size={13} className="animate-spin" /> Creating…</>
-            : <><PackagePlus size={13} /> Create Local Lot</>}
-        </button>
+        <>
+          <button
+            onClick={onCreateLot}
+            disabled={item.create_lot_state === 'creating'}
+            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-medium border border-amber-500/50 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
+          >
+            {item.create_lot_state === 'creating'
+              ? <><Loader2 size={13} className="animate-spin" /> Creating…</>
+              : <><PackagePlus size={13} /> Create Local Lot</>}
+          </button>
+          {item.create_lot_state === 'creating' && item.slow_create_lot && (
+            <p className="text-[10px] text-text-tertiary italic mt-1.5 text-center">
+              Still working — creating local lot…
+            </p>
+          )}
+        </>
       ) : (
-        <button
-          ref={saveRef}
-          onClick={onSave}
-          disabled={item.save_state === 'saving'}
-          className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
-        >
-          {item.save_state === 'saving'
-            ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-            : <><Save size={13} /> Save to FlipLedger</>}
-        </button>
+        <>
+          <button
+            ref={saveRef}
+            onClick={onSave}
+            disabled={item.save_state === 'saving'}
+            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
+          >
+            {item.save_state === 'saving'
+              ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+              : <><Save size={13} /> Save to FlipLedger</>}
+          </button>
+          {item.save_state === 'saving' && item.slow_save && (
+            <p className="text-[10px] text-text-tertiary italic mt-1.5 text-center">
+              Still working — saving…
+            </p>
+          )}
+        </>
       )}
     </div>
   );
@@ -659,7 +677,15 @@ export default function MfnBatchReceivePage() {
     const item = batch.get(sku);
     if (!item || item.il_id == null) return;
 
-    updateBatchItem(sku, { save_state: 'saving', save_error: null });
+    const t0 = Date.now();
+    console.log(`[saveItem] start sku=${sku} il_id=${item.il_id}`);
+
+    updateBatchItem(sku, { save_state: 'saving', save_error: null, slow_save: false });
+
+    const slowTimer = setTimeout(() => {
+      console.warn(`[saveItem] slow >3s sku=${sku}`);
+      updateBatchItem(sku, { slow_save: true });
+    }, 3000);
 
     const qtyNum    = parseInt(item.draft_qty, 10);
     const priceNum  = parseFloat(item.draft_list_price);
@@ -678,14 +704,26 @@ export default function MfnBatchReceivePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      const elapsed = Date.now() - t0;
       if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        updateBatchItem(sku, { save_state: 'error', save_error: (d as { error?: string }).error || 'Save failed' });
+        const bodyText = await res.text().catch(() => '');
+        let errMsg = 'Save failed';
+        try { errMsg = JSON.parse(bodyText).error || errMsg; } catch { /* keep default */ }
+        console.error(`[saveItem] fail sku=${sku} status=${res.status} elapsed=${elapsed}ms body=${bodyText}`);
+        updateBatchItem(sku, { save_state: 'error', save_error: `${errMsg} (HTTP ${res.status})` });
       } else {
+        console.log(`[saveItem] ok sku=${sku} elapsed=${elapsed}ms`);
         updateBatchItem(sku, { save_state: 'saved', save_error: null });
       }
-    } catch {
-      updateBatchItem(sku, { save_state: 'error', save_error: 'Network error' });
+    } catch (err) {
+      const elapsed = Date.now() - t0;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[saveItem] network sku=${sku} elapsed=${elapsed}ms err=${msg}`);
+      updateBatchItem(sku, { save_state: 'error', save_error: `Network error: ${msg}` });
+    } finally {
+      clearTimeout(slowTimer);
+      // Defense-in-depth: never leave the slow indicator on
+      updateBatchItem(sku, { slow_save: false });
     }
   }
 
@@ -693,7 +731,15 @@ export default function MfnBatchReceivePage() {
     const item = batch.get(sku);
     if (!item || item.il_id != null) return;
 
-    updateBatchItem(sku, { create_lot_state: 'creating', create_lot_error: null });
+    const t0 = Date.now();
+    console.log(`[createLot] start sku=${sku} asin=${item.asin}`);
+
+    updateBatchItem(sku, { create_lot_state: 'creating', create_lot_error: null, slow_create_lot: false });
+
+    const slowTimer = setTimeout(() => {
+      console.warn(`[createLot] slow >3s sku=${sku}`);
+      updateBatchItem(sku, { slow_create_lot: true });
+    }, 3000);
 
     const qtyNum      = parseInt(item.draft_qty, 10);
     const buyNum      = parseFloat(item.draft_buy_price);
@@ -717,14 +763,21 @@ export default function MfnBatchReceivePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      const d = await res.json().catch(() => ({})) as Record<string, unknown>;
+      const elapsed = Date.now() - t0;
+      const bodyText = await res.text().catch(() => '');
+      let d: Record<string, unknown> = {};
+      try { d = JSON.parse(bodyText) as Record<string, unknown>; } catch { /* leave empty */ }
+
       if (!res.ok) {
+        const errMsg = (d.error as string | undefined) || 'Create failed';
+        console.error(`[createLot] fail sku=${sku} status=${res.status} elapsed=${elapsed}ms body=${bodyText}`);
         updateBatchItem(sku, {
           create_lot_state: 'error',
-          create_lot_error: (d.error as string | undefined) || 'Create failed',
+          create_lot_error: `${errMsg} (HTTP ${res.status})`,
         });
         return;
       }
+      console.log(`[createLot] ok sku=${sku} elapsed=${elapsed}ms existingLotUsed=${d.existingLotUsed}`);
       const lot = d.lot as Record<string, unknown>;
       updateBatchItem(sku, {
         il_id:                        Number(lot.id),
@@ -740,8 +793,15 @@ export default function MfnBatchReceivePage() {
         create_lot_error:             null,
         save_state:                   'saved',
       });
-    } catch {
-      updateBatchItem(sku, { create_lot_state: 'error', create_lot_error: 'Network error' });
+    } catch (err) {
+      const elapsed = Date.now() - t0;
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[createLot] network sku=${sku} elapsed=${elapsed}ms err=${msg}`);
+      updateBatchItem(sku, { create_lot_state: 'error', create_lot_error: `Network error: ${msg}` });
+    } finally {
+      clearTimeout(slowTimer);
+      // Defense-in-depth: never leave the slow indicator on
+      updateBatchItem(sku, { slow_create_lot: false });
     }
   }
 
