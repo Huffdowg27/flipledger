@@ -31,6 +31,7 @@ interface SearchResult {
   parsed_list_price_cents: number | null;
   parsed_order_qty: number | null;
   sku_parse_status: 'parsed' | 'unparsed';
+  fee_cents: number | null;
   referral_fee_cents: number | null;
   fee_list_price_cents: number | null;
 }
@@ -149,11 +150,17 @@ function makeBatchItem(r: SearchResult): BatchItem {
 interface ProfitCalc {
   netCents: number | null;
   roiPct: number | null;
+  marginPct: number | null;
   listCents: number | null;
   costCents: number | null;
   shipCents: number;
-  feeCents: number | null;
+  // Fee breakdown (all adjusted to current list price):
+  referralCents: number | null;  // referral % applied to current draft price
+  referralRate: number | null;   // e.g. 0.15 for 15%
+  vcfCents: number;              // per-item variable closing fee (flat; $1.80 for media, $0 otherwise)
+  feeCents: number | null;       // total Amazon fee = referralCents + vcfCents
   hasFee: boolean;
+  feeEstimatedAtCents: number | null; // price the cached fee was originally estimated at
 }
 
 function calcProfit(item: BatchItem): ProfitCalc {
@@ -170,16 +177,42 @@ function calcProfit(item: BatchItem): ProfitCalc {
   const shipRaw  = parseFloat(item.draft_shipping_est);
   const shipCents = Number.isFinite(shipRaw) && shipRaw >= 0 ? Math.round(shipRaw * 100) : 800;
 
-  const feeCents = item.referral_fee_cents != null ? Number(item.referral_fee_cents) : null;
-  const hasFee   = feeCents != null;
+  // Fee data from fee_estimates_cache
+  const cachedReferral    = item.referral_fee_cents != null ? Number(item.referral_fee_cents) : null;
+  const cachedTotal       = item.fee_cents != null ? Number(item.fee_cents) : null;
+  const feeEstimatedAtCents = item.fee_list_price_cents != null ? Number(item.fee_list_price_cents) : null;
+
+  // VCF = flat per-item component (e.g. $1.80 for media). Derived from cache.
+  const vcfCents = (cachedTotal != null && cachedReferral != null)
+    ? Math.max(0, cachedTotal - cachedReferral)
+    : 0;
+
+  // Referral rate — apply to CURRENT list price for accuracy
+  const referralRate = (cachedReferral != null && feeEstimatedAtCents != null && feeEstimatedAtCents > 0)
+    ? cachedReferral / feeEstimatedAtCents
+    : null;
+
+  const hasFee = referralRate != null;
+
+  // Adjusted referral at current list price
+  const referralCents = (referralRate != null && listCents != null)
+    ? Math.round(referralRate * listCents)
+    : null;
+
+  // Total Amazon fee = adjusted referral + flat VCF
+  const feeCents = referralCents != null ? referralCents + vcfCents : null;
 
   if (listCents == null || costCents == null) {
-    return { netCents: null, roiPct: null, listCents, costCents, shipCents, feeCents, hasFee };
+    return { netCents: null, roiPct: null, marginPct: null, listCents, costCents, shipCents,
+             referralCents, referralRate, vcfCents, feeCents, hasFee, feeEstimatedAtCents };
   }
 
-  const netCents = listCents - costCents - shipCents - (feeCents ?? 0);
-  const roiPct   = costCents > 0 ? (netCents / costCents) * 100 : null;
-  return { netCents, roiPct, listCents, costCents, shipCents, feeCents, hasFee };
+  const netCents  = listCents - costCents - shipCents - (feeCents ?? 0);
+  const roiPct    = costCents > 0 ? (netCents / costCents) * 100 : null;
+  const marginPct = listCents > 0 ? (netCents / listCents) * 100 : null;
+
+  return { netCents, roiPct, marginPct, listCents, costCents, shipCents,
+           referralCents, referralRate, vcfCents, feeCents, hasFee, feeEstimatedAtCents };
 }
 
 // ---------------------------------------------------------------------------
@@ -365,7 +398,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       {/* Profit strip */}
       {profit.listCents != null && profit.costCents != null && (
         <div className="mb-3 px-3 py-2.5 bg-bg-elevated rounded-lg border border-border-subtle">
-          <div className="flex items-center justify-between mb-1">
+          {/* Top row: net profit + ROI + margin */}
+          <div className="flex items-center justify-between mb-1.5">
             <div className="flex items-baseline gap-2">
               <span className={`text-base font-semibold tabular-nums ${
                 !profit.hasFee
@@ -378,7 +412,12 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
                 <span className={`text-xs font-medium ${
                   !profit.hasFee ? 'text-amber-400/80' : profit.roiPct > 0 ? 'text-green-400/80' : 'text-red-400/80'
                 }`}>
-                  {profit.roiPct.toFixed(0)}%{!profit.hasFee ? '?' : ''} ROI
+                  {profit.roiPct.toFixed(1)}%{!profit.hasFee ? '?' : ''} ROI
+                </span>
+              )}
+              {profit.marginPct != null && profit.hasFee && (
+                <span className={`text-[10px] ${profit.marginPct > 0 ? 'text-text-tertiary' : 'text-red-400/70'}`}>
+                  {profit.marginPct.toFixed(1)}% margin
                 </span>
               )}
             </div>
@@ -388,6 +427,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
               </span>
             )}
           </div>
+          {/* Breakdown line */}
           <div className="flex items-center gap-1 text-[10px] text-text-tertiary flex-wrap">
             <span>List {formatCurrency(profit.listCents)}</span>
             <span className="text-text-tertiary/30">−</span>
@@ -395,13 +435,20 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             <span className="text-text-tertiary/30">−</span>
             <span>Ship {formatCurrency(profit.shipCents)}</span>
             <span className="text-text-tertiary/30">−</span>
-            {profit.feeCents != null ? (
-              <span>
-                Fee {formatCurrency(profit.feeCents)}
-                {item.fee_list_price_cents != null && (
-                  <span className="text-text-tertiary/50"> at {formatCurrency(item.fee_list_price_cents)}</span>
+            {profit.referralCents != null ? (
+              <>
+                <span>
+                  Referral{profit.referralRate != null
+                    ? ` (${(profit.referralRate * 100).toFixed(0)}%)`
+                    : ''} {formatCurrency(profit.referralCents)}
+                </span>
+                {profit.vcfCents > 0 && (
+                  <>
+                    <span className="text-text-tertiary/30">−</span>
+                    <span>VCF {formatCurrency(profit.vcfCents)}</span>
+                  </>
                 )}
-              </span>
+              </>
             ) : (
               <span className="text-amber-400/70 font-medium">Fee missing</span>
             )}

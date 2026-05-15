@@ -111,6 +111,7 @@ const LISTING_SELECT = `
     il.received_at,
     il.inspected_at,
     il.merchant_shipping_group_name,
+    fec.fee_cents,
     fec.referral_fee_cents,
     fec.list_price_cents                         AS fee_list_price_cents
   FROM merchant_listings ml
