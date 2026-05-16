@@ -889,6 +889,86 @@ function getSavedDisplay(item: BatchItem) {
 }
 
 // ---------------------------------------------------------------------------
+// BatchItemRow — collapsed view for saved items
+// ---------------------------------------------------------------------------
+
+interface BatchItemRowProps {
+  item: BatchItem;
+  onRemove: () => void;
+  onPrintLabel: () => void;
+  onEdit: () => void;
+  onSaveQty: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
+  onImageClick: () => void;
+  onShowDetail: () => void;
+  focusQty: boolean;
+  onQtyFocused: () => void;
+}
+
+function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
+  const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
+  return (
+    <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
+      {item.image_url
+        ? (
+            <button
+              type="button"
+              onClick={onImageClick}
+              className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+              title="View larger"
+            >
+              <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
+            </button>
+          )
+        : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 min-w-0">
+          <CheckCircle2 size={11} className="text-green-400 shrink-0" />
+          <div className="text-xs font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
+            {item.product_name || item.asin}
+          </div>
+        </div>
+        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
+          <span className="font-mono text-accent/80">{item.asin}</span>
+          <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
+          <ChannelBadge channel={item.fulfillment_channel} />
+          <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
+          {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
+          {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
+          {savedCond && <span className="text-text-secondary">{savedCond}</span>}
+          {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
+          {item.upc && <UpcChip upc={item.upc} />}
+          <BatchItemChips chips={chipsForBatchItem(item)} />
+        </div>
+      </div>
+      <button
+        onClick={onShowDetail}
+        className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+        title="View details"
+      >
+        <Info size={14} />
+      </button>
+      <button
+        onClick={onPrintLabel}
+        className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+        title="Print ASIN label"
+      >
+        <Printer size={14} />
+      </button>
+      <button
+        onClick={onEdit}
+        className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+        title="Edit (reopens this card)"
+      >
+        <Pencil size={14} />
+      </button>
+      <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
+        <X size={14} />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // BatchItemCard
 // ---------------------------------------------------------------------------
 
@@ -927,68 +1007,20 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusQty]);
 
-  // Collapsed view for saved items — keeps the batch scannable
+  // Collapsed view delegates to BatchItemRow — keeps BatchItemCard focused on the edit path.
   if (item.save_state === 'saved') {
-    const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
     return (
-      <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
-        {item.image_url
-          ? (
-              <button
-                type="button"
-                onClick={onImageClick}
-                className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
-                title="View larger"
-              >
-                <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
-              </button>
-            )
-          : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <CheckCircle2 size={11} className="text-green-400 shrink-0" />
-            <div className="text-xs font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
-              {item.product_name || item.asin}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
-            <span className="font-mono text-accent/80">{item.asin}</span>
-            <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
-            <ChannelBadge channel={item.fulfillment_channel} />
-            <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
-            {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
-            {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
-            {savedCond && <span className="text-text-secondary">{savedCond}</span>}
-            {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
-            {item.upc && <UpcChip upc={item.upc} />}
-            <BatchItemChips chips={chipsForBatchItem(item)} />
-          </div>
-        </div>
-        <button
-          onClick={onShowDetail}
-          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
-          title="View details"
-        >
-          <Info size={14} />
-        </button>
-        <button
-          onClick={onPrintLabel}
-          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
-          title="Print ASIN label"
-        >
-          <Printer size={14} />
-        </button>
-        <button
-          onClick={onEdit}
-          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
-          title="Edit (reopens this card)"
-        >
-          <Pencil size={14} />
-        </button>
-        <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
-          <X size={14} />
-        </button>
-      </div>
+      <BatchItemRow
+        item={item}
+        onRemove={onRemove}
+        onPrintLabel={onPrintLabel}
+        onEdit={onEdit}
+        onSaveQty={onSaveQty}
+        onImageClick={onImageClick}
+        onShowDetail={onShowDetail}
+        focusQty={focusQty}
+        onQtyFocused={onQtyFocused}
+      />
     );
   }
 
