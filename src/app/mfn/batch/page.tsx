@@ -973,51 +973,50 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
         <span className="font-mono text-[9px] text-text-tertiary/50 truncate block" title={item.sku}>{item.sku}</span>
       </div>
 
-      {/* Zone 4 — qty + receive progress (stacked, stable width) */}
-      <div className="shrink-0 flex flex-col items-start gap-0.5">
+      {/* Zone 4 — Qty (w-32 fixed): InlineQtyEdit + optional receive progress */}
+      <div className="w-32 shrink-0 flex flex-col items-start gap-0.5 overflow-hidden">
         <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
         {receiveProgress && <ReceiveProgressBar progress={receiveProgress} variant="compact" />}
       </div>
 
-      {/* Zone 5 — bin / condition (present only when set) */}
-      {(savedBin || savedCond) && (
-        <div className="shrink-0 text-[10px] leading-tight">
-          {savedBin && <div className="text-text-tertiary">Bin <span className="font-mono text-text-secondary">{savedBin}</span></div>}
-          {savedCond && <div className="text-text-secondary max-w-[72px] truncate">{savedCond}</div>}
-        </div>
-      )}
+      {/* Zone 5 — Bin/Cond (w-24 fixed, always rendered): dash when empty */}
+      <div className="w-24 shrink-0 text-[10px] leading-tight">
+        {savedBin && <div className="text-text-tertiary">Bin <span className="font-mono text-text-secondary">{savedBin}</span></div>}
+        {savedCond && <div className="text-text-secondary truncate">{savedCond}</div>}
+        {!savedBin && !savedCond && <span className="text-text-tertiary/30">—</span>}
+      </div>
 
-      {/* Zone 6 — list price (right-aligned, stable tab stop) */}
-      {savedPrice != null && (
-        <div className="shrink-0 w-14 text-right">
-          <span className="font-mono text-[11px] text-text-secondary">{formatCurrency(savedPrice)}</span>
-        </div>
-      )}
+      {/* Zone 6 — Price (w-16 fixed, always rendered): dash when missing */}
+      <div className="w-16 shrink-0 text-right">
+        {savedPrice != null
+          ? <span className="font-mono text-[11px] text-text-secondary">{formatCurrency(savedPrice)}</span>
+          : <span className="text-text-tertiary/30">—</span>}
+      </div>
 
-      {/* Zone 7 — UPC chip + warning chips + mark-inspected fallback (no wrap) */}
-      {(item.upc || chips.length > 0 || showMarkInspected || item.mark_inspect_error) && (
-        <div className="flex items-center gap-1 shrink-0">
-          {item.upc && <UpcChip upc={item.upc} />}
-          <RowChips chips={chips} />
-          {showMarkInspected && (
-            <button type="button" onClick={onMarkInspected} disabled={item.marking_inspected}
-              className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-              title="Marks this local lot inspected. Does not update Amazon.">
-              {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
-              Mark inspected
-            </button>
-          )}
-          {item.mark_inspect_error && (
-            <span className="text-[9px] text-red-400" title={item.mark_inspect_error}>!</span>
-          )}
-        </div>
-      )}
+      {/* Zone 7 — Status (w-32 fixed, always rendered): UPC + chips + mark-inspected; empty when clean */}
+      <div className="w-32 shrink-0 flex items-center gap-1 overflow-hidden">
+        {item.upc && <UpcChip upc={item.upc} />}
+        <RowChips chips={chips} />
+        {showMarkInspected && (
+          <button type="button" onClick={onMarkInspected} disabled={item.marking_inspected}
+            className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
+            title="Marks this local lot inspected. Does not update Amazon.">
+            {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
+            Mark inspected
+          </button>
+        )}
+        {item.mark_inspect_error && (
+          <span className="text-[9px] text-red-400" title={item.mark_inspect_error}>!</span>
+        )}
+      </div>
 
-      {/* Zone 8 — actions (pinned right) */}
-      <button onClick={onShowDetail} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details"><Info size={13} /></button>
-      <button onClick={onPrintLabel} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
-      <button onClick={onEdit} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
-      <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove"><X size={13} /></button>
+      {/* Zone 8 — Actions (stable 4-button group, always rendered) */}
+      <div className="flex items-center shrink-0">
+        <button onClick={onShowDetail} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details"><Info size={13} /></button>
+        <button onClick={onPrintLabel} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
+        <button onClick={onEdit} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
+        <button onClick={onRemove} className="p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove"><X size={13} /></button>
+      </div>
     </div>
   );
 }
@@ -2078,14 +2077,16 @@ export default function MfnBatchReceivePage() {
           </div>
           ) : (
             <>
-            {/* Table column header — stable zones only; variable middle zones (bin/cond, chips) are approximate */}
+            {/* Table column header — widths match BatchItemRow zones exactly */}
             <div className="flex items-center gap-2 px-3 pr-1 pb-1 mb-0.5 text-[10px] font-semibold text-text-tertiary/50 uppercase tracking-wider select-none border-b border-border-subtle/50">
               <div className="w-8 shrink-0" />
               <div className="min-w-0 flex-1">Item</div>
               <div className="w-28 shrink-0">MSKU</div>
-              <div className="shrink-0 w-16">Qty</div>
-              <div className="shrink-0 w-14 text-right">Price</div>
-              <div className="shrink-0 w-24 text-right">Actions</div>
+              <div className="w-32 shrink-0">Qty</div>
+              <div className="w-24 shrink-0">Bin / Cond</div>
+              <div className="w-16 shrink-0 text-right">Price</div>
+              <div className="w-32 shrink-0">Status</div>
+              <div className="shrink-0">Actions</div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0 pr-1">
               {receiveFilter !== 'all' && visibleBatch.length === 0 && (
