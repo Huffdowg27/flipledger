@@ -497,9 +497,11 @@ function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: Recei
 interface InlineQtyEditProps {
   value: number | null;
   onSave: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
+  forceOpen?: boolean;
+  onOpened?: () => void;
 }
 
-function InlineQtyEdit({ value, onSave }: InlineQtyEditProps) {
+function InlineQtyEdit({ value, onSave, forceOpen, onOpened }: InlineQtyEditProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft]     = useState('');
   const [saving, setSaving]   = useState(false);
@@ -554,6 +556,13 @@ function InlineQtyEdit({ value, onSave }: InlineQtyEditProps) {
       committedRef.current = false;
     }
   }
+
+  // Opens the editor imperatively when the parent signals focusQty for this row.
+  // autoFocus on the input handles actual DOM focus once editing=true renders.
+  useEffect(() => {
+    if (forceOpen) { start(); onOpened?.(); }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [forceOpen]);
 
   if (editing) {
     return (
@@ -931,7 +940,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             <span className="font-mono text-accent/80">{item.asin}</span>
             <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
             <ChannelBadge channel={item.fulfillment_channel} />
-            <InlineQtyEdit value={savedQty} onSave={onSaveQty} />
+            <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
             {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
             {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
             {savedCond && <span className="text-text-secondary">{savedCond}</span>}
@@ -1261,12 +1270,10 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 export default function MfnBatchReceivePage() {
   const searchInputRef    = useRef<HTMLInputElement>(null);
   const multiMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savedNoteTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [query, setQuery]           = useState('');
   const [results, setResults]       = useState<SearchResult[]>([]);
   const [searching, setSearching]   = useState(false);
   const [multiMatchNote, setMultiMatchNote] = useState(false);
-  const [savedNote, setSavedNote]           = useState(false);
   const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
@@ -1287,11 +1294,8 @@ export default function MfnBatchReceivePage() {
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
 
-  // Cleanup note timers on unmount
-  useEffect(() => () => {
-    if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
-    if (savedNoteTimerRef.current)  clearTimeout(savedNoteTimerRef.current);
-  }, []);
+  // Cleanup multi-match note timer on unmount
+  useEffect(() => () => { if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current); }, []);
 
   // Esc closes the lightbox
   useEffect(() => {
@@ -1727,9 +1731,7 @@ export default function MfnBatchReceivePage() {
               onChange={e => {
                 setQuery(e.target.value);
                 if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
-                if (savedNoteTimerRef.current)  clearTimeout(savedNoteTimerRef.current);
                 setMultiMatchNote(false);
-                setSavedNote(false);
               }}
               onKeyDown={e => {
                 if (e.key !== 'Enter') return;
@@ -1743,16 +1745,8 @@ export default function MfnBatchReceivePage() {
                 if (results.length !== 1) return;
                 const sole = results[0];
                 if (batch.has(sole.sku)) {
-                  const existing = batch.get(sole.sku)!;
-                  if (existing.save_state === 'saved') {
-                    // Saved/collapsed: can't open inline qty editor without ref plumbing.
-                    // Show note and keep query/results so the helper stays visible.
-                    if (savedNoteTimerRef.current) clearTimeout(savedNoteTimerRef.current);
-                    setSavedNote(true);
-                    savedNoteTimerRef.current = setTimeout(() => setSavedNote(false), 2000);
-                    return;
-                  }
-                  // Expanded card: focus qty, then clear.
+                  // Both expanded and saved/collapsed: setFocusQtySku drives focus.
+                  // Expanded cards use qtyRef; saved cards use InlineQtyEdit forceOpen.
                   setFocusQtySku(sole.sku);
                 } else {
                   addToBatch(sole, true);
@@ -1777,9 +1771,6 @@ export default function MfnBatchReceivePage() {
                   : 'Refine search or click the correct item.'}
               {multiMatchNote && (
                 <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
-              )}
-              {savedNote && (
-                <span className="ml-2 text-amber-500">Item is already saved — use Qty or Edit.</span>
               )}
             </p>
           )}
