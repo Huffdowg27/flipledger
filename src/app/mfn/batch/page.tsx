@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil } from 'lucide-react';
+import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
@@ -591,6 +591,182 @@ function InlineQtyEdit({ value, onSave }: InlineQtyEditProps) {
   );
 }
 
+// Discriminator: a BatchItem has draft_* fields and save_state; a bare
+// SearchResult does not. Used by the details drawer to render fewer
+// sections when opened from a search result that hasn't been added.
+function isBatchItem(item: SearchResult | BatchItem): item is BatchItem {
+  return 'draft_qty' in item;
+}
+
+// Read-only details flyout. No API calls; reuses ChannelBadge,
+// WarningChip, ReceiveProgressBar, calcProfit, formatCurrency. Doesn't
+// mutate save_state or touch any draft_* fields.
+interface ItemDetailDrawerProps {
+  item: SearchResult | BatchItem;
+  onImageClick: () => void;
+  onPrintLabel?: () => void;
+  onEdit?: () => void;
+  onClose: () => void;
+}
+
+function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }: ItemDetailDrawerProps) {
+  const inBatch = isBatchItem(item);
+  const progress = inBatch ? getReceiveProgress(item) : null;
+  const profit   = inBatch ? calcProfit(item) : null;
+  const chips    = inBatch ? chipsForBatchItem(item) : chipsForResult(item);
+
+  // Saved-field fallback display values (prefer persisted, then drafts).
+  const condDisplay = (item.condition || (inBatch ? item.draft_condition.trim() : '')) || null;
+  const binDisplay  = (item.bin_location || (inBatch ? item.draft_bin.trim() : '')) || null;
+  const tmplDisplay = inBatch ? (item.draft_shipping_template.trim() || item.merchant_shipping_group_name || null) : item.merchant_shipping_group_name;
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
+      <div
+        className="bg-bg-surface border-l border-border-subtle shadow-2xl w-[400px] max-w-full h-full overflow-y-auto"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="sticky top-0 z-10 flex items-start gap-3 px-4 py-3 bg-bg-surface border-b border-border-subtle">
+          {item.image_url
+            ? <button type="button" onClick={onImageClick} className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow" title="View larger">
+                <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
+              </button>
+            : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0" />}
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-text-primary leading-snug line-clamp-3" title={item.product_name ?? item.asin}>
+              {item.product_name || item.asin}
+            </div>
+            <div className="flex items-center gap-1.5 mt-1 flex-wrap text-[10px] text-text-tertiary">
+              <span className="font-mono text-accent">{item.asin}</span>
+              <ChannelBadge channel={item.fulfillment_channel} />
+              {liveStateBadge(item.amazon_status, item.amazon_qty)}
+            </div>
+          </div>
+          <button onClick={onClose} className="shrink-0 p-1 rounded hover:bg-bg-hover text-text-tertiary" title="Close (Esc)">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-4 py-3 space-y-4 text-[11px]">
+          {/* Identifiers */}
+          <section>
+            <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Identifiers</div>
+            <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3">
+              <span className="text-text-tertiary">ASIN</span><span className="font-mono text-text-secondary">{item.asin}</span>
+              {item.upc && (<><span className="text-text-tertiary">UPC</span><span className="font-mono text-text-secondary">{item.upc}</span></>)}
+              <span className="text-text-tertiary">MSKU</span>
+              <span className="font-mono text-text-secondary break-all">{item.sku}</span>
+            </div>
+          </section>
+
+          {/* Amazon snapshot */}
+          <section>
+            <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Amazon (local snapshot)</div>
+            <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3">
+              <span className="text-text-tertiary">Status</span><span className="text-text-secondary">{item.amazon_status ?? '—'}</span>
+              <span className="text-text-tertiary">Amz qty</span><span className="font-mono text-text-secondary">{item.amazon_qty ?? '—'}</span>
+              {item.amazon_list_price_cents != null && (<><span className="text-text-tertiary">Amz price</span><span className="font-mono text-text-secondary">{formatCurrency(item.amazon_list_price_cents)}</span></>)}
+            </div>
+          </section>
+
+          {/* Receive */}
+          <section>
+            <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Receive</div>
+            <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3 mb-2">
+              <span className="text-text-tertiary">Received</span><span className="font-mono text-text-secondary">{item.quantity_received ?? '—'}</span>
+              <span className="text-text-tertiary">Order qty</span><span className="font-mono text-text-secondary">{item.parsed_order_qty ?? '—'}</span>
+              <span className="text-text-tertiary">Remaining</span><span className="font-mono text-text-secondary">{item.quantity_remaining ?? '—'}</span>
+              <span className="text-text-tertiary">Inspected</span><span className="text-text-secondary">{item.inspected_at ? '✓ ' + item.inspected_at.slice(0, 10) : '—'}</span>
+            </div>
+            {progress && <ReceiveProgressBar progress={progress} variant="full" />}
+          </section>
+
+          {/* Money — only for items in the batch with draft fields */}
+          {inBatch && profit && profit.listCents != null && profit.costCents != null && (
+            <section>
+              <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Profit estimate</div>
+              <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3">
+                <span className="text-text-tertiary">List</span><span className="font-mono text-text-secondary">{formatCurrency(profit.listCents)}</span>
+                <span className="text-text-tertiary">Cost</span><span className="font-mono text-text-secondary">{formatCurrency(profit.costCents)}</span>
+                <span className="text-text-tertiary">Ship est</span><span className="font-mono text-text-secondary">{formatCurrency(profit.shipCents)}</span>
+                <span className="text-text-tertiary">{profit.referralRate != null ? `Referral (${(profit.referralRate * 100).toFixed(0)}%)` : 'Fee'}</span>
+                <span className={`font-mono ${profit.hasFee ? 'text-text-secondary' : 'text-amber-400/80'}`}>
+                  {profit.referralCents != null ? formatCurrency(profit.referralCents) : 'unknown'}
+                </span>
+                {profit.vcfCents > 0 && (<><span className="text-text-tertiary">VCF</span><span className="font-mono text-text-secondary">{formatCurrency(profit.vcfCents)}</span></>)}
+                <span className="text-text-tertiary">Net</span>
+                <span className={`font-mono font-medium ${
+                  !profit.hasFee ? 'text-amber-400' : profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
+                }`}>
+                  {profit.netCents != null ? formatCurrency(profit.netCents) : '—'}{!profit.hasFee ? '*' : ''}
+                </span>
+                {profit.roiPct != null && (<><span className="text-text-tertiary">ROI</span>
+                  <span className={`font-mono ${!profit.hasFee ? 'text-amber-400/90' : profit.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                    {profit.roiPct.toFixed(1)}%{!profit.hasFee ? '*' : ''}
+                  </span></>)}
+                {profit.marginPct != null && (<><span className="text-text-tertiary">Margin</span>
+                  <span className={`font-mono ${!profit.hasFee ? 'text-amber-400/90' : 'text-text-secondary'}`}>
+                    {profit.marginPct.toFixed(1)}%{!profit.hasFee ? '*' : ''}
+                  </span></>)}
+              </div>
+              {!profit.hasFee && (
+                <p className="text-[10px] text-amber-400/70 italic mt-1.5">* No cached Amazon fee — net/ROI/margin are estimates.</p>
+              )}
+            </section>
+          )}
+
+          {/* Saved fields */}
+          <section>
+            <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Saved fields</div>
+            <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3">
+              <span className="text-text-tertiary">Condition</span><span className="text-text-secondary">{condDisplay ?? '—'}</span>
+              <span className="text-text-tertiary">Bin</span><span className="font-mono text-text-secondary">{binDisplay ?? '—'}</span>
+              <span className="text-text-tertiary">Template</span><span className="font-mono text-text-secondary text-[10px] break-all">{tmplDisplay ?? '—'}</span>
+            </div>
+          </section>
+
+          {/* Warnings */}
+          {chips.length > 0 && (
+            <section>
+              <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Warnings</div>
+              <div className="flex items-center gap-1.5 flex-wrap">
+                {chips.map(c => <WarningChip key={c.label} chip={c} />)}
+              </div>
+            </section>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        <div className="sticky bottom-0 px-4 py-3 bg-bg-surface border-t border-border-subtle flex items-center justify-end gap-2">
+          {onPrintLabel && (
+            <button
+              onClick={onPrintLabel}
+              className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-subtle text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
+            >
+              <Printer size={12} /> Print label
+            </button>
+          )}
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-subtle text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
+            >
+              <Pencil size={12} /> Edit
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-bg-elevated text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UpcChip({ upc }: { upc: string }) {
   return (
     <span
@@ -611,9 +787,10 @@ interface SearchResultCardProps {
   inBatch: boolean;
   onAdd: () => void;
   onImageClick: () => void;
+  onShowDetail: () => void;
 }
 
-function SearchResultCard({ result, inBatch, onAdd, onImageClick }: SearchResultCardProps) {
+function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }: SearchResultCardProps) {
   const displayCost = result.buy_price ?? result.parsed_cost_cents;
   const displayPrice = result.amazon_list_price_cents ?? result.parsed_list_price_cents ?? result.il_list_price_cents;
 
@@ -658,18 +835,27 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick }: SearchResult
         </div>
       </div>
 
-      <button
-        onClick={onAdd}
-        disabled={inBatch}
-        className={`shrink-0 h-8 px-2.5 rounded-md text-xs font-medium border transition-colors flex items-center gap-1 ${
-          inBatch
-            ? 'border-accent/30 text-accent/60 cursor-default'
-            : 'border-accent/50 text-accent hover:bg-accent/10'
-        }`}
-      >
-        {inBatch ? <CheckCircle2 size={12} /> : <Plus size={12} />}
-        {inBatch ? 'Added' : 'Add'}
-      </button>
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          onClick={onShowDetail}
+          className="p-1.5 rounded-md text-text-tertiary/60 hover:text-accent hover:bg-bg-elevated transition-colors"
+          title="View details"
+        >
+          <Info size={13} />
+        </button>
+        <button
+          onClick={onAdd}
+          disabled={inBatch}
+          className={`h-8 px-2.5 rounded-md text-xs font-medium border transition-colors flex items-center gap-1 ${
+            inBatch
+              ? 'border-accent/30 text-accent/60 cursor-default'
+              : 'border-accent/50 text-accent hover:bg-accent/10'
+          }`}
+        >
+          {inBatch ? <CheckCircle2 size={12} /> : <Plus size={12} />}
+          {inBatch ? 'Added' : 'Add'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -688,11 +874,12 @@ interface BatchItemCardProps {
   onEdit: () => void;
   onSaveQty: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
   onImageClick: () => void;
+  onShowDetail: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onImageClick, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -753,6 +940,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             {chipsForBatchItem(item).map(c => <WarningChip key={c.label} chip={c} />)}
           </div>
         </div>
+        <button
+          onClick={onShowDetail}
+          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+          title="View details"
+        >
+          <Info size={14} />
+        </button>
         <button
           onClick={onPrintLabel}
           className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
@@ -824,6 +1018,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           })()}
         </div>
 
+        <button
+          onClick={onShowDetail}
+          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+          title="View details"
+        >
+          <Info size={14} />
+        </button>
         <button
           onClick={onRemove}
           className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded transition-colors"
@@ -1070,6 +1271,9 @@ export default function MfnBatchReceivePage() {
   // to 'all' so newly added items are never accidentally hidden.
   const [receiveFilter, setReceiveFilter] = useState<'all' | FilterKey>('all');
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string; sku: string } | null>(null);
+  // Read-only details flyout. Keyed by sku + source so a re-render uses the
+  // current state of the item from the right collection.
+  const [detailDrawer, setDetailDrawer] = useState<{ sku: string; source: 'batch' | 'search' } | null>(null);
   const [previewOpen, setPreviewOpen]       = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewRows, setPreviewRows]       = useState<ActivationPreviewRow[]>([]);
@@ -1086,6 +1290,14 @@ export default function MfnBatchReceivePage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [lightbox]);
+
+  // Esc closes the details drawer
+  useEffect(() => {
+    if (!detailDrawer) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setDetailDrawer(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [detailDrawer]);
 
   // Debounced search
   const doSearch = useCallback(async (q: string) => {
@@ -1532,6 +1744,7 @@ export default function MfnBatchReceivePage() {
                   asin: r.asin || '',
                   sku: r.sku,
                 })}
+                onShowDetail={() => setDetailDrawer({ sku: r.sku, source: batch.has(r.sku) ? 'batch' : 'search' })}
               />
             ))}
           </div>
@@ -1676,6 +1889,7 @@ export default function MfnBatchReceivePage() {
                     asin: item.asin || '',
                     sku: item.sku,
                   })}
+                  onShowDetail={() => setDetailDrawer({ sku: item.sku, source: 'batch' })}
                   focusQty={focusQtySku === item.sku}
                   onQtyFocused={() => setFocusQtySku(null)}
                 />
@@ -1704,6 +1918,31 @@ export default function MfnBatchReceivePage() {
           onPushComplete={() => { setPreviewOpen(false); }}
         />
       )}
+
+      {detailDrawer && (() => {
+        const di: SearchResult | BatchItem | null = detailDrawer.source === 'batch'
+          ? batch.get(detailDrawer.sku) ?? null
+          : results.find(r => r.sku === detailDrawer.sku) ?? null;
+        if (!di) { return null; }
+        const isBatch = isBatchItem(di);
+        return (
+          <ItemDetailDrawer
+            item={di}
+            onClose={() => setDetailDrawer(null)}
+            onImageClick={() => di.image_url && setLightbox({
+              src: di.image_url,
+              title: di.product_name || di.asin || di.sku,
+              asin: di.asin || '',
+              sku: di.sku,
+            })}
+            onPrintLabel={isBatch && di.asin ? () => openLabelPrint([di]) : undefined}
+            onEdit={isBatch && di.save_state === 'saved' ? () => {
+              updateBatchItem(di.sku, { save_state: 'idle', save_error: null });
+              setDetailDrawer(null);
+            } : undefined}
+          />
+        );
+      })()}
 
       {lightbox && (
         <div
