@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, ScanBarcode, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
+import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
@@ -676,7 +676,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }:
             ? <button type="button" onClick={onImageClick} className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow" title="View larger">
                 <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
-            : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0" />}
+            : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/25" /></div>}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-text-primary leading-snug line-clamp-3" title={item.product_name ?? item.asin}>
               {item.product_name || item.asin}
@@ -853,7 +853,7 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
               <img src={result.image_url} alt="" className="w-14 h-14 object-contain block" />
             </button>
           )
-        : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0" />}
+        : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/25" /></div>}
 
       <div className="min-w-0 flex-1">
         <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
@@ -952,7 +952,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
               <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
             </button>
           )
-        : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
+        : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/25" /></div>}
 
       {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
       <div className="min-w-0 flex-1">
@@ -1082,7 +1082,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
   const borderClass = item.save_state === 'error'
     ? 'border-red-500/30 bg-red-500/5'
     : noLot
-      ? 'border-amber-500/20 bg-bg-surface'
+      ? 'border-border-default bg-bg-surface'
       : 'border-border-subtle bg-bg-surface';
 
   return (
@@ -1101,7 +1101,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
                 <img src={item.image_url} alt="" className="w-16 h-16 object-contain block" />
               </button>
             )
-          : <div className="w-16 h-16 bg-bg-elevated rounded shrink-0" />}
+          : <div className="w-16 h-16 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={22} className="text-text-tertiary/25" /></div>}
 
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
@@ -1120,10 +1120,10 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             {item.sku}
           </div>
           {(() => {
-            const chips = chipsForBatchItem(item);
-            return chips.length > 0 ? (
+            const blockers = chipsForBatchItem(item).filter(c => c.tone === 'blocker');
+            return blockers.length > 0 ? (
               <div className="flex items-center gap-1 mt-1 flex-wrap">
-                <BatchItemChips chips={chips} />
+                <BatchItemChips chips={blockers} />
               </div>
             ) : null;
           })()}
@@ -1147,9 +1147,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
       {/* No-lot banner */}
       {noLot && (
-        <div className="flex items-start gap-1.5 mb-3 px-2.5 py-2 bg-amber-500/8 border border-amber-500/20 rounded text-[11px] text-amber-400/90 leading-snug">
-          <AlertCircle size={11} className="shrink-0 mt-0.5" />
-          <span>No local lot. Fill in fields below and click <strong>Create Local Lot</strong> — does not update Amazon.</span>
+        <div className="mb-3 px-2.5 py-1.5 bg-bg-elevated border border-border-default rounded text-[11px] text-text-tertiary leading-snug">
+          Create a local lot to save receive details. Amazon is not updated.
         </div>
       )}
 
@@ -1161,16 +1160,14 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             <div className="flex items-baseline gap-2">
               <span className={`text-base font-semibold tabular-nums ${
                 !profit.hasFee
-                  ? 'text-amber-400'
+                  ? 'text-text-secondary'
                   : profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
               }`}>
-                {profit.netCents != null ? formatCurrency(profit.netCents) : '—'}
+                {profit.netCents != null ? `${!profit.hasFee ? '~' : ''}${formatCurrency(profit.netCents)}` : '—'}
               </span>
-              {profit.roiPct != null && (
-                <span className={`text-xs font-medium ${
-                  !profit.hasFee ? 'text-amber-400/80' : profit.roiPct > 0 ? 'text-green-400/80' : 'text-red-400/80'
-                }`}>
-                  {profit.roiPct.toFixed(1)}%{!profit.hasFee ? '?' : ''} ROI
+              {profit.roiPct != null && profit.hasFee && (
+                <span className={`text-xs font-medium ${profit.roiPct > 0 ? 'text-green-400/80' : 'text-red-400/80'}`}>
+                  {profit.roiPct.toFixed(1)}% ROI
                 </span>
               )}
               {profit.marginPct != null && profit.hasFee && (
@@ -1180,9 +1177,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
               )}
             </div>
             {!profit.hasFee && (
-              <span className="flex items-center gap-1 text-[10px] text-amber-400/80 font-medium">
-                <AlertCircle size={10} /> Fee unknown
-              </span>
+              <span className="text-[10px] text-text-tertiary/60 italic">Estimate — Amazon fee not cached</span>
             )}
           </div>
           {/* Breakdown line */}
@@ -1208,7 +1203,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
                 )}
               </>
             ) : (
-              <span className="text-amber-400/70 font-medium">Fee missing</span>
+              <span className="text-text-tertiary/50 italic">Amazon fee not cached</span>
             )}
           </div>
         </div>
