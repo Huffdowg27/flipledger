@@ -1478,6 +1478,7 @@ export default function MfnBatchReceivePage() {
       next.set(result.sku, makeBatchItem(result));
       return next;
     });
+    setReceiveFilter('all');
     if (focusOnAdd) setFocusQtySku(result.sku);
   }
 
@@ -1869,7 +1870,7 @@ export default function MfnBatchReceivePage() {
                 {savingAll ? 'Saving…' : `Save All (${saveable.length})`}
               </button>
             )}
-            <button onClick={() => setBatch(new Map())} className="h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover transition-colors">
+            <button onClick={() => { setBatch(new Map()); setReceiveFilter('all'); }} className="h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover transition-colors">
               Clear
             </button>
           </div>
@@ -2043,22 +2044,6 @@ export default function MfnBatchReceivePage() {
                 </span>
               )}
             </div>
-            {/* Warning chips */}
-            {WARN_LABELS.some(l => summary.warnCounts[l] > 0) && (
-              <div className="flex items-center gap-1 mt-1 flex-wrap justify-end">
-                {WARN_LABELS.filter(l => summary.warnCounts[l] > 0).map(l => {
-                  const isBlocker = l === 'No lot' || l === 'Not inspected' || l === 'No price';
-                  const cls = isBlocker
-                    ? 'bg-red-500/10 text-red-400 border-red-500/30'
-                    : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
-                  return (
-                    <span key={l} className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border ${cls}`}>
-                      {l} <span className="ml-1 font-mono opacity-80">×{summary.warnCounts[l]}</span>
-                    </span>
-                  );
-                })}
-              </div>
-            )}
             {summary.profitIncomplete && (
               <div className="text-[10px] text-amber-400/70 mt-1 italic">
                 {summary.priceOrCostIncomplete
