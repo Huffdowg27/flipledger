@@ -954,7 +954,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
               onClick={onMarkInspected}
               disabled={item.marking_inspected}
               className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-              title="Mark this lot as inspected"
+              title="Marks this local lot inspected. Does not update Amazon."
             >
               {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
               Mark inspected
@@ -1187,12 +1187,14 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onClick={onMarkInspected}
             disabled={item.marking_inspected}
             className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
+            title="Marks this local lot inspected. Does not update Amazon."
           >
             {item.marking_inspected
               ? <Loader2 size={11} className="animate-spin" />
               : <CheckCircle2 size={11} />}
             Mark inspected
           </button>
+          <span className="text-[10px] text-text-tertiary/50">Local only</span>
           {item.mark_inspect_error && (
             <span className="text-[10px] text-red-400">{item.mark_inspect_error}</span>
           )}
@@ -1468,7 +1470,7 @@ export default function MfnBatchReceivePage() {
     if (item.draft_condition.trim())              body.condition        = item.draft_condition.trim();
     if (Number.isFinite(priceNum) && priceNum > 0) body.listPriceCents  = Math.round(priceNum * 100);
     if (item.draft_shipping_template.trim())       body.merchantShippingGroupName = item.draft_shipping_template.trim();
-    if (Number.isFinite(qtyNum) && qtyNum > 0)   body.markReceived     = true;
+    if (Number.isFinite(qtyNum) && qtyNum > 0) { body.markReceived = true; body.markInspected = true; }
 
     try {
       const res = await fetch('/api/data/inventory-lots', {
@@ -1492,8 +1494,10 @@ export default function MfnBatchReceivePage() {
         const mirror: Partial<BatchItem> = { save_state: 'saved', save_error: null };
         if (Number.isFinite(qtyNum) && qtyNum >= 0) {
           mirror.quantity_received = qtyNum;
-          if (qtyNum > 0 && !item.received_at) {
-            mirror.received_at = new Date().toISOString();
+          if (qtyNum > 0) {
+            const now = new Date().toISOString();
+            if (!item.received_at)  mirror.received_at  = now;
+            if (!item.inspected_at) mirror.inspected_at = now;
           }
         }
         if (item.draft_bin.trim())       mirror.bin_location = item.draft_bin.trim();
@@ -1538,10 +1542,11 @@ export default function MfnBatchReceivePage() {
 
     const body: Record<string, unknown> = {
       sku,
-      asin:     item.asin || undefined,
-      quantity: Number.isFinite(qtyNum) && qtyNum > 0 ? qtyNum : 1,
-      buyCents: Number.isFinite(buyNum) && buyNum >= 0 ? Math.round(buyNum * 100) : 0,
-      markReceived: true,
+      asin:         item.asin || undefined,
+      quantity:     Number.isFinite(qtyNum) && qtyNum > 0 ? qtyNum : 1,
+      buyCents:     Number.isFinite(buyNum) && buyNum >= 0 ? Math.round(buyNum * 100) : 0,
+      markReceived:  true,
+      markInspected: true,
     };
     if (Number.isFinite(priceNum) && priceNum > 0) body.listPriceCents = Math.round(priceNum * 100);
     if (item.draft_condition.trim())               body.condition      = item.draft_condition.trim();
@@ -1579,6 +1584,7 @@ export default function MfnBatchReceivePage() {
         quantity_received:            lot.quantity_received != null ? Number(lot.quantity_received) : item.quantity_received,
         quantity_remaining:           lot.quantity_remaining != null ? Number(lot.quantity_remaining) : item.quantity_remaining,
         received_at:                  lot.received_at != null ? String(lot.received_at) : item.received_at,
+        inspected_at:                 lot.inspected_at != null ? String(lot.inspected_at) : item.inspected_at,
         merchant_shipping_group_name: lot.merchant_shipping_group_name != null ? String(lot.merchant_shipping_group_name) : item.merchant_shipping_group_name,
         create_lot_state:             'idle',
         create_lot_error:             null,
