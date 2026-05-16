@@ -1922,6 +1922,18 @@ export default function MfnBatchReceivePage() {
             )}
 
             <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
+              {receiveFilter !== 'all' && visibleBatch.length === 0 && (
+                <div className="flex flex-col items-center justify-center py-10 text-center text-text-tertiary">
+                  <p className="text-sm">No items match this filter.</p>
+                  <button
+                    type="button"
+                    onClick={() => setReceiveFilter('all')}
+                    className="mt-2 text-xs text-accent hover:underline"
+                  >
+                    Show all
+                  </button>
+                </div>
+              )}
               {visibleBatch.map(item => (
                 <BatchItemCard
                   key={item.sku}
