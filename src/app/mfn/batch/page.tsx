@@ -618,7 +618,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }:
   // Saved-field fallback display values (prefer persisted, then drafts).
   const condDisplay = (item.condition || (inBatch ? item.draft_condition.trim() : '')) || null;
   const binDisplay  = (item.bin_location || (inBatch ? item.draft_bin.trim() : '')) || null;
-  const tmplDisplay = inBatch ? (item.draft_shipping_template.trim() || item.merchant_shipping_group_name || null) : item.merchant_shipping_group_name;
+  const tmplDisplay = (item.merchant_shipping_group_name || (inBatch ? item.draft_shipping_template.trim() : '')) || null;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
@@ -676,7 +676,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }:
             <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3 mb-2">
               <span className="text-text-tertiary">Received</span><span className="font-mono text-text-secondary">{item.quantity_received ?? '—'}</span>
               <span className="text-text-tertiary">Order qty</span><span className="font-mono text-text-secondary">{item.parsed_order_qty ?? '—'}</span>
-              <span className="text-text-tertiary">Remaining</span><span className="font-mono text-text-secondary">{item.quantity_remaining ?? '—'}</span>
+              <span className="text-text-tertiary" title="inventory_ledger.quantity_remaining — sellable units left in the lot, not 'remaining to receive'">Unsold qty</span><span className="font-mono text-text-secondary">{item.quantity_remaining ?? '—'}</span>
               <span className="text-text-tertiary">Inspected</span><span className="text-text-secondary">{item.inspected_at ? '✓ ' + item.inspected_at.slice(0, 10) : '—'}</span>
             </div>
             {progress && <ReceiveProgressBar progress={progress} variant="full" />}
