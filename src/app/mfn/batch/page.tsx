@@ -1261,10 +1261,12 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 export default function MfnBatchReceivePage() {
   const searchInputRef    = useRef<HTMLInputElement>(null);
   const multiMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedNoteTimerRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [query, setQuery]           = useState('');
   const [results, setResults]       = useState<SearchResult[]>([]);
   const [searching, setSearching]   = useState(false);
   const [multiMatchNote, setMultiMatchNote] = useState(false);
+  const [savedNote, setSavedNote]           = useState(false);
   const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
@@ -1285,8 +1287,11 @@ export default function MfnBatchReceivePage() {
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
 
-  // Cleanup multi-match note timer on unmount
-  useEffect(() => () => { if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current); }, []);
+  // Cleanup note timers on unmount
+  useEffect(() => () => {
+    if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+    if (savedNoteTimerRef.current)  clearTimeout(savedNoteTimerRef.current);
+  }, []);
 
   // Esc closes the lightbox
   useEffect(() => {
@@ -1722,7 +1727,9 @@ export default function MfnBatchReceivePage() {
               onChange={e => {
                 setQuery(e.target.value);
                 if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+                if (savedNoteTimerRef.current)  clearTimeout(savedNoteTimerRef.current);
                 setMultiMatchNote(false);
+                setSavedNote(false);
               }}
               onKeyDown={e => {
                 if (e.key !== 'Enter') return;
@@ -1736,8 +1743,16 @@ export default function MfnBatchReceivePage() {
                 if (results.length !== 1) return;
                 const sole = results[0];
                 if (batch.has(sole.sku)) {
-                  // Already in batch: focus qty if card is expanded (unsaved).
-                  // Saved/collapsed inline-qty-editor requires ref plumbing — follow-up.
+                  const existing = batch.get(sole.sku)!;
+                  if (existing.save_state === 'saved') {
+                    // Saved/collapsed: can't open inline qty editor without ref plumbing.
+                    // Show note and keep query/results so the helper stays visible.
+                    if (savedNoteTimerRef.current) clearTimeout(savedNoteTimerRef.current);
+                    setSavedNote(true);
+                    savedNoteTimerRef.current = setTimeout(() => setSavedNote(false), 2000);
+                    return;
+                  }
+                  // Expanded card: focus qty, then clear.
                   setFocusQtySku(sole.sku);
                 } else {
                   addToBatch(sole, true);
@@ -1756,10 +1771,15 @@ export default function MfnBatchReceivePage() {
               {searching
                 ? 'Searching…'
                 : results.length === 1
-                  ? 'Press Enter to add this item.'
+                  ? batch.has(results[0].sku)
+                    ? 'Press Enter to focus this item in the batch.'
+                    : 'Press Enter to add this item.'
                   : 'Refine search or click the correct item.'}
               {multiMatchNote && (
                 <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
+              )}
+              {savedNote && (
+                <span className="ml-2 text-amber-500">Item is already saved — use Qty or Edit.</span>
               )}
             </p>
           )}
