@@ -1399,6 +1399,7 @@ export default function MfnBatchReceivePage() {
   const [query, setQuery]           = useState('');
   const [results, setResults]       = useState<SearchResult[]>([]);
   const [searching, setSearching]   = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [multiMatchNote, setMultiMatchNote] = useState(false);
   const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
   const [savingAll, setSavingAll]   = useState(false);
@@ -1424,8 +1425,7 @@ export default function MfnBatchReceivePage() {
   useEffect(() => {
     function onClickOutside(e: MouseEvent) {
       if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
-        setQuery('');
-        setResults([]);
+        setSearchOpen(false);
       }
     }
     document.addEventListener('mousedown', onClickOutside);
@@ -1914,8 +1914,10 @@ export default function MfnBatchReceivePage() {
             ref={searchInputRef}
             type="text"
             value={query}
+            onFocus={() => setSearchOpen(true)}
             onChange={e => {
               setQuery(e.target.value);
+              setSearchOpen(true);
               if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
               setMultiMatchNote(false);
             }}
@@ -1948,7 +1950,7 @@ export default function MfnBatchReceivePage() {
         </div>
 
         {/* Dropdown — visible when query ≥ 2 chars */}
-        {query.trim().length >= 2 && (
+        {searchOpen && query.trim().length >= 2 && (
           <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-bg-surface border border-border-default rounded-lg shadow-xl overflow-hidden">
             {/* Helper / status line */}
             <div className="px-3 py-1.5 border-b border-border-subtle">
