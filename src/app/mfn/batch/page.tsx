@@ -907,7 +907,8 @@ interface BatchItemRowProps {
 function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
   const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
   return (
-    <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-green-500/20 bg-green-500/5">
+      {/* Image */}
       {item.image_url
         ? (
             <button
@@ -920,17 +921,21 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
             </button>
           )
         : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
+
+      {/* Product + identifiers + operational fields */}
       <div className="min-w-0 flex-1">
+        {/* Line 1: status icon · name · ASIN · channel */}
         <div className="flex items-center gap-1.5 min-w-0">
-          <CheckCircle2 size={11} className="text-green-400 shrink-0" />
-          <div className="text-xs font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
+          <CheckCircle2 size={10} className="text-green-400 shrink-0" />
+          <div className="text-xs font-medium text-text-primary truncate min-w-0 flex-1" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
-        </div>
-        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
-          <span className="font-mono text-accent/80">{item.asin}</span>
-          <span className="font-mono text-text-tertiary/60 truncate max-w-[140px]" title={item.sku}>{item.sku}</span>
+          <span className="font-mono text-[10px] text-accent/80 shrink-0">{item.asin}</span>
           <ChannelBadge channel={item.fulfillment_channel} />
+        </div>
+        {/* Line 2: MSKU · qty · progress · bin · cond · price · UPC · chips */}
+        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
+          <span className="font-mono text-text-tertiary/50 truncate max-w-[120px]" title={item.sku}>{item.sku}</span>
           <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
           {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
           {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
@@ -940,29 +945,19 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
           <BatchItemChips chips={chipsForBatchItem(item)} />
         </div>
       </div>
-      <button
-        onClick={onShowDetail}
-        className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
-        title="View details"
-      >
-        <Info size={14} />
+
+      {/* Actions */}
+      <button onClick={onShowDetail} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details">
+        <Info size={13} />
       </button>
-      <button
-        onClick={onPrintLabel}
-        className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
-        title="Print ASIN label"
-      >
-        <Printer size={14} />
+      <button onClick={onPrintLabel} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label">
+        <Printer size={13} />
       </button>
-      <button
-        onClick={onEdit}
-        className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
-        title="Edit (reopens this card)"
-      >
-        <Pencil size={14} />
+      <button onClick={onEdit} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)">
+        <Pencil size={13} />
       </button>
       <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
-        <X size={14} />
+        <X size={13} />
       </button>
     </div>
   );
