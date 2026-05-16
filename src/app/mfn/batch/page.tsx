@@ -2073,7 +2073,7 @@ export default function MfnBatchReceivePage() {
               Use the search bar above for UPC, ASIN, MSKU, or title.
             </p>
             <p className="text-[11px] text-text-tertiary/60 mt-3 font-mono">
-              Enter adds a single match · Esc clears search
+              Enter adds a single match
             </p>
           </div>
           ) : (
