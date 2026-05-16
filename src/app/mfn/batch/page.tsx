@@ -941,7 +941,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
   const showMarkInspected = item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-green-500/20 bg-green-500/5">
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded border border-green-500/20 bg-green-500/5">
 
       {/* Zone 1 — image (32px fixed) */}
       {item.image_url
@@ -2077,7 +2077,17 @@ export default function MfnBatchReceivePage() {
             </p>
           </div>
           ) : (
-            <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
+            <>
+            {/* Table column header — stable zones only; variable middle zones (bin/cond, chips) are approximate */}
+            <div className="flex items-center gap-2 px-3 pr-1 pb-1 mb-0.5 text-[10px] font-semibold text-text-tertiary/50 uppercase tracking-wider select-none border-b border-border-subtle/50">
+              <div className="w-8 shrink-0" />
+              <div className="min-w-0 flex-1">Item</div>
+              <div className="w-28 shrink-0">MSKU</div>
+              <div className="shrink-0 w-16">Qty</div>
+              <div className="shrink-0 w-14 text-right">Price</div>
+              <div className="shrink-0 w-24 text-right">Actions</div>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0 pr-1">
               {receiveFilter !== 'all' && visibleBatch.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-10 text-center text-text-tertiary">
                   <p className="text-sm">No items match this filter.</p>
@@ -2114,6 +2124,7 @@ export default function MfnBatchReceivePage() {
                 />
               ))}
             </div>
+            </>
           )}
         </div>
 
