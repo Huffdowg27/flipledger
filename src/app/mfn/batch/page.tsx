@@ -1668,6 +1668,12 @@ export default function MfnBatchReceivePage() {
                 <span className="text-xs text-text-tertiary">
                   {batchArray.length} in batch{savedCount > 0 ? ` · ${savedCount} saved` : ''}
                 </span>
+                <span className="text-[10px] text-text-tertiary/80">
+                  Ready to push:{' '}
+                  <span className={stateCounts['ready'] > 0 ? 'text-green-400 font-medium' : ''}>
+                    {stateCounts['ready']}
+                  </span>
+                </span>
                 {printAllMsg && (
                   <span className="text-[10px] text-text-tertiary/70">{printAllMsg}</span>
                 )}
