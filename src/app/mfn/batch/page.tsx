@@ -413,6 +413,31 @@ function BatchItemChips({ chips }: { chips: Chip[] }) {
   return <>{chips.map(c => <WarningChip key={c.label} chip={c} />)}</>;
 }
 
+// Compact chip strip for saved-row Zone 7.
+// Always shows all blockers (No lot / Not inspected / No price) first,
+// then up to 1 warn chip, then a "+N" overflow badge listing hidden labels.
+// Full chips are still shown in expanded cards and the detail drawer.
+function RowChips({ chips }: { chips: Chip[] }) {
+  if (chips.length === 0) return null;
+  const blockers = chips.filter(c => c.tone === 'blocker');
+  const warns    = chips.filter(c => c.tone === 'warn');
+  const shown    = [...blockers, ...warns.slice(0, 1)];
+  const hidden   = warns.slice(1);
+  return (
+    <>
+      {shown.map(c => <WarningChip key={c.label} chip={c} />)}
+      {hidden.length > 0 && (
+        <span
+          className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-bg-elevated border-border-subtle text-text-tertiary"
+          title={hidden.map(c => c.label).join(', ')}
+        >
+          +{hidden.length}
+        </span>
+      )}
+    </>
+  );
+}
+
 // Channel badge — DEFAULT = MFN, AMAZON_NA = FBA. Sourced from
 // merchant_listings.fulfillment_channel. Display only.
 function ChannelBadge({ channel }: { channel: string | null | undefined }) {
@@ -973,7 +998,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
       {(item.upc || chips.length > 0 || showMarkInspected || item.mark_inspect_error) && (
         <div className="flex items-center gap-1 shrink-0">
           {item.upc && <UpcChip upc={item.upc} />}
-          {chips.length > 0 && <BatchItemChips chips={chips} />}
+          <RowChips chips={chips} />
           {showMarkInspected && (
             <button type="button" onClick={onMarkInspected} disabled={item.marking_inspected}
               className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
