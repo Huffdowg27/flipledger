@@ -1393,7 +1393,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 // ---------------------------------------------------------------------------
 
 export default function MfnBatchReceivePage() {
-  const searchInputRef    = useRef<HTMLInputElement>(null);
+  const searchInputRef     = useRef<HTMLInputElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
   const multiMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [query, setQuery]           = useState('');
   const [results, setResults]       = useState<SearchResult[]>([]);
@@ -1418,6 +1419,18 @@ export default function MfnBatchReceivePage() {
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
+
+  // Close search dropdown when clicking outside the search container
+  useEffect(() => {
+    function onClickOutside(e: MouseEvent) {
+      if (searchContainerRef.current && !searchContainerRef.current.contains(e.target as Node)) {
+        setQuery('');
+        setResults([]);
+      }
+    }
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
 
   // Cleanup multi-match note timer on unmount
   useEffect(() => () => { if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current); }, []);
@@ -1890,100 +1903,102 @@ export default function MfnBatchReceivePage() {
         </div>
       </div>
 
-      {/* Two-panel layout */}
-      <div className="flex gap-5 flex-1 min-h-0">
-        {/* Left: Search + results */}
-        <div className="w-[400px] shrink-0 flex flex-col gap-3">
-          {/* Search input */}
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
-            {searching && (
-              <Loader2 size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary animate-spin" />
-            )}
-            <input
-              ref={searchInputRef}
-              type="text"
-              value={query}
-              onChange={e => {
-                setQuery(e.target.value);
-                if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
-                setMultiMatchNote(false);
-              }}
-              onKeyDown={e => {
-                if (e.key !== 'Enter') return;
-                e.preventDefault();
-                if (results.length > 1) {
-                  if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
-                  setMultiMatchNote(true);
-                  multiMatchTimerRef.current = setTimeout(() => setMultiMatchNote(false), 2000);
-                  return;
-                }
-                if (results.length !== 1) return;
-                const sole = results[0];
-                if (batch.has(sole.sku)) {
-                  // Clear any active filter so the row is visible before focus fires.
-                  setReceiveFilter('all');
-                  // Both expanded and saved/collapsed: setFocusQtySku drives focus.
-                  // Expanded cards use qtyRef; saved cards use InlineQtyEdit forceOpen.
-                  setFocusQtySku(sole.sku);
-                } else {
-                  addToBatch(sole, true);
-                }
-                setQuery('');
-                setResults([]);
-              }}
-              placeholder="ASIN, MSKU, or title… (Enter adds if one result)"
-              className="w-full h-11 pl-9 pr-9 bg-bg-elevated border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
-            />
-          </div>
-
-          {/* Search helper hint — hidden on zero results (no-results message handles that case) */}
-          {query.trim().length >= 2 && (searching || results.length > 0) && (
-            <p className="text-xs text-text-tertiary px-1 -mt-1">
-              {searching
-                ? 'Searching…'
-                : results.length === 1
-                  ? batch.has(results[0].sku)
-                    ? 'Press Enter to focus this item in the batch.'
-                    : 'Press Enter to add this item.'
-                  : 'Refine search or click the correct item.'}
-              {multiMatchNote && (
-                <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
-              )}
-            </p>
+      {/* Search bar — full width, results as dropdown overlay */}
+      <div ref={searchContainerRef} className="relative mb-4">
+        <div className="relative">
+          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
+          {searching && (
+            <Loader2 size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary animate-spin" />
           )}
-
-          {/* Search results */}
-          <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
-            {query.trim().length >= 2 && !searching && results.length === 0 && (
-              <div className="text-center text-text-tertiary text-sm py-8">No results for "{query}"</div>
-            )}
-            {results.map(r => (
-              <SearchResultCard
-                key={r.sku}
-                result={r}
-                inBatch={batch.has(r.sku)}
-                onAdd={() => addToBatch(r)}
-                onImageClick={() => r.image_url && setLightbox({
-                  src: r.image_url,
-                  title: r.product_name || r.asin || r.sku,
-                  asin: r.asin || '',
-                  sku: r.sku,
-                })}
-                onShowDetail={() => setDetailDrawer({ sku: r.sku, source: batch.has(r.sku) ? 'batch' : 'search' })}
-              />
-            ))}
-          </div>
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={query}
+            onChange={e => {
+              setQuery(e.target.value);
+              if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+              setMultiMatchNote(false);
+            }}
+            onKeyDown={e => {
+              if (e.key !== 'Enter') return;
+              e.preventDefault();
+              if (results.length > 1) {
+                if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+                setMultiMatchNote(true);
+                multiMatchTimerRef.current = setTimeout(() => setMultiMatchNote(false), 2000);
+                return;
+              }
+              if (results.length !== 1) return;
+              const sole = results[0];
+              if (batch.has(sole.sku)) {
+                // Clear any active filter so the row is visible before focus fires.
+                setReceiveFilter('all');
+                // Both expanded and saved/collapsed: setFocusQtySku drives focus.
+                // Expanded cards use qtyRef; saved cards use InlineQtyEdit forceOpen.
+                setFocusQtySku(sole.sku);
+              } else {
+                addToBatch(sole, true);
+              }
+              setQuery('');
+              setResults([]);
+            }}
+            placeholder="Scan barcode, ASIN, MSKU, or title…"
+            className="w-full h-11 pl-9 pr-9 bg-bg-elevated border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+          />
         </div>
 
-        {/* Right: Batch */}
-        <div className="flex-1 flex flex-col min-h-0">
-          {batchArray.length === 0 ? (
-            <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border-subtle rounded-xl text-text-tertiary">
-              <Search size={32} className="mb-3 opacity-20" />
-              <p className="text-sm font-medium">Batch is empty</p>
-              <p className="text-xs mt-1 max-w-[200px]">Search for items on the left and add them to this batch</p>
+        {/* Dropdown — visible when query ≥ 2 chars */}
+        {query.trim().length >= 2 && (
+          <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-bg-surface border border-border-default rounded-lg shadow-xl overflow-hidden">
+            {/* Helper / status line */}
+            <div className="px-3 py-1.5 border-b border-border-subtle">
+              <p className="text-xs text-text-tertiary">
+                {searching
+                  ? 'Searching…'
+                  : results.length === 1
+                    ? batch.has(results[0].sku)
+                      ? 'Press Enter to focus this item in the batch.'
+                      : 'Press Enter to add this item.'
+                    : results.length > 1
+                      ? 'Refine search or click the correct item.'
+                      : `No results for "${query}"`}
+                {multiMatchNote && (
+                  <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
+                )}
+              </p>
             </div>
+            {/* Results list */}
+            {results.length > 0 && (
+              <div className="overflow-y-auto max-h-80 p-1.5 space-y-1">
+                {results.map(r => (
+                  <SearchResultCard
+                    key={r.sku}
+                    result={r}
+                    inBatch={batch.has(r.sku)}
+                    onAdd={() => addToBatch(r)}
+                    onImageClick={() => r.image_url && setLightbox({
+                      src: r.image_url,
+                      title: r.product_name || r.asin || r.sku,
+                      asin: r.asin || '',
+                      sku: r.sku,
+                    })}
+                    onShowDetail={() => setDetailDrawer({ sku: r.sku, source: batch.has(r.sku) ? 'batch' : 'search' })}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Batch area — full width */}
+      <div className="flex-1 flex flex-col min-h-0">
+        {batchArray.length === 0 ? (
+          <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border-subtle rounded-xl text-text-tertiary">
+            <Search size={32} className="mb-3 opacity-20" />
+            <p className="text-sm font-medium">Batch is empty</p>
+            <p className="text-xs mt-1 max-w-[200px]">Scan or search above to start a receive batch</p>
+          </div>
           ) : (
             <>
               {/* Compact summary bar */}
@@ -2137,7 +2152,6 @@ export default function MfnBatchReceivePage() {
             </>
           )}
         </div>
-      </div>
 
       {previewError && (
         <div className="fixed bottom-4 right-4 z-40 max-w-md px-4 py-3 rounded-lg bg-red-500/10 border border-red-500/30 text-sm text-red-400 shadow-lg flex items-start gap-2">
