@@ -165,6 +165,7 @@ export async function PATCH(request: NextRequest) {
     const fields: string[] = [];
     const params: (string | number | null)[] = [];
     const now = new Date().toISOString();
+    let fifoRelevant = false;
 
     if (body.quantity !== undefined) {
       const q = Number(body.quantity);
@@ -174,6 +175,7 @@ export async function PATCH(request: NextRequest) {
       }
       fields.push('quantity = ?');
       params.push(q);
+      fifoRelevant = true;
     }
     if (body.buyPrice !== undefined) {
       const bp = Number(body.buyPrice);
@@ -183,10 +185,12 @@ export async function PATCH(request: NextRequest) {
       }
       fields.push('buy_price = ?');
       params.push(Math.round(bp * 100));
+      fifoRelevant = true;
     }
     if (body.datePurchased !== undefined) {
       fields.push('date_purchased = ?');
       params.push(body.datePurchased);
+      fifoRelevant = true;
     }
     if (body.notes !== undefined) {
       fields.push('notes = ?');
@@ -263,7 +267,9 @@ export async function PATCH(request: NextRequest) {
     db.prepare(`UPDATE inventory_ledger SET ${fields.join(', ')} WHERE id = ?`).run(...params);
     db.close();
 
-    const fifoResult = recalculateFIFO({ sku: existing.sku || undefined, asin: existing.asin || undefined });
+    const fifoResult = fifoRelevant
+      ? recalculateFIFO({ sku: existing.sku || undefined, asin: existing.asin || undefined })
+      : null;
     return NextResponse.json({ success: true, fifo: fifoResult });
   } catch (err) {
     db.close();
