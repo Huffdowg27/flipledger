@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
+import { Search, ScanBarcode, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
@@ -2064,10 +2064,17 @@ export default function MfnBatchReceivePage() {
       {/* Batch area — full width */}
       <div className="flex-1 flex flex-col min-h-0">
         {batchArray.length === 0 ? (
-          <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border-subtle rounded-xl text-text-tertiary">
-            <Search size={32} className="mb-3 opacity-20" />
-            <p className="text-sm font-medium">Batch is empty</p>
-            <p className="text-xs mt-1 max-w-[200px]">Scan or search above to start a receive batch</p>
+          <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border-subtle rounded-xl py-10">
+            <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-bg-elevated border border-border-subtle mb-4">
+              <ScanBarcode size={28} className="text-text-tertiary opacity-60" />
+            </div>
+            <p className="text-sm font-semibold text-text-secondary">Scan or search to start receiving</p>
+            <p className="text-xs text-text-tertiary mt-1.5 max-w-[240px]">
+              Use the search bar above for UPC, ASIN, MSKU, or title.
+            </p>
+            <p className="text-[11px] text-text-tertiary/60 mt-3 font-mono">
+              Enter adds a single match · Esc clears search
+            </p>
           </div>
           ) : (
             <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
