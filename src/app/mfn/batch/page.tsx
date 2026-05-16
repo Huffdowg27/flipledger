@@ -1745,6 +1745,8 @@ export default function MfnBatchReceivePage() {
                 if (results.length !== 1) return;
                 const sole = results[0];
                 if (batch.has(sole.sku)) {
+                  // Clear any active filter so the row is visible before focus fires.
+                  setReceiveFilter('all');
                   // Both expanded and saved/collapsed: setFocusQtySku drives focus.
                   // Expanded cards use qtyRef; saved cards use InlineQtyEdit forceOpen.
                   setFocusQtySku(sole.sku);
