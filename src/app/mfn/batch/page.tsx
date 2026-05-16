@@ -735,27 +735,27 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }:
                 <span className="text-text-tertiary">Cost</span><span className="font-mono text-text-secondary">{formatCurrency(profit.costCents)}</span>
                 <span className="text-text-tertiary">Ship est</span><span className="font-mono text-text-secondary">{formatCurrency(profit.shipCents)}</span>
                 <span className="text-text-tertiary">{profit.referralRate != null ? `Referral (${(profit.referralRate * 100).toFixed(0)}%)` : 'Fee'}</span>
-                <span className={`font-mono ${profit.hasFee ? 'text-text-secondary' : 'text-amber-400/80'}`}>
-                  {profit.referralCents != null ? formatCurrency(profit.referralCents) : 'unknown'}
+                <span className="font-mono text-text-secondary">
+                  {profit.referralCents != null ? formatCurrency(profit.referralCents) : <span className="text-text-tertiary/50 italic">not cached</span>}
                 </span>
                 {profit.vcfCents > 0 && (<><span className="text-text-tertiary">VCF</span><span className="font-mono text-text-secondary">{formatCurrency(profit.vcfCents)}</span></>)}
                 <span className="text-text-tertiary">Net</span>
                 <span className={`font-mono font-medium ${
-                  !profit.hasFee ? 'text-amber-400' : profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
+                  !profit.hasFee ? 'text-text-secondary' : profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
                 }`}>
-                  {profit.netCents != null ? formatCurrency(profit.netCents) : '—'}{!profit.hasFee ? '*' : ''}
+                  {profit.netCents != null ? `${!profit.hasFee ? '~' : ''}${formatCurrency(profit.netCents)}` : '—'}
                 </span>
-                {profit.roiPct != null && (<><span className="text-text-tertiary">ROI</span>
-                  <span className={`font-mono ${!profit.hasFee ? 'text-amber-400/90' : profit.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
-                    {profit.roiPct.toFixed(1)}%{!profit.hasFee ? '*' : ''}
+                {profit.roiPct != null && profit.hasFee && (<><span className="text-text-tertiary">ROI</span>
+                  <span className={`font-mono ${profit.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                    {profit.roiPct.toFixed(1)}%
                   </span></>)}
-                {profit.marginPct != null && (<><span className="text-text-tertiary">Margin</span>
-                  <span className={`font-mono ${!profit.hasFee ? 'text-amber-400/90' : 'text-text-secondary'}`}>
-                    {profit.marginPct.toFixed(1)}%{!profit.hasFee ? '*' : ''}
+                {profit.marginPct != null && profit.hasFee && (<><span className="text-text-tertiary">Margin</span>
+                  <span className="font-mono text-text-secondary">
+                    {profit.marginPct.toFixed(1)}%
                   </span></>)}
               </div>
               {!profit.hasFee && (
-                <p className="text-[10px] text-amber-400/70 italic mt-1.5">* No cached Amazon fee — net/ROI/margin are estimates.</p>
+                <p className="text-[10px] text-text-tertiary/60 italic mt-1.5">Estimate — Amazon fee not cached. ROI/margin hidden until fee is available.</p>
               )}
             </section>
           )}
@@ -2012,37 +2012,37 @@ export default function MfnBatchReceivePage() {
               <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono">{formatCurrency(summary.totalCostCents)}</span></span>
               <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono">{formatCurrency(summary.totalShipCents)}</span></span>
               <span className="text-text-tertiary">
-                Fees{summary.profitIncomplete ? '*' : ''} <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400' : 'text-text-primary'}`}>{formatCurrency(summary.totalFeeCents)}</span>
+                Fees <span className="font-mono text-text-primary">{formatCurrency(summary.totalFeeCents)}</span>
               </span>
               <span className="text-text-tertiary">
                 Net <span className={`font-mono font-semibold ${
                   summary.profitIncomplete
-                    ? 'text-amber-400'
+                    ? 'text-text-secondary'
                     : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
                 }`}>
-                  {formatCurrency(summary.totalNetCents)}{summary.profitIncomplete ? '*' : ''}
+                  {summary.profitIncomplete ? '~' : ''}{formatCurrency(summary.totalNetCents)}
                 </span>
               </span>
-              {summary.roiPct != null && (
+              {summary.roiPct != null && !summary.profitIncomplete && (
                 <span className="text-text-tertiary">
-                  ROI <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
-                    {summary.roiPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
+                  ROI <span className={`font-mono ${summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                    {summary.roiPct.toFixed(1)}%
                   </span>
                 </span>
               )}
-              {summary.marginPct != null && (
+              {summary.marginPct != null && !summary.profitIncomplete && (
                 <span className="text-text-tertiary">
-                  Margin <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : 'text-text-secondary'}`}>
-                    {summary.marginPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
+                  Margin <span className="font-mono text-text-secondary">
+                    {summary.marginPct.toFixed(1)}%
                   </span>
                 </span>
               )}
             </div>
             {summary.profitIncomplete && (
-              <div className="text-[10px] text-amber-400/70 mt-1 italic">
+              <div className="text-[10px] text-text-tertiary/60 mt-1 italic">
                 {summary.priceOrCostIncomplete
-                  ? '* Missing price, cost, or fee — estimates only.'
-                  : '* No cached Amazon fee — net/ROI/margin are estimates.'}
+                  ? 'Estimate — some items missing price or cost.'
+                  : 'Estimate — Amazon fee not cached. ROI/margin hidden.'}
               </div>
             )}
           </div>
