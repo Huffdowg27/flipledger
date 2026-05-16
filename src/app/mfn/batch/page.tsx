@@ -56,6 +56,8 @@ interface BatchItem extends SearchResult {
   create_lot_state: CreateLotState;
   create_lot_error: string | null;
   slow_create_lot: boolean;      // true once create-lot has been in-flight > 3s
+  marking_inspected: boolean;
+  mark_inspect_error: string | null;
 }
 
 const CONDITIONS = [
@@ -147,6 +149,8 @@ function makeBatchItem(r: SearchResult): BatchItem {
     create_lot_state:        'idle',
     create_lot_error:        null,
     slow_create_lot:         false,
+    marking_inspected:       false,
+    mark_inspect_error:      null,
   };
 }
 
@@ -898,13 +902,14 @@ interface BatchItemRowProps {
   onPrintLabel: () => void;
   onEdit: () => void;
   onSaveQty: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
+  onMarkInspected: () => void;
   onImageClick: () => void;
   onShowDetail: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
+function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
   const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-green-500/20 bg-green-500/5">
@@ -943,6 +948,21 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
           {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
           {item.upc && <UpcChip upc={item.upc} />}
           <BatchItemChips chips={chipsForBatchItem(item)} />
+          {item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at && (
+            <button
+              type="button"
+              onClick={onMarkInspected}
+              disabled={item.marking_inspected}
+              className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
+              title="Mark this lot as inspected"
+            >
+              {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
+              Mark inspected
+            </button>
+          )}
+          {item.mark_inspect_error && (
+            <span className="text-[9px] text-red-400" title={item.mark_inspect_error}>!</span>
+          )}
         </div>
       </div>
 
@@ -976,13 +996,14 @@ interface BatchItemCardProps {
   onPrintLabel: () => void;
   onEdit: () => void;
   onSaveQty: (newQty: number) => Promise<{ ok: boolean; error?: string }>;
+  onMarkInspected: () => void;
   onImageClick: () => void;
   onShowDetail: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -1011,6 +1032,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         onPrintLabel={onPrintLabel}
         onEdit={onEdit}
         onSaveQty={onSaveQty}
+        onMarkInspected={onMarkInspected}
         onImageClick={onImageClick}
         onShowDetail={onShowDetail}
         focusQty={focusQty}
@@ -1156,6 +1178,26 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
       {/* Receive progress — only when there's a lot AND a usable total signal */}
       {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="full" /> : null; })()}
+
+      {/* Mark inspected — only when received but not yet inspected */}
+      {item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at && (
+        <div className="flex items-center gap-2 mb-2">
+          <button
+            type="button"
+            onClick={onMarkInspected}
+            disabled={item.marking_inspected}
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
+          >
+            {item.marking_inspected
+              ? <Loader2 size={11} className="animate-spin" />
+              : <CheckCircle2 size={11} />}
+            Mark inspected
+          </button>
+          {item.mark_inspect_error && (
+            <span className="text-[10px] text-red-400">{item.mark_inspect_error}</span>
+          )}
+        </div>
+      )}
 
       {/* Input grid — keyboard flow: Qty → Bin → List Price → Condition → Shipping Template → Save */}
       <div className="grid grid-cols-2 gap-2 mb-2">
@@ -1617,6 +1659,47 @@ export default function MfnBatchReceivePage() {
     }
   }
 
+  async function markInspected(sku: string) {
+    const item = batch.get(sku);
+    if (!item || item.il_id == null) return;
+
+    updateBatchItem(sku, { marking_inspected: true, mark_inspect_error: null });
+
+    const t0 = Date.now();
+    console.log(`[markInspected] start sku=${sku} il_id=${item.il_id}`);
+
+    try {
+      const res = await fetch('/api/data/inventory-lots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.il_id, markReceived: true, markInspected: true }),
+      });
+      const elapsed = Date.now() - t0;
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        let errMsg = 'Mark inspected failed';
+        try { errMsg = JSON.parse(text).error || errMsg; } catch { /* keep default */ }
+        console.error(`[markInspected] fail sku=${sku} status=${res.status} elapsed=${elapsed}ms body=${text}`);
+        updateBatchItem(sku, { marking_inspected: false, mark_inspect_error: errMsg });
+        return;
+      }
+      console.log(`[markInspected] ok sku=${sku} elapsed=${elapsed}ms`);
+
+      const now = new Date().toISOString();
+      const mirror: Partial<BatchItem> = {
+        marking_inspected: false,
+        mark_inspect_error: null,
+        inspected_at: now,
+      };
+      if (!item.received_at) mirror.received_at = now;
+      updateBatchItem(sku, mirror);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[markInspected] network sku=${sku} err=${msg}`);
+      updateBatchItem(sku, { marking_inspected: false, mark_inspect_error: `Network error: ${msg}` });
+    }
+  }
+
   function printAll() {
     const all    = Array.from(batch.values());
     const saved  = all.filter(i => i.save_state === 'saved' && i.asin);
@@ -1993,6 +2076,7 @@ export default function MfnBatchReceivePage() {
                   onPrintLabel={() => openLabelPrint([item])}
                   onEdit={() => updateBatchItem(item.sku, { save_state: 'idle', save_error: null })}
                   onSaveQty={(q) => saveQtyOnly(item.sku, q)}
+                  onMarkInspected={() => markInspected(item.sku)}
                   onImageClick={() => item.image_url && setLightbox({
                     src: item.image_url,
                     title: item.product_name || item.asin || item.sku,
