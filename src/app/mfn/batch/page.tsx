@@ -1010,8 +1010,8 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
         )}
       </div>
 
-      {/* Zone 8 — Actions (stable 4-button group, always rendered) */}
-      <div className="flex items-center shrink-0">
+      {/* Zone 8 — Actions (w-24 fixed, right-aligned) */}
+      <div className="w-24 shrink-0 flex items-center justify-end">
         <button onClick={onShowDetail} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details"><Info size={13} /></button>
         <button onClick={onPrintLabel} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
         <button onClick={onEdit} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
@@ -2086,7 +2086,7 @@ export default function MfnBatchReceivePage() {
               <div className="w-24 shrink-0">Bin / Cond</div>
               <div className="w-16 shrink-0 text-right">Price</div>
               <div className="w-32 shrink-0">Status</div>
-              <div className="shrink-0">Actions</div>
+              <div className="w-24 shrink-0 text-right">Actions</div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0 pr-1">
               {receiveFilter !== 'all' && visibleBatch.length === 0 && (
