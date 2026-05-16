@@ -911,51 +911,73 @@ interface BatchItemRowProps {
 
 function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
   const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
+  const receiveProgress = getReceiveProgress(item);
+  const chips = chipsForBatchItem(item);
+  const showMarkInspected = item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at;
+
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-green-500/20 bg-green-500/5">
-      {/* Image */}
+
+      {/* Zone 1 — image (32px fixed) */}
       {item.image_url
         ? (
-            <button
-              type="button"
-              onClick={onImageClick}
+            <button type="button" onClick={onImageClick}
               className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
-              title="View larger"
-            >
+              title="View larger">
               <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
             </button>
           )
         : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0" />}
 
-      {/* Product + identifiers + operational fields */}
+      {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
       <div className="min-w-0 flex-1">
-        {/* Line 1: status icon · name · ASIN · channel */}
-        <div className="flex items-center gap-1.5 min-w-0">
+        <div className="flex items-center gap-1">
           <CheckCircle2 size={10} className="text-green-400 shrink-0" />
-          <div className="text-xs font-medium text-text-primary truncate min-w-0 flex-1" title={item.product_name ?? item.asin}>
+          <span className="text-xs font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
-          </div>
+          </span>
+        </div>
+        <div className="flex items-center gap-1 mt-0.5">
           <span className="font-mono text-[10px] text-accent/80 shrink-0">{item.asin}</span>
           <ChannelBadge channel={item.fulfillment_channel} />
         </div>
-        {/* Line 2: MSKU · qty · progress · bin · cond · price · UPC · chips */}
-        <div className="flex items-center gap-1.5 mt-0.5 text-[10px] text-text-tertiary flex-wrap">
-          <span className="font-mono text-text-tertiary/50 truncate max-w-[120px]" title={item.sku}>{item.sku}</span>
-          <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
-          {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="compact" /> : null; })()}
-          {savedBin && <span>Bin <span className="font-mono text-text-secondary">{savedBin}</span></span>}
-          {savedCond && <span className="text-text-secondary">{savedCond}</span>}
-          {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
+      </div>
+
+      {/* Zone 3 — MSKU (112px, truncates) */}
+      <div className="w-28 shrink-0">
+        <span className="font-mono text-[9px] text-text-tertiary/50 truncate block" title={item.sku}>{item.sku}</span>
+      </div>
+
+      {/* Zone 4 — qty + receive progress (stacked, stable width) */}
+      <div className="shrink-0 flex flex-col items-start gap-0.5">
+        <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
+        {receiveProgress && <ReceiveProgressBar progress={receiveProgress} variant="compact" />}
+      </div>
+
+      {/* Zone 5 — bin / condition (present only when set) */}
+      {(savedBin || savedCond) && (
+        <div className="shrink-0 text-[10px] leading-tight">
+          {savedBin && <div className="text-text-tertiary">Bin <span className="font-mono text-text-secondary">{savedBin}</span></div>}
+          {savedCond && <div className="text-text-secondary max-w-[72px] truncate">{savedCond}</div>}
+        </div>
+      )}
+
+      {/* Zone 6 — list price (right-aligned, stable tab stop) */}
+      {savedPrice != null && (
+        <div className="shrink-0 w-14 text-right">
+          <span className="font-mono text-[11px] text-text-secondary">{formatCurrency(savedPrice)}</span>
+        </div>
+      )}
+
+      {/* Zone 7 — UPC chip + warning chips + mark-inspected fallback (no wrap) */}
+      {(item.upc || chips.length > 0 || showMarkInspected || item.mark_inspect_error) && (
+        <div className="flex items-center gap-1 shrink-0">
           {item.upc && <UpcChip upc={item.upc} />}
-          <BatchItemChips chips={chipsForBatchItem(item)} />
-          {item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at && (
-            <button
-              type="button"
-              onClick={onMarkInspected}
-              disabled={item.marking_inspected}
+          {chips.length > 0 && <BatchItemChips chips={chips} />}
+          {showMarkInspected && (
+            <button type="button" onClick={onMarkInspected} disabled={item.marking_inspected}
               className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-              title="Marks this local lot inspected. Does not update Amazon."
-            >
+              title="Marks this local lot inspected. Does not update Amazon.">
               {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
               Mark inspected
             </button>
@@ -964,21 +986,13 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
             <span className="text-[9px] text-red-400" title={item.mark_inspect_error}>!</span>
           )}
         </div>
-      </div>
+      )}
 
-      {/* Actions */}
-      <button onClick={onShowDetail} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details">
-        <Info size={13} />
-      </button>
-      <button onClick={onPrintLabel} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label">
-        <Printer size={13} />
-      </button>
-      <button onClick={onEdit} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)">
-        <Pencil size={13} />
-      </button>
-      <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove">
-        <X size={13} />
-      </button>
+      {/* Zone 8 — actions (pinned right) */}
+      <button onClick={onShowDetail} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details"><Info size={13} /></button>
+      <button onClick={onPrintLabel} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
+      <button onClick={onEdit} className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
+      <button onClick={onRemove} className="shrink-0 p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove"><X size={13} /></button>
     </div>
   );
 }
