@@ -403,6 +403,12 @@ function WarningChip({ chip }: { chip: Chip }) {
   );
 }
 
+// Renders a flat list of WarningChip elements. Callers own the wrapping
+// container (gap, flex, null-guard) so this stays layout-agnostic.
+function BatchItemChips({ chips }: { chips: Chip[] }) {
+  return <>{chips.map(c => <WarningChip key={c.label} chip={c} />)}</>;
+}
+
 // Channel badge — DEFAULT = MFN, AMAZON_NA = FBA. Sourced from
 // merchant_listings.fulfillment_channel. Display only.
 function ChannelBadge({ channel }: { channel: string | null | undefined }) {
@@ -869,6 +875,19 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
   );
 }
 
+// Derives display values for a saved/collapsed BatchItemCard row.
+// Fallback priority: persisted DB field → draft field → null.
+// Pure helper — no side effects, safe to call from any render context.
+function getSavedDisplay(item: BatchItem) {
+  return {
+    savedQty:   item.quantity_received ?? (parseInt(item.draft_qty, 10) || null),
+    savedPrice: item.il_list_price_cents
+      ?? (item.draft_list_price ? Math.round(parseFloat(item.draft_list_price) * 100) : null),
+    savedBin:   item.bin_location || item.draft_bin.trim() || null,
+    savedCond:  item.condition    || item.draft_condition.trim() || null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // BatchItemCard
 // ---------------------------------------------------------------------------
@@ -910,11 +929,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
   // Collapsed view for saved items — keeps the batch scannable
   if (item.save_state === 'saved') {
-    const savedQty   = item.quantity_received ?? (parseInt(item.draft_qty, 10) || null);
-    const savedPrice = item.il_list_price_cents
-      ?? (item.draft_list_price ? Math.round(parseFloat(item.draft_list_price) * 100) : null);
-    const savedBin   = item.bin_location || item.draft_bin.trim() || null;
-    const savedCond  = item.condition    || item.draft_condition.trim() || null;
+    const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
     return (
       <div className="flex items-center gap-3 px-3 py-2 rounded-xl border border-green-500/20 bg-green-500/5">
         {item.image_url
@@ -946,7 +961,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             {savedCond && <span className="text-text-secondary">{savedCond}</span>}
             {savedPrice != null && <span className="font-mono text-text-secondary">{formatCurrency(savedPrice)}</span>}
             {item.upc && <UpcChip upc={item.upc} />}
-            {chipsForBatchItem(item).map(c => <WarningChip key={c.label} chip={c} />)}
+            <BatchItemChips chips={chipsForBatchItem(item)} />
           </div>
         </div>
         <button
@@ -1021,7 +1036,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             const chips = chipsForBatchItem(item);
             return chips.length > 0 ? (
               <div className="flex items-center gap-1 mt-1 flex-wrap">
-                {chips.map(c => <WarningChip key={c.label} chip={c} />)}
+                <BatchItemChips chips={chips} />
               </div>
             ) : null;
           })()}
