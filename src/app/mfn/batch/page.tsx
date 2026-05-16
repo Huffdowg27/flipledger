@@ -1836,75 +1836,48 @@ export default function MfnBatchReceivePage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Page header */}
-      <div className="flex items-center justify-between mb-5">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">MFN Batch Receive</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">
-            Scan or search to add items → fill fields → save to FlipLedger
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+      {/* Toolbar row 1 — title · counts · actions */}
+      <div className="flex items-center justify-between px-4 py-2.5 mb-3 bg-bg-elevated border border-border-subtle rounded-lg">
+        <div className="flex items-center gap-3 min-w-0">
+          <h1 className="text-sm font-semibold text-text-primary shrink-0">MFN Receive</h1>
           {batchArray.length > 0 && (
-            <>
-              <div className="flex flex-col items-end gap-0.5">
-                <span className="text-xs text-text-tertiary">
-                  {batchArray.length} in batch{savedCount > 0 ? ` · ${savedCount} saved` : ''}
-                </span>
-                <span className="text-[10px] text-text-tertiary/80">
-                  Ready to push:{' '}
-                  <span className={stateCounts['ready'] > 0 ? 'text-green-400 font-medium' : ''}>
-                    {stateCounts['ready']}
-                  </span>
-                </span>
-                {printAllMsg && (
-                  <span className="text-[10px] text-text-tertiary/70">{printAllMsg}</span>
-                )}
-              </div>
-              {savedCount > 0 && (
-                <button
-                  onClick={printAll}
-                  className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-border-subtle text-sm text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors"
-                >
-                  <Printer size={14} />
-                  Print All ({savedCount})
-                </button>
-              )}
-              {savedCount > 0 && (
-                <button
-                  onClick={previewAndPush}
-                  disabled={previewLoading}
-                  className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-blue-500/50 text-blue-400 text-sm font-medium hover:bg-blue-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                >
-                  {previewLoading
-                    ? <Loader2 size={14} className="animate-spin" />
-                    : <Send size={14} />}
-                  {previewLoading ? 'Loading…' : `Preview & Push (${savedCount})`}
-                </button>
-              )}
-              {hasUnsaved && (
-                <button
-                  onClick={saveAll}
-                  disabled={savingAll}
-                  className="flex items-center gap-1.5 h-9 px-4 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent/90 transition-colors disabled:opacity-50"
-                >
-                  {savingAll ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
-                  {savingAll ? 'Saving…' : `Save All (${saveable.length})`}
-                </button>
-              )}
-              <button
-                onClick={() => setBatch(new Map())}
-                className="h-9 px-3 rounded-md border border-border-subtle text-sm text-text-tertiary hover:bg-bg-hover transition-colors"
-              >
-                Clear batch
-              </button>
-            </>
+            <span className="text-xs text-text-tertiary truncate">
+              {batchArray.length} in batch
+              {savedCount > 0 && <> · <span className="text-green-400/90">{savedCount} saved</span></>}
+              {summary.unsaved > 0 && <> · <span className="text-amber-400/80">{summary.unsaved} unsaved</span></>}
+              {stateCounts['ready'] > 0 && <> · <span className="text-green-400 font-medium">Ready {stateCounts['ready']}</span></>}
+            </span>
           )}
+          {printAllMsg && <span className="text-[10px] text-text-tertiary/70 shrink-0">{printAllMsg}</span>}
         </div>
+        {batchArray.length > 0 && (
+          <div className="flex items-center gap-1.5 shrink-0 ml-4">
+            {savedCount > 0 && (
+              <button onClick={printAll} className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors">
+                <Printer size={13} />Print All ({savedCount})
+              </button>
+            )}
+            {savedCount > 0 && (
+              <button onClick={previewAndPush} disabled={previewLoading} className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-blue-500/50 text-blue-400 text-xs font-medium hover:bg-blue-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                {previewLoading ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
+                {previewLoading ? 'Loading…' : `Preview & Push (${savedCount})`}
+              </button>
+            )}
+            {hasUnsaved && (
+              <button onClick={saveAll} disabled={savingAll} className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors disabled:opacity-50">
+                {savingAll ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                {savingAll ? 'Saving…' : `Save All (${saveable.length})`}
+              </button>
+            )}
+            <button onClick={() => setBatch(new Map())} className="h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover transition-colors">
+              Clear
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Search bar — full width, results as dropdown overlay */}
-      <div ref={searchContainerRef} className="relative mb-4">
+      <div ref={searchContainerRef} className="relative mb-3">
         <div className="relative">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
           {searching && (
@@ -1993,6 +1966,116 @@ export default function MfnBatchReceivePage() {
         )}
       </div>
 
+      {/* Toolbar row 2 — filters left · KPI right — only when batch non-empty */}
+      {batchArray.length > 0 && (
+        <div className="flex items-start justify-between gap-4 px-3 py-2 mb-3 bg-bg-elevated border border-border-subtle rounded-lg">
+          {/* Filter pills — left */}
+          <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+            {([
+              { key: 'all' as const,         label: 'All',           count: batchArray.length },
+              { key: 'needs-work' as const,  label: 'Needs work',    count: stateCounts['needs-work'] },
+              { key: 'ready' as const,       label: 'Ready to push', count: stateCounts['ready'] },
+              { key: 'complete' as const,    label: 'Complete',      count: stateCounts['complete'] },
+              { key: 'over' as const,        label: 'Over received', count: stateCounts['over'] },
+            ]).map(f => {
+              const active = receiveFilter === f.key;
+              const isOver = f.key === 'over';
+              const isNeeds = f.key === 'needs-work';
+              const accentCls = active
+                ? isOver
+                  ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                  : isNeeds
+                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+                    : f.key === 'complete'
+                      ? 'bg-green-500/15 text-green-400 border-green-500/40'
+                      : 'bg-accent/15 text-accent border-accent/40'
+                : 'bg-bg-elevated text-text-tertiary border-border-subtle hover:text-text-secondary hover:bg-bg-hover';
+              return (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => setReceiveFilter(f.key)}
+                  disabled={f.count === 0 && f.key !== 'all'}
+                  className={`flex items-center gap-1.5 h-6 px-2 rounded-md border font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${accentCls}`}
+                >
+                  {f.label}
+                  <span className="font-mono tabular-nums text-[10px] opacity-80">{f.count}</span>
+                </button>
+              );
+            })}
+            {receiveFilter !== 'all' && (
+              <span className="ml-1 text-text-tertiary/80 italic text-[11px]">
+                Showing {visibleBatch.length} of {batchArray.length}
+              </span>
+            )}
+          </div>
+          {/* KPI line — right */}
+          <div className="shrink-0 text-right">
+            <div className="flex items-center gap-x-3 text-[11px] text-text-secondary flex-wrap justify-end">
+              <span className="text-text-tertiary">Qty <span className="text-text-primary font-mono">{summary.totalQty}</span></span>
+              <span className="text-text-tertiary">Rev <span className="text-text-primary font-mono">{formatCurrency(summary.totalListCents)}</span></span>
+              <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono">{formatCurrency(summary.totalCostCents)}</span></span>
+              <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono">{formatCurrency(summary.totalShipCents)}</span></span>
+              <span className="text-text-tertiary">
+                Fees{summary.profitIncomplete ? '*' : ''} <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400' : 'text-text-primary'}`}>{formatCurrency(summary.totalFeeCents)}</span>
+              </span>
+              <span className="text-text-tertiary">
+                Net <span className={`font-mono font-semibold ${
+                  summary.profitIncomplete
+                    ? 'text-amber-400'
+                    : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
+                }`}>
+                  {formatCurrency(summary.totalNetCents)}{summary.profitIncomplete ? '*' : ''}
+                </span>
+              </span>
+              {summary.roiPct != null && (
+                <span className="text-text-tertiary">
+                  ROI <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                    {summary.roiPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
+                  </span>
+                </span>
+              )}
+              {summary.marginPct != null && (
+                <span className="text-text-tertiary">
+                  Margin <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : 'text-text-secondary'}`}>
+                    {summary.marginPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
+                  </span>
+                </span>
+              )}
+            </div>
+            {/* Warning chips */}
+            {WARN_LABELS.some(l => summary.warnCounts[l] > 0) && (
+              <div className="flex items-center gap-1 mt-1 flex-wrap justify-end">
+                {WARN_LABELS.filter(l => summary.warnCounts[l] > 0).map(l => {
+                  const isBlocker = l === 'No lot' || l === 'Not inspected' || l === 'No price';
+                  const cls = isBlocker
+                    ? 'bg-red-500/10 text-red-400 border-red-500/30'
+                    : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
+                  return (
+                    <span key={l} className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border ${cls}`}>
+                      {l} <span className="ml-1 font-mono opacity-80">×{summary.warnCounts[l]}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+            {summary.profitIncomplete && (
+              <div className="text-[10px] text-amber-400/70 mt-1 italic">
+                {summary.priceOrCostIncomplete
+                  ? '* Missing price, cost, or fee — estimates only.'
+                  : '* No cached Amazon fee — net/ROI/margin are estimates.'}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {receiveFilter !== 'all' && batchArray.length > 0 && (
+        <div className="mb-2 -mt-1 text-[10px] text-text-tertiary/60 italic">
+          Filters only change visible rows; Print All and Preview &amp; Push use the full saved batch.
+        </div>
+      )}
+
       {/* Batch area — full width */}
       <div className="flex-1 flex flex-col min-h-0">
         {batchArray.length === 0 ? (
@@ -2002,118 +2085,6 @@ export default function MfnBatchReceivePage() {
             <p className="text-xs mt-1 max-w-[200px]">Scan or search above to start a receive batch</p>
           </div>
           ) : (
-            <>
-              {/* Compact summary bar */}
-              <div className="mb-2 px-3 py-2 rounded-lg bg-bg-elevated border border-border-subtle text-[11px] text-text-secondary">
-                <div className="flex items-center gap-x-4 gap-y-1 flex-wrap">
-                  <span className="text-text-tertiary">
-                    <span className="text-text-primary font-medium">{summary.total}</span> item{summary.total !== 1 ? 's' : ''}
-                    {summary.saved > 0 && <span className="text-text-tertiary"> · <span className="text-green-400/90">{summary.saved} saved</span></span>}
-                    {summary.unsaved > 0 && <span className="text-text-tertiary"> · <span className="text-amber-400/80">{summary.unsaved} unsaved</span></span>}
-                  </span>
-                  <span className="text-text-tertiary">Qty <span className="text-text-primary font-mono">{summary.totalQty}</span></span>
-                  <span className="text-text-tertiary">Rev <span className="text-text-primary font-mono">{formatCurrency(summary.totalListCents)}</span></span>
-                  <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono">{formatCurrency(summary.totalCostCents)}</span></span>
-                  <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono">{formatCurrency(summary.totalShipCents)}</span></span>
-                  <span className="text-text-tertiary">
-                    Fees{summary.profitIncomplete ? '*' : ''} <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400' : 'text-text-primary'}`}>{formatCurrency(summary.totalFeeCents)}</span>
-                  </span>
-                  <span className="text-text-tertiary">
-                    Net <span className={`font-mono font-semibold ${
-                      summary.profitIncomplete
-                        ? 'text-amber-400'
-                        : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
-                    }`}>
-                      {formatCurrency(summary.totalNetCents)}{summary.profitIncomplete ? '*' : ''}
-                    </span>
-                  </span>
-                  {summary.roiPct != null && (
-                    <span className="text-text-tertiary">
-                      ROI <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
-                        {summary.roiPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
-                      </span>
-                    </span>
-                  )}
-                  {summary.marginPct != null && (
-                    <span className="text-text-tertiary">
-                      Margin <span className={`font-mono ${summary.profitIncomplete ? 'text-amber-400/90' : 'text-text-secondary'}`}>
-                        {summary.marginPct.toFixed(1)}%{summary.profitIncomplete ? '*' : ''}
-                      </span>
-                    </span>
-                  )}
-                </div>
-                {/* Warning counts — only render the labels that have a non-zero count */}
-                {WARN_LABELS.some(l => summary.warnCounts[l] > 0) && (
-                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                    {WARN_LABELS.filter(l => summary.warnCounts[l] > 0).map(l => {
-                      const isBlocker = l === 'No lot' || l === 'Not inspected' || l === 'No price';
-                      const cls = isBlocker
-                        ? 'bg-red-500/10 text-red-400 border-red-500/30'
-                        : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
-                      return (
-                        <span key={l} className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border ${cls}`}>
-                          {l} <span className="ml-1 font-mono opacity-80">×{summary.warnCounts[l]}</span>
-                        </span>
-                      );
-                    })}
-                  </div>
-                )}
-                {summary.profitIncomplete && (
-                  <div className="text-[10px] text-amber-400/70 mt-1.5 italic">
-                    {summary.priceOrCostIncomplete
-                      ? '* Some items are missing price, cost, or Amazon fee — profit totals are estimates.'
-                      : '* Some items have no cached Amazon fee — net/ROI/margin are estimates.'}
-                  </div>
-                )}
-              </div>
-
-            {/* Client-only receive-state filter strip. Counts always reflect the full batch. */}
-            <div className="mb-2 flex items-center gap-1.5 flex-wrap text-[11px]">
-              {([
-                { key: 'all' as const,         label: 'All',           count: batchArray.length },
-                { key: 'needs-work' as const,  label: 'Needs work',    count: stateCounts['needs-work'] },
-                { key: 'ready' as const,       label: 'Ready to push', count: stateCounts['ready'] },
-                { key: 'complete' as const,    label: 'Complete',      count: stateCounts['complete'] },
-                { key: 'over' as const,        label: 'Over received', count: stateCounts['over'] },
-              ]).map(f => {
-                const active = receiveFilter === f.key;
-                const isOver = f.key === 'over';
-                const isNeeds = f.key === 'needs-work';
-                const accentCls = active
-                  ? isOver
-                    ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                    : isNeeds
-                      ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
-                      : f.key === 'complete'
-                        ? 'bg-green-500/15 text-green-400 border-green-500/40'
-                        : 'bg-accent/15 text-accent border-accent/40'
-                  : 'bg-bg-elevated text-text-tertiary border-border-subtle hover:text-text-secondary hover:bg-bg-hover';
-                return (
-                  <button
-                    key={f.key}
-                    type="button"
-                    onClick={() => setReceiveFilter(f.key)}
-                    disabled={f.count === 0 && f.key !== 'all'}
-                    className={`flex items-center gap-1.5 h-6 px-2 rounded-md border font-medium transition-colors disabled:opacity-30 disabled:cursor-not-allowed ${accentCls}`}
-                  >
-                    {f.label}
-                    <span className="font-mono tabular-nums text-[10px] opacity-80">{f.count}</span>
-                  </button>
-                );
-              })}
-              {receiveFilter !== 'all' && (
-                <span className="ml-1 text-text-tertiary/80 italic">
-                  Showing {visibleBatch.length} of {batchArray.length}
-                </span>
-              )}
-            </div>
-
-            {receiveFilter !== 'all' && (
-              <div className="mb-2 -mt-1 text-[10px] text-text-tertiary/60 italic">
-                Filters only change visible rows; Print All and Preview &amp; Push use the full saved batch.
-              </div>
-            )}
-
             <div className="flex-1 overflow-y-auto space-y-3 min-h-0 pr-1">
               {receiveFilter !== 'all' && visibleBatch.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-10 text-center text-text-tertiary">
@@ -2151,7 +2122,6 @@ export default function MfnBatchReceivePage() {
                 />
               ))}
             </div>
-            </>
           )}
         </div>
 
