@@ -1259,10 +1259,12 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 // ---------------------------------------------------------------------------
 
 export default function MfnBatchReceivePage() {
-  const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef    = useRef<HTMLInputElement>(null);
+  const multiMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [query, setQuery]           = useState('');
   const [results, setResults]       = useState<SearchResult[]>([]);
   const [searching, setSearching]   = useState(false);
+  const [multiMatchNote, setMultiMatchNote] = useState(false);
   const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
@@ -1282,6 +1284,9 @@ export default function MfnBatchReceivePage() {
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
+
+  // Cleanup multi-match note timer on unmount
+  useEffect(() => () => { if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current); }, []);
 
   // Esc closes the lightbox
   useEffect(() => {
@@ -1714,18 +1719,50 @@ export default function MfnBatchReceivePage() {
               ref={searchInputRef}
               type="text"
               value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter' && results.length > 0) {
-                  addToBatch(results[0], true);
-                  setQuery('');
-                  setResults([]);
-                }
+              onChange={e => {
+                setQuery(e.target.value);
+                if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+                setMultiMatchNote(false);
               }}
-              placeholder="ASIN, MSKU, or title… (Enter adds first result)"
+              onKeyDown={e => {
+                if (e.key !== 'Enter') return;
+                e.preventDefault();
+                if (results.length > 1) {
+                  if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+                  setMultiMatchNote(true);
+                  multiMatchTimerRef.current = setTimeout(() => setMultiMatchNote(false), 2000);
+                  return;
+                }
+                if (results.length !== 1) return;
+                const sole = results[0];
+                if (batch.has(sole.sku)) {
+                  // Already in batch: focus qty if card is expanded (unsaved).
+                  // Saved/collapsed inline-qty-editor requires ref plumbing — follow-up.
+                  setFocusQtySku(sole.sku);
+                } else {
+                  addToBatch(sole, true);
+                }
+                setQuery('');
+                setResults([]);
+              }}
+              placeholder="ASIN, MSKU, or title… (Enter adds if one result)"
               className="w-full h-11 pl-9 pr-9 bg-bg-elevated border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
             />
           </div>
+
+          {/* Search helper hint — hidden on zero results (no-results message handles that case) */}
+          {query.trim().length >= 2 && (searching || results.length > 0) && (
+            <p className="text-xs text-text-tertiary px-1 -mt-1">
+              {searching
+                ? 'Searching…'
+                : results.length === 1
+                  ? 'Press Enter to add this item.'
+                  : 'Refine search or click the correct item.'}
+              {multiMatchNote && (
+                <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
+              )}
+            </p>
+          )}
 
           {/* Search results */}
           <div className="flex-1 overflow-y-auto space-y-2 min-h-0">
