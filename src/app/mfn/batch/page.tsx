@@ -734,7 +734,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
             <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3 mb-2">
               <span className="text-text-tertiary">Received</span><span className="font-mono text-text-secondary">{item.quantity_received ?? '—'}</span>
               <span className="text-text-tertiary">Order qty</span><span className="font-mono text-text-secondary">{item.parsed_order_qty ?? '—'}</span>
-              <span className="text-text-tertiary" title="inventory_ledger.quantity_remaining — sellable units left in the lot, not 'remaining to receive'">Unsold qty</span><span className="font-mono text-text-secondary">{item.quantity_remaining ?? '—'}</span>
+              <span className="text-text-tertiary" title="Sellable units remaining in inventory — not the same as 'remaining to receive'">Unsold qty</span><span className="font-mono text-text-secondary">{item.quantity_remaining ?? '—'}</span>
               <span className="text-text-tertiary">Inspected</span><span className="text-text-secondary">{item.inspected_at ? '✓ ' + item.inspected_at.slice(0, 10) : '—'}</span>
             </div>
             {progress && <ReceiveProgressBar progress={progress} variant="full" />}
@@ -1716,7 +1716,7 @@ export default function MfnBatchReceivePage() {
   // restore the previous value on failure.
   async function saveQtyOnly(sku: string, newQty: number): Promise<{ ok: boolean; error?: string }> {
     const item = batch.get(sku);
-    if (!item || item.il_id == null) return { ok: false, error: 'No lot' };
+    if (!item || item.il_id == null) return { ok: false, error: 'Save this item before preview/push' };
 
     const t0 = Date.now();
     console.log(`[saveQtyOnly] start sku=${sku} il_id=${item.il_id} qty=${newQty}`);
