@@ -407,7 +407,7 @@ function WarningChip({ chip }: { chip: Chip }) {
     ? 'bg-red-500/10 text-red-400 border-red-500/30'
     : chip.tone === 'warn'
       ? 'bg-amber-500/10 text-amber-400/90 border-amber-500/25'
-      : 'bg-bg-elevated text-text-tertiary/70 border-border-subtle';
+      : 'bg-slate-800 text-text-tertiary/70 border-border-subtle';
   return (
     <span
       className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border tabular-nums ${cls}`}
@@ -440,7 +440,7 @@ function RowChips({ chips }: { chips: Chip[] }) {
       {shown.map(c => <WarningChip key={c.label} chip={c} />)}
       {hidden.length > 0 && (
         <span
-          className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-bg-elevated border-border-subtle text-text-tertiary"
+          className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-slate-800 border-border-subtle text-text-tertiary"
           title={hidden.map(c => c.label).join(', ')}
         >
           +{hidden.length}
@@ -458,7 +458,7 @@ function ChannelBadge({ channel }: { channel: string | null | undefined }) {
   const label = isFba ? 'FBA' : channel === 'DEFAULT' ? 'MFN' : channel;
   const cls = isFba
     ? 'bg-sky-500/10 text-sky-400 border-sky-500/30'
-    : 'bg-purple-500/10 text-purple-400 border-purple-500/30';
+    : 'bg-slate-500/10 text-slate-400 border-slate-500/30';
   return (
     <span className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border ${cls}`} title={`Fulfillment channel: ${channel}`}>
       {label}
@@ -502,14 +502,14 @@ function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: Recei
         <span className={`font-mono ${recvCls}`}>
           Recv {progress.received}/{progress.total}{progress.isOver ? ' · Over' : ''}
         </span>
-        <span className="inline-block w-12 h-1 bg-bg-elevated rounded-full overflow-hidden">
+        <span className="inline-block w-12 h-1 bg-slate-800 rounded-full overflow-hidden">
           <span className={`block h-full rounded-full transition-all ${fillCls}`} style={{ width: `${progress.pct}%` }} />
         </span>
       </span>
     );
   }
   return (
-    <div className="mb-3 px-3 py-2 bg-bg-elevated/50 rounded-lg border border-border-subtle">
+    <div className="mb-3 px-3 py-2 bg-slate-800/50 rounded-lg border border-border-subtle">
       <div className="flex items-center justify-between text-[11px] mb-1.5">
         <span className="text-text-tertiary">
           Receive progress
@@ -531,7 +531,7 @@ function ReceiveProgressBar({ progress, variant = 'compact' }: { progress: Recei
           <span className="font-mono text-text-secondary">{progress.total}</span>
         </span>
       </div>
-      <div className="h-1.5 bg-bg-elevated rounded-full overflow-hidden">
+      <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
         <div className={`h-full rounded-full transition-all ${fillCls}`} style={{ width: `${progress.pct}%` }} />
       </div>
     </div>
@@ -625,8 +625,8 @@ function InlineQtyEdit({ value, onSave, forceOpen, onOpened }: InlineQtyEditProp
           onBlur={() => commit()}
           disabled={saving}
           aria-invalid={error ? true : undefined}
-          className={`w-12 h-5 px-1.5 bg-bg-elevated rounded text-[10px] font-mono text-text-primary focus:outline-none disabled:opacity-50 border ${
-            error ? 'border-red-500/60 focus:border-red-500' : 'border-accent/40 focus:border-accent'
+          className={`w-12 h-5 px-1.5 bg-slate-800 rounded text-[10px] font-mono text-text-primary focus:outline-none disabled:opacity-50 border ${
+            error ? 'border-red-500/60 focus:border-red-500' : 'border-blue-500/40 focus:border-blue-500'
           }`}
         />
         {saving && <Loader2 size={9} className="animate-spin text-text-tertiary/70" />}
@@ -639,7 +639,7 @@ function InlineQtyEdit({ value, onSave, forceOpen, onOpened }: InlineQtyEditProp
     <button
       type="button"
       onClick={start}
-      className="font-mono inline-flex items-center hover:text-text-secondary px-1 -mx-1 rounded hover:bg-bg-elevated/50 transition-colors"
+      className="font-mono inline-flex items-center hover:text-text-secondary px-1 -mx-1 rounded hover:bg-slate-800/50 transition-colors"
       title="Click to edit received qty"
     >
       Qty {value ?? '—'}
@@ -681,22 +681,22 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
       <div
-        className="bg-bg-surface border-l border-border-subtle shadow-2xl w-[400px] max-w-full h-full overflow-y-auto"
+        className="bg-slate-800 border-l border-border-subtle shadow-2xl w-[400px] max-w-full h-full overflow-y-auto"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="sticky top-0 z-10 flex items-start gap-3 px-4 py-3 bg-bg-surface border-b border-border-subtle">
+        <div className="sticky top-0 z-10 flex items-start gap-3 px-4 py-3 bg-slate-800 border-b border-border-subtle">
           {item.image_url
-            ? <button type="button" onClick={onImageClick} className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow" title="View larger">
+            ? <button type="button" onClick={onImageClick} className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow" title="View larger">
                 <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
-            : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+            : <div className="w-14 h-14 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-text-primary leading-snug line-clamp-3" title={item.product_name ?? item.asin}>
               {item.product_name || item.asin}
             </div>
             <div className="flex items-center gap-1.5 mt-1 flex-wrap text-[10px] text-text-tertiary">
-              <span className="font-mono text-accent">{item.asin}</span>
+              <span className="font-mono text-blue-400">{item.asin}</span>
               <ChannelBadge channel={item.fulfillment_channel} />
               {liveStateBadge(item.amazon_status, item.amazon_qty)}
             </div>
@@ -802,7 +802,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
         </div>
 
         {/* Footer actions */}
-        <div className="sticky bottom-0 px-4 py-3 bg-bg-surface border-t border-border-subtle flex items-center justify-end gap-2">
+        <div className="sticky bottom-0 px-4 py-3 bg-slate-800 border-t border-border-subtle flex items-center justify-end gap-2">
           {onPrintLabel && (
             <button
               onClick={onPrintLabel}
@@ -821,7 +821,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
           )}
           <button
             onClick={onClose}
-            className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-bg-elevated text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
+            className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-slate-800 text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
           >
             Close
           </button>
@@ -834,7 +834,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
 function UpcChip({ upc }: { upc: string }) {
   return (
     <span
-      className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-mono font-medium border bg-bg-elevated text-text-tertiary border-border-subtle"
+      className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-mono font-medium border bg-slate-800 text-text-tertiary border-border-subtle"
       title="UPC"
     >
       UPC {upc}
@@ -860,27 +860,27 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
 
   return (
     <div className={`flex items-start gap-3 p-3 rounded-lg border transition-colors ${
-      inBatch ? 'border-accent/30 bg-accent/5' : 'border-border-subtle bg-bg-surface hover:bg-bg-hover'
+      inBatch ? 'border-blue-500/30 bg-blue-500/5' : 'border-border-subtle bg-slate-800 hover:bg-bg-hover'
     }`}>
       {result.image_url
         ? (
             <button
               type="button"
               onClick={onImageClick}
-              className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+              className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
               title="View larger"
             >
               <img src={result.image_url} alt="" className="w-14 h-14 object-contain block" />
             </button>
           )
-        : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+        : <div className="w-14 h-14 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
       <div className="min-w-0 flex-1">
         <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
           {result.product_name || result.asin}
         </div>
         <div className="flex items-center gap-1.5 mt-0.5">
-          <span className="text-[10px] font-mono text-accent">{result.asin}</span>
+          <span className="text-[10px] font-mono text-blue-400">{result.asin}</span>
           {liveStateBadge(result.amazon_status, result.amazon_qty)}
           {result.upc && <UpcChip upc={result.upc} />}
         </div>
@@ -902,7 +902,7 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
       <div className="flex items-center gap-1 shrink-0">
         <button
           onClick={onShowDetail}
-          className="p-1.5 rounded-md text-text-tertiary/60 hover:text-accent hover:bg-bg-elevated transition-colors"
+          className="p-1.5 rounded-md text-text-tertiary/60 hover:text-blue-400 hover:bg-slate-800 transition-colors"
           title="View details"
         >
           <Info size={13} />
@@ -912,8 +912,8 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
           disabled={inBatch}
           className={`h-8 px-2.5 rounded-md text-xs font-medium border transition-colors flex items-center gap-1 ${
             inBatch
-              ? 'border-accent/30 text-accent/60 cursor-default'
-              : 'border-accent/50 text-accent hover:bg-accent/10'
+              ? 'border-blue-500/30 text-blue-400/60 cursor-default'
+              : 'border-blue-500/50 text-blue-400 hover:bg-blue-500/10'
           }`}
         >
           {inBatch ? <CheckCircle2 size={12} /> : <Plus size={12} />}
@@ -969,12 +969,12 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
       {item.image_url
         ? (
             <button type="button" onClick={onImageClick}
-              className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+              className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
               title="View larger">
               <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
             </button>
           )
-        : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
+        : <div className="w-8 h-8 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
 
       {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
       <div className="min-w-0 flex-1">
@@ -985,7 +985,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
           </span>
         </div>
         <div className="flex items-center gap-1 mt-0.5">
-          <span className="font-mono text-[10px] text-accent/80 shrink-0">{item.asin}</span>
+          <span className="font-mono text-[10px] text-blue-400/80 shrink-0">{item.asin}</span>
           <ChannelBadge channel={item.fulfillment_channel} />
         </div>
       </div>
@@ -1040,9 +1040,9 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
 
       {/* Zone 8 — Actions (w-24 fixed, right-aligned) */}
       <div className="w-24 shrink-0 flex items-center justify-end">
-        <button onClick={onShowDetail} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="View details"><Info size={13} /></button>
-        <button onClick={onPrintLabel} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
-        <button onClick={onEdit} className="p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
+        <button onClick={onShowDetail} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="View details"><Info size={13} /></button>
+        <button onClick={onPrintLabel} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
+        <button onClick={onEdit} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
         <button onClick={onRemove} className="p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove"><X size={13} /></button>
       </div>
     </div>
@@ -1114,8 +1114,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
   const borderClass = item.save_state === 'error'
     ? 'border-red-500/30 bg-red-500/5'
     : noLot
-      ? 'border-border-subtle bg-bg-surface border-l-2 border-l-sky-500/30'
-      : 'border-border-subtle bg-bg-surface';
+      ? 'border-border-subtle bg-slate-800 border-l-2 border-l-sky-500/30'
+      : 'border-border-subtle bg-slate-800';
 
   return (
     <div className={`rounded-lg border p-3 transition-colors ${borderClass}`}>
@@ -1127,20 +1127,20 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
               <button
                 type="button"
                 onClick={onImageClick}
-                className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
+                className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
                 title="View larger"
               >
                 <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
             )
-          : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+          : <div className="w-14 h-14 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-            <span className="text-[10px] font-mono text-accent">{item.asin}</span>
+            <span className="text-[10px] font-mono text-blue-400">{item.asin}</span>
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
             <ChannelBadge channel={item.fulfillment_channel} />
             {item.amazon_qty != null && (
@@ -1163,7 +1163,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
         <button
           onClick={onShowDetail}
-          className="shrink-0 p-1 text-text-tertiary/60 hover:text-accent rounded transition-colors"
+          className="shrink-0 p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors"
           title="View details"
         >
           <Info size={14} />
@@ -1179,7 +1179,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
       {/* Profit strip */}
       {profit.listCents != null && profit.costCents != null && (
-        <div className="mb-2 px-2.5 py-1.5 bg-bg-elevated rounded-lg border border-border-subtle">
+        <div className="mb-2 px-2.5 py-1.5 bg-slate-800 rounded-lg border border-border-subtle">
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-baseline gap-2">
               <span className={`text-sm font-semibold tabular-nums ${
@@ -1270,7 +1270,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             value={item.draft_qty}
             onChange={e => onChange({ draft_qty: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); listPriceRef.current?.focus(); } }}
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-accent focus:outline-none"
+            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
@@ -1282,7 +1282,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_list_price: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); conditionRef.current?.focus(); } }}
             placeholder="0.00"
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
@@ -1292,7 +1292,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             value={item.draft_condition}
             onChange={e => onChange({ draft_condition: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); noLot ? buyCostRef.current?.focus() : binRef.current?.focus(); } }}
-            className="w-full h-8 px-2 bg-bg-elevated border border-border-default rounded-md text-xs text-text-primary focus:border-accent focus:outline-none"
+            className="w-full h-8 px-2 bg-slate-800 border border-border-default rounded-md text-xs text-text-primary focus:border-blue-500 focus:outline-none"
           >
             <option value="">— select —</option>
             {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
@@ -1313,8 +1313,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             placeholder="0.00"
             className={`w-full h-8 px-2.5 rounded-md text-sm font-mono placeholder:text-text-tertiary focus:outline-none ${
               noLot
-                ? 'bg-bg-elevated border border-border-default text-text-primary focus:border-accent'
-                : 'bg-bg-elevated/40 border border-border-subtle text-text-tertiary cursor-default'
+                ? 'bg-slate-800 border border-border-default text-text-primary focus:border-blue-500'
+                : 'bg-slate-800/40 border border-border-subtle text-text-tertiary cursor-default'
             }`}
           />
         </div>
@@ -1327,7 +1327,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_bin: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingEstRef.current?.focus(); } }}
             placeholder="e.g. S1-B3"
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
@@ -1339,7 +1339,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_shipping_est: e.target.value })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingTemplateRef.current?.focus(); } }}
             placeholder="8.00"
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
       </div>
@@ -1347,11 +1347,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       <div className="mb-2">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
         {amazonTemplates === null ? (
-          <div className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
+          <div className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
             Syncing Amazon templates…
           </div>
         ) : amazonTemplates.length === 0 ? (
-          <div className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
+          <div className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
             No templates found — sync in Settings
           </div>
         ) : (
@@ -1360,7 +1360,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             value={resolveShippingTemplate(item.draft_shipping_template, amazonTemplates)?.key ?? item.draft_shipping_template}
             onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); primaryActionRef.current?.click(); } }}
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-accent focus:outline-none appearance-none cursor-pointer"
+            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-blue-500 focus:outline-none appearance-none cursor-pointer"
           >
             <option value="">Select template…</option>
             {/* Unknown stored values (old display names not in Amazon list) surface as a selectable option so nothing looks blank */}
@@ -1388,7 +1388,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             ref={primaryActionRef}
             onClick={onCreateLot}
             disabled={item.create_lot_state === 'creating'}
-            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
+            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
           >
             {item.create_lot_state === 'creating'
               ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
@@ -1406,7 +1406,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             ref={primaryActionRef}
             onClick={onSave}
             disabled={item.save_state === 'saving'}
-            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
+            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
           >
             {item.save_state === 'saving'
               ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
@@ -1883,9 +1883,9 @@ export default function MfnBatchReceivePage() {
     : batchArray.filter(predicateFor[receiveFilter]);
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-slate-900">
       {/* Workbench header — title, actions, search (visually unified) */}
-      <div className="flex items-center justify-between px-4 py-2 bg-bg-elevated border border-border-subtle rounded-t-lg border-b border-border-subtle/60">
+      <div className="flex items-center justify-between px-4 py-2 bg-slate-800 border border-border-subtle rounded-t-lg border-b border-border-subtle/60">
         <div className="flex items-center gap-3 min-w-0">
           <h1 className="text-sm font-semibold text-text-primary shrink-0">MFN Receive</h1>
           {batchArray.length > 0 && (
@@ -1912,7 +1912,7 @@ export default function MfnBatchReceivePage() {
               </button>
             )}
             {hasUnsaved && (
-              <button onClick={saveAll} disabled={savingAll} className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90 transition-colors disabled:opacity-50">
+              <button onClick={saveAll} disabled={savingAll} className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors disabled:opacity-50">
                 {savingAll ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                 {savingAll ? 'Saving…' : `Save All (${saveable.length})`}
               </button>
@@ -1925,7 +1925,7 @@ export default function MfnBatchReceivePage() {
       </div>
 
       {/* Search — lower half of unified header block */}
-      <div ref={searchContainerRef} className="relative bg-bg-elevated border-x border-b border-border-subtle rounded-b-lg mb-3">
+      <div ref={searchContainerRef} className="relative bg-slate-800 border-x border-b border-border-subtle rounded-b-lg mb-3">
         <div className="relative px-3 py-2">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
           {searching && (
@@ -1966,13 +1966,13 @@ export default function MfnBatchReceivePage() {
               setResults([]);
             }}
             placeholder="Scan barcode, ASIN, MSKU, or title…"
-            className="w-full h-11 pl-9 pr-9 bg-bg-elevated border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            className="w-full h-11 pl-9 pr-9 bg-slate-800 border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
 
         {/* Dropdown — visible when query ≥ 2 chars */}
         {searchOpen && query.trim().length >= 2 && (
-          <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-bg-surface border border-border-default rounded-lg shadow-xl overflow-hidden">
+          <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-slate-800 border border-border-default rounded-lg shadow-xl overflow-hidden">
             {/* Helper / status line */}
             <div className="px-3 py-1.5 border-b border-border-subtle">
               <p className="text-xs text-text-tertiary">
@@ -2036,8 +2036,8 @@ export default function MfnBatchReceivePage() {
                     ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
                     : f.key === 'complete'
                       ? 'bg-green-500/15 text-green-400 border-green-500/40'
-                      : 'bg-accent/15 text-accent border-accent/40'
-                : 'bg-bg-elevated text-text-tertiary border-border-subtle hover:text-text-secondary hover:bg-bg-hover';
+                      : 'bg-blue-500/15 text-blue-400 border-blue-500/40'
+                : 'bg-slate-800 text-text-tertiary border-border-subtle hover:text-text-secondary hover:bg-bg-hover';
               return (
                 <button
                   key={f.key}
@@ -2114,7 +2114,7 @@ export default function MfnBatchReceivePage() {
           <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border-subtle rounded-xl py-10">
             {!(searchOpen && query.trim().length >= 2) && (
               <>
-                <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-bg-elevated border border-border-subtle mb-4">
+                <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-slate-800 border border-border-subtle mb-4">
                   <ScanBarcode size={28} className="text-text-tertiary opacity-60" />
                 </div>
                 <p className="text-sm font-semibold text-text-secondary">Scan or search to start receiving</p>
@@ -2147,7 +2147,7 @@ export default function MfnBatchReceivePage() {
                   <button
                     type="button"
                     onClick={() => setReceiveFilter('all')}
-                    className="mt-2 text-xs text-accent hover:underline"
+                    className="mt-2 text-xs text-blue-400 hover:underline"
                   >
                     Show all
                   </button>
@@ -2233,7 +2233,7 @@ export default function MfnBatchReceivePage() {
           onClick={() => setLightbox(null)}
         >
           <div
-            className="bg-bg-surface border border-border-subtle rounded-xl shadow-2xl max-w-[560px] w-full overflow-hidden"
+            className="bg-slate-800 border border-border-subtle rounded-xl shadow-2xl max-w-[560px] w-full overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-start justify-between px-4 py-3 border-b border-border-subtle gap-3">
@@ -2242,7 +2242,7 @@ export default function MfnBatchReceivePage() {
                   {lightbox.title}
                 </div>
                 <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-text-tertiary">
-                  {lightbox.asin && <span className="text-accent/80">{lightbox.asin}</span>}
+                  {lightbox.asin && <span className="text-blue-400/80">{lightbox.asin}</span>}
                   <span className="truncate" title={lightbox.sku}>{lightbox.sku}</span>
                 </div>
               </div>
@@ -2254,7 +2254,7 @@ export default function MfnBatchReceivePage() {
                 <X size={16} />
               </button>
             </div>
-            <div className="bg-bg-elevated flex items-center justify-center p-4">
+            <div className="bg-slate-800 flex items-center justify-center p-4">
               <img
                 src={lightbox.src}
                 alt={lightbox.title}
