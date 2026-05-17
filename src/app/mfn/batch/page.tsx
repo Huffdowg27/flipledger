@@ -68,16 +68,30 @@ const CONDITIONS = [
   'Used - Acceptable',
 ];
 
-const DEFAULT_SHIPPING_TEMPLATE = 'DEFAULT MFN USE THIS ONE';
+interface ShippingTemplate { key: string; name: string; }
 
-const SHIPPING_TEMPLATES = [
-  'DEFAULT MFN USE THIS ONE',
-  'DO NOT USE SSA ONLY',
-  'Over 1lb 12.99 SSA',
-  'SSA (Jason)',
-  'Under 1lb 7.99',
-  'Video Games $5.99',
-] as const;
+// Match a stored value (which may be an old display name OR a current key) to
+// a template entry by checking key first, then name. Returns null if unknown.
+function resolveShippingTemplate(value: string, templates: ShippingTemplate[] | null): ShippingTemplate | null {
+  if (!value || !templates) return null;
+  return templates.find(t => t.key === value || t.name === value) ?? null;
+}
+
+// Return the user-facing label for a stored value. If the value matches a
+// known template (by key or name), returns the template's name. Unknown values
+// are returned as-is so nothing is silently lost.
+function displayShippingTemplate(value: string, templates: ShippingTemplate[] | null): string {
+  if (!value) return '';
+  return resolveShippingTemplate(value, templates)?.name ?? value;
+}
+
+// Return the canonical Amazon key to write to the DB / PATCH body. If the
+// value resolves to a known template, returns its key (normalizing old display
+// names → keys). Unknown values are passed through unchanged.
+function storageShippingTemplate(value: string, templates: ShippingTemplate[] | null): string {
+  if (!value) return '';
+  return resolveShippingTemplate(value, templates)?.key ?? value;
+}
 
 // ---------------------------------------------------------------------------
 // Label printing
@@ -141,7 +155,7 @@ function makeBatchItem(r: SearchResult): BatchItem {
     draft_condition:         r.condition ?? '',
     draft_list_price:        priceCents != null ? (priceCents / 100).toFixed(2) : '',
     draft_buy_price:         costCents   != null ? (costCents  / 100).toFixed(2) : '',
-    draft_shipping_template: r.merchant_shipping_group_name ?? DEFAULT_SHIPPING_TEMPLATE,
+    draft_shipping_template: r.merchant_shipping_group_name ?? '',
     draft_shipping_est:      '8.00',
     save_state:              'idle',
     save_error:              null,
@@ -651,9 +665,10 @@ interface ItemDetailDrawerProps {
   onPrintLabel?: () => void;
   onEdit?: () => void;
   onClose: () => void;
+  amazonTemplates?: ShippingTemplate[] | null;
 }
 
-function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }: ItemDetailDrawerProps) {
+function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, amazonTemplates }: ItemDetailDrawerProps) {
   const inBatch = isBatchItem(item);
   const progress = inBatch ? getReceiveProgress(item) : null;
   const profit   = inBatch ? calcProfit(item) : null;
@@ -662,7 +677,8 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }:
   // Saved-field fallback display values (prefer persisted, then drafts).
   const condDisplay = (item.condition || (inBatch ? item.draft_condition.trim() : '')) || null;
   const binDisplay  = (item.bin_location || (inBatch ? item.draft_bin.trim() : '')) || null;
-  const tmplDisplay = (item.merchant_shipping_group_name || (inBatch ? item.draft_shipping_template.trim() : '')) || null;
+  const rawTmpl     = item.merchant_shipping_group_name || (inBatch ? item.draft_shipping_template.trim() : '');
+  const tmplDisplay = rawTmpl ? displayShippingTemplate(rawTmpl, amazonTemplates ?? null) : null;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/40" onClick={onClose}>
@@ -1039,9 +1055,10 @@ interface BatchItemCardProps {
   onShowDetail: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
+  amazonTemplates: ShippingTemplate[] | null;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused, amazonTemplates }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -1319,19 +1336,32 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
       <div className="mb-3">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
-        <select
-          ref={shippingTemplateRef}
-          value={SHIPPING_TEMPLATES.includes(item.draft_shipping_template as typeof SHIPPING_TEMPLATES[number])
-            ? item.draft_shipping_template
-            : DEFAULT_SHIPPING_TEMPLATE}
-          onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
-          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveRef.current?.click(); } }}
-          className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-accent focus:outline-none appearance-none cursor-pointer"
-        >
-          {SHIPPING_TEMPLATES.map(t => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
+        {amazonTemplates === null ? (
+          <div className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
+            Syncing Amazon templates…
+          </div>
+        ) : amazonTemplates.length === 0 ? (
+          <div className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
+            No templates found — sync in Settings
+          </div>
+        ) : (
+          <select
+            ref={shippingTemplateRef}
+            value={resolveShippingTemplate(item.draft_shipping_template, amazonTemplates)?.key ?? item.draft_shipping_template}
+            onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveRef.current?.click(); } }}
+            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-accent focus:outline-none appearance-none cursor-pointer"
+          >
+            <option value="">Select template…</option>
+            {/* Unknown stored values (old display names not in Amazon list) surface as a selectable option so nothing looks blank */}
+            {item.draft_shipping_template && !resolveShippingTemplate(item.draft_shipping_template, amazonTemplates) && (
+              <option value={item.draft_shipping_template}>Stored: {item.draft_shipping_template} (not synced)</option>
+            )}
+            {amazonTemplates.map(t => (
+              <option key={t.key} value={t.key}>{t.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
       {/* Error message */}
@@ -1411,9 +1441,18 @@ export default function MfnBatchReceivePage() {
   const [previewRows, setPreviewRows]       = useState<ActivationPreviewRow[]>([]);
   const [previewTemplate, setPreviewTemplate] = useState('');
   const [previewError, setPreviewError]     = useState<string | null>(null);
+  const [amazonTemplates, setAmazonTemplates] = useState<ShippingTemplate[] | null>(null);
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
+
+  // Fetch Amazon shipping templates once on mount (cached 24h server-side)
+  useEffect(() => {
+    fetch('/api/sync/shipping-templates')
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then(d => setAmazonTemplates(Array.isArray(d.templates) ? d.templates : []))
+      .catch(() => setAmazonTemplates([]));
+  }, []);
 
   // Close search dropdown when clicking outside the search container
   useEffect(() => {
@@ -1516,7 +1555,8 @@ export default function MfnBatchReceivePage() {
     if (item.draft_bin.trim())                    body.binLocation      = item.draft_bin.trim();
     if (item.draft_condition.trim())              body.condition        = item.draft_condition.trim();
     if (Number.isFinite(priceNum) && priceNum > 0) body.listPriceCents  = Math.round(priceNum * 100);
-    if (item.draft_shipping_template.trim())       body.merchantShippingGroupName = item.draft_shipping_template.trim();
+    const templateStorage = storageShippingTemplate(item.draft_shipping_template.trim(), amazonTemplates);
+    if (templateStorage)                           body.merchantShippingGroupName = templateStorage;
     if (Number.isFinite(qtyNum) && qtyNum > 0) { body.markReceived = true; body.markInspected = true; }
 
     try {
@@ -1552,8 +1592,9 @@ export default function MfnBatchReceivePage() {
         if (Number.isFinite(priceNum) && priceNum > 0) {
           mirror.il_list_price_cents = Math.round(priceNum * 100);
         }
-        if (item.draft_shipping_template.trim()) {
-          mirror.merchant_shipping_group_name = item.draft_shipping_template.trim();
+        if (templateStorage) {
+          mirror.merchant_shipping_group_name = templateStorage;
+          mirror.draft_shipping_template      = templateStorage;
         }
         updateBatchItem(sku, mirror);
       }
@@ -1598,7 +1639,8 @@ export default function MfnBatchReceivePage() {
     if (Number.isFinite(priceNum) && priceNum > 0) body.listPriceCents = Math.round(priceNum * 100);
     if (item.draft_condition.trim())               body.condition      = item.draft_condition.trim();
     if (item.draft_bin.trim())                     body.binLocation    = item.draft_bin.trim();
-    if (item.draft_shipping_template.trim())       body.merchantShippingGroupName = item.draft_shipping_template.trim();
+    const templateStorageLot = storageShippingTemplate(item.draft_shipping_template.trim(), amazonTemplates);
+    if (templateStorageLot)                        body.merchantShippingGroupName = templateStorageLot;
 
     try {
       const res = await fetch('/api/data/inventory-lots/create-mfn-local-lot', {
@@ -2121,6 +2163,7 @@ export default function MfnBatchReceivePage() {
                   onShowDetail={() => setDetailDrawer({ sku: item.sku, source: 'batch' })}
                   focusQty={focusQtySku === item.sku}
                   onQtyFocused={() => setFocusQtySku(null)}
+                  amazonTemplates={amazonTemplates}
                 />
               ))}
             </div>
@@ -2168,6 +2211,7 @@ export default function MfnBatchReceivePage() {
               updateBatchItem(di.sku, { save_state: 'idle', save_error: null });
               setDetailDrawer(null);
             } : undefined}
+            amazonTemplates={amazonTemplates}
           />
         );
       })()}
