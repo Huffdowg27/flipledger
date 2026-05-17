@@ -859,24 +859,24 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
         <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
           {result.product_name || result.asin}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+        <div className="flex items-center gap-1.5 mt-0.5">
           <span className="text-[10px] font-mono text-accent">{result.asin}</span>
           {liveStateBadge(result.amazon_status, result.amazon_qty)}
-          <ChannelBadge channel={result.fulfillment_channel} />
-          {result.amazon_qty != null && (
-            <span className="text-[10px] text-text-tertiary">Amz: {result.amazon_qty}</span>
-          )}
           {result.upc && <UpcChip upc={result.upc} />}
-          {chipsForResult(result).map(c => <WarningChip key={c.label} chip={c} />)}
         </div>
-        <div className="flex items-center gap-2 mt-0.5">
-          {displayCost != null && (
-            <span className="text-[10px] text-text-tertiary">Cost: {formatCurrency(displayCost)}</span>
-          )}
-          {displayPrice != null && (
-            <span className="text-[10px] text-text-tertiary">List: {formatCurrency(displayPrice)}</span>
-          )}
+        <div className="mt-0.5">
+          <span className="font-mono text-[9px] text-text-tertiary/50 truncate block" title={result.sku}>{result.sku}</span>
         </div>
+        {(displayCost != null || displayPrice != null) && (
+          <div className="flex items-center gap-2 mt-0.5">
+            {displayCost != null && (
+              <span className="text-[10px] text-text-tertiary">Cost: {formatCurrency(displayCost)}</span>
+            )}
+            {displayPrice != null && (
+              <span className="text-[10px] text-text-tertiary">List: {formatCurrency(displayPrice)}</span>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-1 shrink-0">
@@ -2059,16 +2059,20 @@ export default function MfnBatchReceivePage() {
       <div className="flex-1 flex flex-col min-h-0">
         {batchArray.length === 0 ? (
           <div className="flex-1 flex flex-col items-center justify-center text-center border border-dashed border-border-subtle rounded-xl py-10">
-            <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-bg-elevated border border-border-subtle mb-4">
-              <ScanBarcode size={28} className="text-text-tertiary opacity-60" />
-            </div>
-            <p className="text-sm font-semibold text-text-secondary">Scan or search to start receiving</p>
-            <p className="text-xs text-text-tertiary mt-1.5 max-w-[240px]">
-              Use the search bar above for UPC, ASIN, MSKU, or title.
-            </p>
-            <p className="text-[11px] text-text-tertiary/60 mt-3 font-mono">
-              Enter adds a single match
-            </p>
+            {!(searchOpen && query.trim().length >= 2) && (
+              <>
+                <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-bg-elevated border border-border-subtle mb-4">
+                  <ScanBarcode size={28} className="text-text-tertiary opacity-60" />
+                </div>
+                <p className="text-sm font-semibold text-text-secondary">Scan or search to start receiving</p>
+                <p className="text-xs text-text-tertiary mt-1.5 max-w-[240px]">
+                  Use the search bar above for UPC, ASIN, MSKU, or title.
+                </p>
+                <p className="text-[11px] text-text-tertiary/60 mt-3 font-mono">
+                  Enter adds a single match
+                </p>
+              </>
+            )}
           </div>
           ) : (
             <>
