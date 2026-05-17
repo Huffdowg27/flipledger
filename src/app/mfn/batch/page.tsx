@@ -383,7 +383,7 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
 function chipsForBatchItem(item: BatchItem): Chip[] {
   const chips: Chip[] = [];
   if (item.il_id != null && !item.inspected_at) {
-    chips.push({ label: 'Not inspected', tone: 'blocker', title: 'Inspection required before pushing to Amazon' });
+    chips.push({ label: 'Not inspected', tone: 'warn', title: 'Inspection required before pushing to Amazon' });
   }
   // List price is a true push blocker — surface it as red.
   const priceNum = parseFloat(item.draft_list_price);
