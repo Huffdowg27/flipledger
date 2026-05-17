@@ -1,13 +1,15 @@
 # Claude Report — MFN Visual Polish + COGS Audit Checkpoint
 
-_Last updated: 2026-05-17. Covers commits 28f2efa through 8e0fe05._
+_Last updated: 2026-05-17. Covers commits 28f2efa through 09991e9._
 
 ---
 
 ## ⚠️ Critical Warnings for Next Agent
 
-1. **COGS repair has NOT been executed.** Plan documents exist (see below) but
-   no data has been touched. Do not assume COGS numbers are correct.
+1. **COGS canary repair IS complete (5 SKUs, -$641.95).** The remaining
+   **114 tier 1 SKUs have NOT been repaired yet.** Do not re-run the canary.
+   Do not assume all COGS numbers are correct — 114 SKUs still have
+   `cogs_per_unit = 0` on overflow orders.
 
 2. **Keep MFN UI work strictly separate from COGS/P&L work.** These are two
    independent threads. Do not mix them in a single task or commit.
@@ -64,33 +66,51 @@ _Last updated: 2026-05-17. Covers commits 28f2efa through 8e0fe05._
 
 ---
 
-## Thread B — COGS Gap Audit (PLAN ONLY — NO REPAIR EXECUTED)
+## Thread B — COGS Gap Audit + Partial Repair
 
-### Commits
+### Commits (newest first)
 | Commit | Summary |
 |---|---|
+| `09991e9` | Canary execution record — 5 SKUs repaired, -$641.95 verified |
 | `4621326` | COGS canary repair plan (5-SKU dry-run approach) |
-| `dcdbc0d` | Tier 1 COGS gap dry-run repair plan |
-| `bd62fe7` | Read-only COGS gap audit |
+| `dcdbc0d` | Tier 1 COGS gap dry-run repair plan (119 SKUs, -$5,321.86) |
+| `bd62fe7` | Read-only COGS gap audit (120 affected SKUs, $5,361 missing COGS) |
 
-### Status
-- A read-only COGS gap audit was run. A ~$20 discrepancy vs InventoryLab was identified.
-- A tiered repair plan and a 5-SKU canary repair plan were committed as docs.
-- **No data has been modified.** `data/flipledger.db` is untouched by these commits.
-- The canary repair (5-SKU sample) is the next approved step, but has NOT been run yet.
+### Status — canary COMPLETE, bulk repair PENDING
 
-### Before running the canary repair, next agent must
-1. Read the plan docs in `docs/agent-control/` (the COGS audit and repair plan files).
-2. Back up `data/flipledger.db` first.
-3. Run the dry-run/canary on 5 SKUs only — verify P&L delta before expanding.
-4. Do NOT touch MFN UI code in the same session.
+**Canary (DONE):**
+- 5 SKUs repaired: `LV_01BBL_040126_14.08_30_10_P_411`, `LV_01FAFLIP_033026_79.99_141_10_P_375`, `LV_04WAL_040726_19.97_37_40_P_457`, `ZTPC_02DYS_022426_1.99_18_10_P_187`, `1070145738`
+- `inventory_ledger.quantity` updated for ledger ids `44704, 44733, 44633, 44827, 44585`
+- FIFO run scoped to those 5 SKUs only — 23 `order_items` corrected
+- 16 previously-correct rows verified unchanged (zero regressions)
+- Actual P&L delta: **-$641.95** (matched plan prediction exactly)
+- `quantity_remaining` stayed 0 on all 5 lots
+- DB backup at: `data/flipledger.db.bak-pre-canary-20260517`
+- Full record: `docs/audits/cogs-gap-canary-execution-2026-05-17.md`
+
+**Remaining 114 tier 1 SKUs (NOT YET REPAIRED):**
+- Estimated remaining P&L delta: **-$4,679.91**
+- Full candidate list with exact `ledger_id` and `proposed_quantity` per row:
+  `docs/audits/cogs-gap-tier1-repair-plan-2026-05-17.csv` (status=tier1, excluding the 5 canary SKUs)
+- Approved approach when ready:
+  1. Pre-repair snapshot of all 114 ledger rows
+  2. Single `BEGIN`/`COMMIT` with 114 `UPDATE inventory_ledger SET quantity = <proposed_quantity> WHERE id = <ledger_id>`
+  3. 114 scoped `POST /api/data/fifo?sku=<sku>` calls — NOT a full recalc
+  4. Post-repair verification + execution record committed before declaring done
+
+### Do NOT
+- Re-run the canary (already done)
+- Run `POST /api/data/fifo` without a `?sku=` param (full recalc is harder to audit)
+- Touch MFN UI code in the same session as COGS repair
 
 ---
 
 ## Guardrails Confirmed (as of this session)
 
 - SP-API writes: none made
-- Accounting / P&L / COGS / FIFO: untouched
 - Orders / FBA / labels: untouched
 - Schema: untouched
-- `inventory_ledger.quantity_remaining`: untouched
+- `inventory_ledger.quantity_remaining`: untouched (FIFO left it at 0 for all 5 canary lots)
+- `inventory_ledger.quantity`: **updated for 5 canary lots only** (ids 44704, 44733, 44633, 44827, 44585)
+- `order_items.cogs_per_unit`: **updated for 23 canary order_items only** (by scoped FIFO)
+- All other `inventory_ledger` and `order_items` rows: untouched
