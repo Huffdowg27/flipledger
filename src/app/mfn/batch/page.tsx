@@ -254,8 +254,8 @@ function chipsForResult(r: SearchResult): Chip[] {
   return chips;
 }
 
-type WarnLabel = 'Not inspected' | 'Stale status' | 'No price' | 'Fee unknown' | 'No condition';
-const WARN_LABELS: WarnLabel[] = ['Not inspected', 'Stale status', 'No price', 'Fee unknown', 'No condition'];
+type WarnLabel = 'Not inspected' | 'Stale status' | 'No price' | 'Fee unknown';
+const WARN_LABELS: WarnLabel[] = ['Not inspected', 'Stale status', 'No price', 'Fee unknown'];
 
 interface BatchSummary {
   total: number;
@@ -313,13 +313,12 @@ function isReadyToPush(item: BatchItem): boolean {
 }
 
 // Needs work = unsaved (needs a Save click before Print All / Preview &
-// Push will include it), OR any hard blocker chip (Not inspected / No price),
-// OR missing operational field chip (No condition).
+// Push will include it), OR any hard blocker chip (Not inspected / No price).
+// Missing condition is soft metadata — does not trigger needs-work.
 function needsWork(item: BatchItem): boolean {
   if (item.save_state !== 'saved') return true;
   const chips = chipsForBatchItem(item);
   if (chips.some(c => c.tone === 'blocker')) return true;
-  if (chips.some(c => c.label === 'No condition')) return true;
   return false;
 }
 
@@ -335,7 +334,7 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
   let saved = 0;
   const warnCounts: Record<WarnLabel, number> = {
     'Not inspected': 0, 'Stale status': 0,
-    'No price': 0, 'Fee unknown': 0, 'No condition': 0,
+    'No price': 0, 'Fee unknown': 0,
   };
 
   for (const item of items) {
@@ -398,7 +397,7 @@ function chipsForBatchItem(item: BatchItem): Chip[] {
     chips.push({ label: 'Fee unknown', tone: 'info', title: 'No cached referral fee — ROI excludes Amazon fee' });
   }
   const condSet = !!(item.condition || item.draft_condition.trim());
-  if (!condSet) chips.push({ label: 'No condition', tone: 'warn', title: 'Condition not set' });
+  if (!condSet) chips.push({ label: 'No condition', tone: 'info', title: 'Condition not set' });
   return chips;
 }
 
