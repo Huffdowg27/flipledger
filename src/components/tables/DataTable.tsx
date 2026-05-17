@@ -13,15 +13,19 @@ import {
 } from '@tanstack/react-table';
 import { ArrowUpDown, ArrowUp, ArrowDown, Search, ChevronLeft, ChevronRight } from 'lucide-react';
 
+export type DataTableDensity = 'comfortable' | 'compact';
+
 interface DataTableProps<T> {
   data: T[];
   columns: ColumnDef<T, any>[];
   searchPlaceholder?: string;
   pageSize?: number;
   footerRow?: Record<string, React.ReactNode>;
+  density?: DataTableDensity;
 }
 
-export default function DataTable<T>({ data, columns, searchPlaceholder = 'Search...', pageSize = 50, footerRow }: DataTableProps<T>) {
+export default function DataTable<T>({ data, columns, searchPlaceholder = 'Search...', pageSize = 50, footerRow, density = 'comfortable' }: DataTableProps<T>) {
+  const cellPadY = density === 'compact' ? 'py-1.5' : 'py-2.5';
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState('');
 
@@ -87,7 +91,7 @@ export default function DataTable<T>({ data, columns, searchPlaceholder = 'Searc
                   <th
                     key={header.id}
                     onClick={header.column.getCanSort() ? header.column.getToggleSortingHandler() : undefined}
-                    className={`px-3 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle ${
+                    className={`px-3 ${cellPadY} text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary border-b border-border-subtle ${
                       header.column.getCanSort() ? 'cursor-pointer select-none hover:text-text-secondary' : ''
                     }`}
                     style={{ width: header.getSize() !== 150 ? header.getSize() : undefined }}
@@ -115,7 +119,7 @@ export default function DataTable<T>({ data, columns, searchPlaceholder = 'Searc
             {table.getRowModel().rows.map(row => (
               <tr key={row.id} className="border-b border-border-subtle hover:bg-bg-hover transition-colors">
                 {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} className="px-3 py-2.5 text-sm">
+                  <td key={cell.id} className={`px-3 ${cellPadY} text-sm`}>
                     {flexRender(cell.column.columnDef.cell, cell.getContext())}
                   </td>
                 ))}
@@ -126,7 +130,7 @@ export default function DataTable<T>({ data, columns, searchPlaceholder = 'Searc
             <tfoot>
               <tr className="bg-bg-elevated border-t-2 border-border-strong sticky bottom-0">
                 {table.getHeaderGroups()[0].headers.map(header => (
-                  <td key={header.id} className="px-3 py-2.5 text-sm font-semibold">
+                  <td key={header.id} className={`px-3 ${cellPadY} text-sm font-semibold`}>
                     {footerRow[header.id] || ''}
                   </td>
                 ))}
