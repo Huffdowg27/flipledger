@@ -244,19 +244,18 @@ function calcProfit(item: BatchItem): ProfitCalc {
 // Warning chips — compact per-item status indicators for the batch row
 // ---------------------------------------------------------------------------
 
-type ChipTone = 'blocker' | 'warn';
+type ChipTone = 'blocker' | 'warn' | 'info';
 interface Chip { label: string; tone: ChipTone; title?: string }
 
 function chipsForResult(r: SearchResult): Chip[] {
   const chips: Chip[] = [];
-  if (r.il_id == null) chips.push({ label: 'No lot', tone: 'blocker', title: 'No local inventory_ledger lot — create one to make this push-eligible' });
   if (r.amazon_status && r.amazon_status !== 'Active') chips.push({ label: 'Stale status', tone: 'warn', title: `Local Amazon status is "${r.amazon_status}" — may be out of sync with Seller Central` });
-  if (r.referral_fee_cents == null) chips.push({ label: 'Fee unknown', tone: 'warn', title: 'No cached referral fee — ROI estimate excludes Amazon fee' });
+  if (r.referral_fee_cents == null) chips.push({ label: 'Fee unknown', tone: 'info', title: 'No cached referral fee — ROI estimate excludes Amazon fee' });
   return chips;
 }
 
-type WarnLabel = 'No lot' | 'Not inspected' | 'Stale status' | 'No price' | 'Fee unknown' | 'No bin' | 'No condition';
-const WARN_LABELS: WarnLabel[] = ['No lot', 'Not inspected', 'Stale status', 'No price', 'Fee unknown', 'No bin', 'No condition'];
+type WarnLabel = 'Not inspected' | 'Stale status' | 'No price' | 'Fee unknown' | 'No condition';
+const WARN_LABELS: WarnLabel[] = ['Not inspected', 'Stale status', 'No price', 'Fee unknown', 'No condition'];
 
 interface BatchSummary {
   total: number;
@@ -299,7 +298,7 @@ function isComplete(item: BatchItem): boolean {
   return p != null && p.pct >= 100 && !p.isOver;
 }
 
-// Ready to push = saved + has local lot + quantity_received > 0 +
+// Ready to push = saved + has a saved record + quantity_received > 0 +
 // inspected_at + valid price. Stale local Amazon status does NOT
 // disqualify. A 100%-received row is still Ready (overlaps with Complete).
 function isReadyToPush(item: BatchItem): boolean {
@@ -314,13 +313,13 @@ function isReadyToPush(item: BatchItem): boolean {
 }
 
 // Needs work = unsaved (needs a Save click before Print All / Preview &
-// Push will include it), OR any hard blocker chip (No lot / Not inspected
-// / No price), OR missing operational field chip (No bin / No condition).
+// Push will include it), OR any hard blocker chip (Not inspected / No price),
+// OR missing operational field chip (No condition).
 function needsWork(item: BatchItem): boolean {
   if (item.save_state !== 'saved') return true;
   const chips = chipsForBatchItem(item);
   if (chips.some(c => c.tone === 'blocker')) return true;
-  if (chips.some(c => c.label === 'No bin' || c.label === 'No condition')) return true;
+  if (chips.some(c => c.label === 'No condition')) return true;
   return false;
 }
 
@@ -335,8 +334,8 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
   let priceOrCostIncomplete = false;
   let saved = 0;
   const warnCounts: Record<WarnLabel, number> = {
-    'No lot': 0, 'Not inspected': 0, 'Stale status': 0,
-    'No price': 0, 'Fee unknown': 0, 'No bin': 0, 'No condition': 0,
+    'Not inspected': 0, 'Stale status': 0,
+    'No price': 0, 'Fee unknown': 0, 'No condition': 0,
   };
 
   for (const item of items) {
@@ -384,24 +383,20 @@ function summarizeBatch(items: BatchItem[]): BatchSummary {
 
 function chipsForBatchItem(item: BatchItem): Chip[] {
   const chips: Chip[] = [];
-  if (item.il_id == null) {
-    chips.push({ label: 'No lot', tone: 'blocker', title: 'No local lot yet — create one before save/push' });
-  } else if (!item.inspected_at) {
+  if (item.il_id != null && !item.inspected_at) {
     chips.push({ label: 'Not inspected', tone: 'blocker', title: 'Inspection required before pushing to Amazon' });
   }
   // List price is a true push blocker — surface it as red.
   const priceNum = parseFloat(item.draft_list_price);
-  if (!Number.isFinite(priceNum) || priceNum <= 0) {
+  if (item.il_id != null && (!Number.isFinite(priceNum) || priceNum <= 0)) {
     chips.push({ label: 'No price', tone: 'blocker', title: 'No list price set — required to push' });
   }
   if (item.amazon_status && item.amazon_status !== 'Active') {
     chips.push({ label: 'Stale status', tone: 'warn', title: `Local Amazon status is "${item.amazon_status}" — push will still attempt qty/price update` });
   }
   if (item.referral_fee_cents == null) {
-    chips.push({ label: 'Fee unknown', tone: 'warn', title: 'No cached referral fee — ROI excludes Amazon fee' });
+    chips.push({ label: 'Fee unknown', tone: 'info', title: 'No cached referral fee — ROI excludes Amazon fee' });
   }
-  const binSet = !!(item.bin_location || item.draft_bin.trim());
-  if (!binSet) chips.push({ label: 'No bin', tone: 'warn', title: 'Bin location not set' });
   const condSet = !!(item.condition || item.draft_condition.trim());
   if (!condSet) chips.push({ label: 'No condition', tone: 'warn', title: 'Condition not set' });
   return chips;
@@ -410,7 +405,9 @@ function chipsForBatchItem(item: BatchItem): Chip[] {
 function WarningChip({ chip }: { chip: Chip }) {
   const cls = chip.tone === 'blocker'
     ? 'bg-red-500/10 text-red-400 border-red-500/30'
-    : 'bg-amber-500/10 text-amber-400/90 border-amber-500/25';
+    : chip.tone === 'warn'
+      ? 'bg-amber-500/10 text-amber-400/90 border-amber-500/25'
+      : 'bg-bg-elevated text-text-tertiary/70 border-border-subtle';
   return (
     <span
       className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border tabular-nums ${cls}`}
@@ -428,13 +425,14 @@ function BatchItemChips({ chips }: { chips: Chip[] }) {
 }
 
 // Compact chip strip for saved-row Zone 7.
-// Always shows all blockers (No lot / Not inspected / No price) first,
+// Always shows all blockers (Not inspected / No price) first,
 // then up to 1 warn chip, then a "+N" overflow badge listing hidden labels.
 // Full chips are still shown in expanded cards and the detail drawer.
 function RowChips({ chips }: { chips: Chip[] }) {
   if (chips.length === 0) return null;
   const blockers = chips.filter(c => c.tone === 'blocker');
   const warns    = chips.filter(c => c.tone === 'warn');
+  // info chips are estimate caveats — omit from compact row view
   const shown    = [...blockers, ...warns.slice(0, 1)];
   const hidden   = warns.slice(1);
   return (
@@ -965,7 +963,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
   const showMarkInspected = item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded border border-green-500/20 bg-green-500/5">
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded border border-border-subtle border-l-2 border-l-green-500/40">
 
       {/* Zone 1 — image (32px fixed) */}
       {item.image_url
@@ -1030,7 +1028,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
         {showMarkInspected && (
           <button type="button" onClick={onMarkInspected} disabled={item.marking_inspected}
             className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-            title="Marks this local lot inspected. Does not update Amazon.">
+            title="Marks this item inspected. Does not update Amazon.">
             {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
             Mark inspected
           </button>
@@ -1118,7 +1116,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       : 'border-border-subtle bg-bg-surface';
 
   return (
-    <div className={`rounded-lg border p-4 transition-colors ${borderClass}`}>
+    <div className={`rounded-lg border p-3 transition-colors ${borderClass}`}>
 
       {/* Header */}
       <div className="flex items-start gap-3 mb-3">
@@ -1177,10 +1175,10 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         </button>
       </div>
 
-      {/* No-lot banner */}
+      {/* New item helper */}
       {noLot && (
         <div className="mb-3 px-2.5 py-1.5 bg-bg-elevated border border-border-default rounded text-[11px] text-text-tertiary leading-snug">
-          Create a local lot to save receive details. Amazon is not updated.
+          Fill in the fields and save this item to the batch before printing or pushing.
         </div>
       )}
 
@@ -1252,14 +1250,14 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onClick={onMarkInspected}
             disabled={item.marking_inspected}
             className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-            title="Marks this local lot inspected. Does not update Amazon."
+            title="Marks this item inspected. Does not update Amazon."
           >
             {item.marking_inspected
               ? <Loader2 size={11} className="animate-spin" />
               : <CheckCircle2 size={11} />}
             Mark inspected
           </button>
-          <span className="text-[10px] text-text-tertiary/50">Local only</span>
+          <span className="text-[10px] text-text-tertiary/50">Does not update Amazon</span>
           {item.mark_inspect_error && (
             <span className="text-[10px] text-red-400">{item.mark_inspect_error}</span>
           )}
@@ -1269,9 +1267,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       {/* Input grid — keyboard flow: Qty → Bin → List Price → Condition → Shipping Template → Save */}
       <div className="grid grid-cols-2 gap-2 mb-2">
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
-            {noLot ? 'Qty on Hand' : 'Qty Received'}
-          </label>
+          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Qty Received</label>
           <input
             ref={qtyRef}
             type="number" min="0" step="1"
@@ -1282,7 +1278,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Bin Location</label>
+          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
           <input
             ref={binRef}
             type="text"
@@ -1319,9 +1315,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         </div>
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
-            {noLot
-              ? <span>Cost ($) <span className="text-amber-400/80 normal-case font-normal">required</span></span>
-              : 'Cost (locked)'}
+            {noLot ? 'Buy Cost ($)' : 'Buy Cost (locked)'}
           </label>
           <input
             type="number" min="0" step="0.01"
@@ -1332,7 +1326,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             placeholder="0.00"
             className={`w-full h-8 px-2.5 rounded-md text-sm font-mono placeholder:text-text-tertiary focus:outline-none ${
               noLot
-                ? 'bg-bg-elevated border border-amber-500/30 text-text-primary focus:border-accent'
+                ? 'bg-bg-elevated border border-border-default text-text-primary focus:border-accent'
                 : 'bg-bg-elevated/40 border border-border-subtle text-text-tertiary cursor-default'
             }`}
           />
@@ -1386,21 +1380,21 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         </p>
       )}
 
-      {/* Save / Create button — full width, prominent */}
+      {/* Primary action button */}
       {noLot ? (
         <>
           <button
             onClick={onCreateLot}
             disabled={item.create_lot_state === 'creating'}
-            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-medium border border-amber-500/50 text-amber-400 hover:bg-amber-500/10 transition-colors disabled:opacity-50"
+            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
           >
             {item.create_lot_state === 'creating'
-              ? <><Loader2 size={13} className="animate-spin" /> Creating…</>
-              : <><PackagePlus size={13} /> Create Local Lot</>}
+              ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
+              : <><PackagePlus size={13} /> Save item</>}
           </button>
           {item.create_lot_state === 'creating' && item.slow_create_lot && (
             <p className="text-[10px] text-text-tertiary italic mt-1.5 text-center">
-              Still working — creating local lot…
+              Still saving…
             </p>
           )}
         </>
@@ -1414,7 +1408,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           >
             {item.save_state === 'saving'
               ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-              : <><Save size={13} /> Save to FlipLedger</>}
+              : <><Save size={13} /> Save changes</>}
           </button>
           {item.save_state === 'saving' && item.slow_save && (
             <p className="text-[10px] text-text-tertiary italic mt-1.5 text-center">
@@ -1896,7 +1890,7 @@ export default function MfnBatchReceivePage() {
             <span className="text-xs text-text-tertiary truncate">
               {batchArray.length} in batch
               {savedCount > 0 && <> · <span className="text-green-400/90">{savedCount} saved</span></>}
-              {summary.unsaved > 0 && <> · <span className="text-amber-400/80">{summary.unsaved} unsaved</span></>}
+              {summary.unsaved > 0 && <> · <span className="text-text-tertiary">{summary.unsaved} unsaved</span></>}
               {stateCounts['ready'] > 0 && <> · <span className="text-green-400 font-medium">Ready {stateCounts['ready']}</span></>}
             </span>
           )}
@@ -2139,7 +2133,7 @@ export default function MfnBatchReceivePage() {
               <div className="min-w-0 flex-1">Item</div>
               <div className="w-28 shrink-0">MSKU</div>
               <div className="w-32 shrink-0">Qty</div>
-              <div className="w-24 shrink-0">Bin / Cond</div>
+              <div className="w-24 shrink-0">Bin / Meta</div>
               <div className="w-16 shrink-0 text-right">Price</div>
               <div className="w-32 shrink-0">Status</div>
               <div className="w-24 shrink-0 text-right">Actions</div>
