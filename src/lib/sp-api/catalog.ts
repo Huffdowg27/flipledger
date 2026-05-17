@@ -198,10 +198,16 @@ export async function enrichProductCatalog(
   let enriched = 0;
 
   try {
-    // Find products missing names
+    // Find products missing names or images, oldest-updated first
     const missingProducts = db.prepare(`
       SELECT DISTINCT asin FROM products
-      WHERE (name IS NULL OR name = '') AND asin IS NOT NULL
+      WHERE (
+        (name IS NULL OR TRIM(name) = '')
+        OR (image_url IS NULL OR TRIM(image_url) = '')
+      )
+      AND TRIM(asin) <> ''
+      AND asin IS NOT NULL
+      ORDER BY updated_at ASC
       LIMIT 50
     `).all() as { asin: string }[];
 
