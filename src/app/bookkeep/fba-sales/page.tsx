@@ -7,6 +7,7 @@ import PageHeader from '@/components/ui/PageHeader';
 import { type DateRange } from '@/components/ui/DateRangePicker';
 import { useFilters } from '@/lib/useFilters';
 import DataTable from '@/components/tables/DataTable';
+import StatusBadge from '@/components/ui/StatusBadge';
 import { formatCurrency, formatPercent, formatDate } from '@/lib/formatters';
 
 interface SaleRow {
@@ -49,7 +50,9 @@ export default function FBASalesPage() {
     { id: 'date', header: 'Date', accessorKey: 'date', cell: ({ getValue }) => <span className="font-mono text-sm text-text-secondary">{formatDate(getValue() as string)}</span>, size: 110 },
     {
       id: 'status', header: 'Status', accessorKey: 'isEstimated',
-      cell: ({ getValue }) => getValue() ? <span className="text-xs font-medium px-2 py-0.5 rounded bg-warning-muted text-warning">Estimated</span> : <span className="text-xs font-medium px-2 py-0.5 rounded bg-positive-muted text-positive">Reconciled</span>,
+      cell: ({ getValue }) => getValue()
+        ? <StatusBadge tone="warning">Estimated</StatusBadge>
+        : <StatusBadge tone="positive">Reconciled</StatusBadge>,
       size: 90,
     },
     {
@@ -120,7 +123,7 @@ export default function FBASalesPage() {
         <StatCard label="Avg Profit/Sale" value={averages?.avgProfit || 0} format="currency" />
         <StatCard label="Avg ROI" value={averages?.avgRoi || 0} format="percent" />
       </div>
-      <DataTable data={rows} columns={columns} searchPlaceholder="Search by order ID, ASIN, or product name..." />
+      <DataTable data={rows} columns={columns} searchPlaceholder="Search by order ID, ASIN, or product name..." density="compact" />
     </div>
   );
 }
