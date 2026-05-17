@@ -1121,7 +1121,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
     <div className={`rounded-lg border p-3 transition-colors ${borderClass}`}>
 
       {/* Header */}
-      <div className="flex items-start gap-3 mb-2">
+      <div className="flex items-center gap-3 mb-2">
         {item.image_url
           ? (
               <button
@@ -1130,13 +1130,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
                 className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
                 title="View larger"
               >
-                <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
+                <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
               </button>
             )
-          : <div className="w-14 h-14 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+          : <div className="w-8 h-8 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
 
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
+          <div className="text-xs font-medium text-text-primary leading-snug line-clamp-1" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
           <div className="flex items-center gap-1.5 mt-1 flex-wrap">
@@ -1147,9 +1147,6 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
               <span className="text-[10px] text-text-tertiary">Amz qty: {item.amazon_qty}</span>
             )}
             {item.upc && <UpcChip upc={item.upc} />}
-          </div>
-          <div className="text-[10px] font-mono text-text-tertiary/50 truncate mt-0.5" title={item.sku}>
-            {item.sku}
           </div>
           {(() => {
             const blockers = chipsForBatchItem(item).filter(c => c.tone === 'blocker');
