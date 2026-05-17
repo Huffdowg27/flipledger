@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import StatCard from '@/components/ui/StatCard';
+import StatusBadge from '@/components/ui/StatusBadge';
 import DateRangePicker, { type DateRange } from '@/components/ui/DateRangePicker';
 import MarketplaceFilter from '@/components/ui/MarketplaceFilter';
 import { useFilters } from '@/lib/useFilters';
@@ -344,13 +345,13 @@ export default function Dashboard() {
                         <div className="text-text-primary font-medium truncate max-w-[280px] flex items-center gap-2">
                           {item.productName}
                           {item.cogsSource === 'missing' && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-amber-500/15 text-amber-400" title="No COGS entered for this SKU yet">
-                              No COGS
+                            <span title="No COGS entered for this SKU yet">
+                              <StatusBadge tone="warning" size="xs">No COGS</StatusBadge>
                             </span>
                           )}
                           {item.cogsSource === 'fallback' && (
-                            <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider bg-blue-500/10 text-blue-400" title="COGS estimated from last known buy price (FIFO lot depleted)">
-                              Est. COGS
+                            <span title="COGS estimated from last known buy price (FIFO lot depleted)">
+                              <StatusBadge tone="info" size="xs">Est. COGS</StatusBadge>
                             </span>
                           )}
                         </div>
