@@ -1316,7 +1316,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
+          <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
           <input
             ref={binRef}
             type="text"
@@ -1324,11 +1324,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_bin: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingEstRef.current?.focus(); } }}
             placeholder="e.g. S1-B3"
-            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
+            className="w-full h-7 px-2 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Est. Shipping ($)</label>
+          <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">Est. Shipping ($)</label>
           <input
             ref={shippingEstRef}
             type="number" min="0" step="0.01"
@@ -1336,13 +1336,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_shipping_est: e.target.value })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingTemplateRef.current?.focus(); } }}
             placeholder="8.00"
-            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
+            className="w-full h-7 px-2 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
       </div>
 
       <div className="mb-2">
-        <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
+        <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">Shipping Template</label>
         {amazonTemplates === null ? (
           <div className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
             Syncing Amazon templates…
