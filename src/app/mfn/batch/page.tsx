@@ -1139,7 +1139,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           <div className="text-xs font-medium text-text-primary leading-snug line-clamp-1" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
-          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
+          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
             <span className="text-[10px] font-mono text-blue-400">{item.asin}</span>
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
             <ChannelBadge channel={item.fulfillment_channel} />
@@ -1296,7 +1296,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           </select>
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">
+          <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">
             {noLot ? 'Buy Cost ($)' : 'Buy Cost (locked)'}
           </label>
           <input
