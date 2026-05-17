@@ -313,8 +313,9 @@ function isReadyToPush(item: BatchItem): boolean {
 }
 
 // Needs work = unsaved (needs a Save click before Print All / Preview &
-// Push will include it), OR any hard blocker chip (Not inspected / No price).
-// Missing condition is soft metadata — does not trigger needs-work.
+// Push will include it), OR a hard blocker chip (missing price is the
+// main blocker). Not inspected is amber/warn — it gates push eligibility
+// but does not trigger needs-work. Missing condition is soft metadata.
 function needsWork(item: BatchItem): boolean {
   if (item.save_state !== 'saved') return true;
   const chips = chipsForBatchItem(item);
@@ -424,8 +425,8 @@ function BatchItemChips({ chips }: { chips: Chip[] }) {
 }
 
 // Compact chip strip for saved-row Zone 7.
-// Always shows all blockers (Not inspected / No price) first,
-// then up to 1 warn chip, then a "+N" overflow badge listing hidden labels.
+// Shows all blockers (e.g. No price) first, then up to 1 warn chip
+// (e.g. Not inspected, Stale status), then a "+N" overflow badge.
 // Full chips are still shown in expanded cards and the detail drawer.
 function RowChips({ chips }: { chips: Chip[] }) {
   if (chips.length === 0) return null;
