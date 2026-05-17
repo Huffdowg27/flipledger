@@ -1074,11 +1074,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
   const profit = calcProfit(item);
 
   const qtyRef              = useRef<HTMLInputElement>(null);
-  const binRef              = useRef<HTMLInputElement>(null);
   const listPriceRef        = useRef<HTMLInputElement>(null);
   const conditionRef        = useRef<HTMLSelectElement>(null);
+  const buyCostRef          = useRef<HTMLInputElement>(null);
+  const binRef              = useRef<HTMLInputElement>(null);
+  const shippingEstRef      = useRef<HTMLInputElement>(null);
   const shippingTemplateRef = useRef<HTMLSelectElement>(null);
-  const saveRef             = useRef<HTMLButtonElement>(null);
+  const primaryActionRef    = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     if (focusQty && qtyRef.current) {
@@ -1118,7 +1120,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
     <div className={`rounded-lg border p-3 transition-colors ${borderClass}`}>
 
       {/* Header */}
-      <div className="flex items-start gap-3 mb-3">
+      <div className="flex items-start gap-3 mb-2">
         {item.image_url
           ? (
               <button
@@ -1174,20 +1176,12 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         </button>
       </div>
 
-      {/* New item helper */}
-      {noLot && (
-        <div className="mb-3 px-2.5 py-1.5 bg-bg-elevated border border-border-default rounded text-[11px] text-text-tertiary leading-snug">
-          Fill in the fields and save this item to the batch before printing or pushing.
-        </div>
-      )}
-
       {/* Profit strip */}
       {profit.listCents != null && profit.costCents != null && (
-        <div className="mb-3 px-3 py-2.5 bg-bg-elevated rounded-lg border border-border-subtle">
-          {/* Top row: net profit + ROI + margin */}
-          <div className="flex items-center justify-between mb-1.5">
+        <div className="mb-2 px-2.5 py-1.5 bg-bg-elevated rounded-lg border border-border-subtle">
+          <div className="flex items-center justify-between mb-1">
             <div className="flex items-baseline gap-2">
-              <span className={`text-base font-semibold tabular-nums ${
+              <span className={`text-sm font-semibold tabular-nums ${
                 !profit.hasFee
                   ? 'text-text-secondary'
                   : profit.netCents != null && profit.netCents > 0 ? 'text-green-400' : 'text-red-400'
@@ -1206,10 +1200,9 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
               )}
             </div>
             {!profit.hasFee && (
-              <span className="text-[10px] text-text-tertiary/60 italic">Estimate — Amazon fee not cached</span>
+              <span className="text-[10px] text-text-tertiary/60 italic">Estimate — fee not cached</span>
             )}
           </div>
-          {/* Breakdown line */}
           <div className="flex items-center gap-1 text-[10px] text-text-tertiary flex-wrap">
             <span>List {formatCurrency(profit.listCents)}</span>
             <span className="text-text-tertiary/30">−</span>
@@ -1263,8 +1256,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         </div>
       )}
 
-      {/* Input grid — keyboard flow: Qty → Bin → List Price → Condition → Shipping Template → Save */}
-      <div className="grid grid-cols-2 gap-2 mb-2">
+      {/* Input grid — keyboard flow: Qty → List Price → Condition → Buy Cost (noLot) or Bin → Bin → Est. Shipping → Template → Save
+          Row 1: Qty | List Price | Condition
+          Row 2: Buy Cost | Bin | Est. Shipping
+          Below: Shipping Template (full width) */}
+      <div className="grid grid-cols-3 gap-2 mb-2">
         <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Qty Received</label>
           <input
@@ -1272,20 +1268,8 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             type="number" min="0" step="1"
             value={item.draft_qty}
             onChange={e => onChange({ draft_qty: e.target.value, save_state: 'idle' })}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); binRef.current?.focus(); } }}
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-accent focus:outline-none"
-          />
-        </div>
-        <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
-          <input
-            ref={binRef}
-            type="text"
-            value={item.draft_bin}
-            onChange={e => onChange({ draft_bin: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); listPriceRef.current?.focus(); } }}
-            placeholder="e.g. S1-B3"
-            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-accent focus:outline-none"
           />
         </div>
         <div>
@@ -1306,6 +1290,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             ref={conditionRef}
             value={item.draft_condition}
             onChange={e => onChange({ draft_condition: e.target.value, save_state: 'idle' })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); noLot ? buyCostRef.current?.focus() : binRef.current?.focus(); } }}
             className="w-full h-8 px-2 bg-bg-elevated border border-border-default rounded-md text-xs text-text-primary focus:border-accent focus:outline-none"
           >
             <option value="">— select —</option>
@@ -1317,9 +1302,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             {noLot ? 'Buy Cost ($)' : 'Buy Cost (locked)'}
           </label>
           <input
+            ref={buyCostRef}
             type="number" min="0" step="0.01"
             value={item.draft_buy_price}
             onChange={e => noLot ? onChange({ draft_buy_price: e.target.value }) : undefined}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); binRef.current?.focus(); } }}
             readOnly={!noLot}
             tabIndex={noLot ? 0 : -1}
             placeholder="0.00"
@@ -1331,18 +1318,32 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           />
         </div>
         <div>
+          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
+          <input
+            ref={binRef}
+            type="text"
+            value={item.draft_bin}
+            onChange={e => onChange({ draft_bin: e.target.value, save_state: 'idle' })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingEstRef.current?.focus(); } }}
+            placeholder="e.g. S1-B3"
+            className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
+          />
+        </div>
+        <div>
           <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Est. Shipping ($)</label>
           <input
+            ref={shippingEstRef}
             type="number" min="0" step="0.01"
             value={item.draft_shipping_est}
             onChange={e => onChange({ draft_shipping_est: e.target.value })}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingTemplateRef.current?.focus(); } }}
             placeholder="8.00"
             className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-accent focus:outline-none"
           />
         </div>
       </div>
 
-      <div className="mb-3">
+      <div className="mb-2">
         <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Shipping Template</label>
         {amazonTemplates === null ? (
           <div className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs text-text-tertiary flex items-center">
@@ -1357,7 +1358,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             ref={shippingTemplateRef}
             value={resolveShippingTemplate(item.draft_shipping_template, amazonTemplates)?.key ?? item.draft_shipping_template}
             onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
-            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveRef.current?.click(); } }}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); primaryActionRef.current?.click(); } }}
             className="w-full h-8 px-2.5 bg-bg-elevated border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-accent focus:outline-none appearance-none cursor-pointer"
           >
             <option value="">Select template…</option>
@@ -1383,6 +1384,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       {noLot ? (
         <>
           <button
+            ref={primaryActionRef}
             onClick={onCreateLot}
             disabled={item.create_lot_state === 'creating'}
             className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
@@ -1400,7 +1402,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       ) : (
         <>
           <button
-            ref={saveRef}
+            ref={primaryActionRef}
             onClick={onSave}
             disabled={item.save_state === 'saving'}
             className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-accent text-white hover:bg-accent/90 transition-colors disabled:opacity-60"
