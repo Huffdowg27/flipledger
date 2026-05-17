@@ -782,7 +782,13 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
             <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3">
               <span className="text-text-tertiary">Condition</span><span className="text-text-secondary">{condDisplay ?? '—'}</span>
               <span className="text-text-tertiary">Bin</span><span className="font-mono text-text-secondary">{binDisplay ?? '—'}</span>
-              <span className="text-text-tertiary">Template</span><span className="font-mono text-text-secondary text-[10px] break-all">{tmplDisplay ?? '—'}</span>
+              <span className="text-text-tertiary">Template</span>
+              {rawTmpl
+                ? resolveShippingTemplate(rawTmpl, amazonTemplates ?? null)
+                  ? <span className="text-text-secondary text-[10px] break-all">Template: {tmplDisplay}</span>
+                  : <span className="text-text-tertiary/60 text-[10px] break-all">Stored template: {rawTmpl} <span className="opacity-70">(not synced)</span></span>
+                : <span className="text-text-tertiary/40 text-[10px]">No template selected</span>
+              }
             </div>
           </section>
 
@@ -925,11 +931,12 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
 // Pure helper — no side effects, safe to call from any render context.
 function getSavedDisplay(item: BatchItem) {
   return {
-    savedQty:   item.quantity_received ?? (parseInt(item.draft_qty, 10) || null),
-    savedPrice: item.il_list_price_cents
+    savedQty:      item.quantity_received ?? (parseInt(item.draft_qty, 10) || null),
+    savedPrice:    item.il_list_price_cents
       ?? (item.draft_list_price ? Math.round(parseFloat(item.draft_list_price) * 100) : null),
-    savedBin:   item.bin_location || item.draft_bin.trim() || null,
-    savedCond:  item.condition    || item.draft_condition.trim() || null,
+    savedBin:      item.bin_location || item.draft_bin.trim() || null,
+    savedCond:     item.condition    || item.draft_condition.trim() || null,
+    savedTemplate: item.merchant_shipping_group_name || item.draft_shipping_template.trim() || null,
   };
 }
 
@@ -948,10 +955,11 @@ interface BatchItemRowProps {
   onShowDetail: () => void;
   focusQty: boolean;
   onQtyFocused: () => void;
+  amazonTemplates: ShippingTemplate[] | null;
 }
 
-function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
-  const { savedQty, savedPrice, savedBin, savedCond } = getSavedDisplay(item);
+function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused, amazonTemplates }: BatchItemRowProps) {
+  const { savedQty, savedPrice, savedBin, savedCond, savedTemplate } = getSavedDisplay(item);
   const receiveProgress = getReceiveProgress(item);
   const chips = chipsForBatchItem(item);
   const showMarkInspected = item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at;
@@ -995,11 +1003,17 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
         {receiveProgress && <ReceiveProgressBar progress={receiveProgress} variant="compact" />}
       </div>
 
-      {/* Zone 5 — Bin/Cond (w-24 fixed, always rendered): dash when empty */}
+      {/* Zone 5 — Bin/Cond/Template (w-24 fixed, always rendered): dash when all empty */}
       <div className="w-24 shrink-0 text-[10px] leading-tight">
         {savedBin && <div className="text-text-tertiary">Bin <span className="font-mono text-text-secondary">{savedBin}</span></div>}
         {savedCond && <div className="text-text-secondary truncate">{savedCond}</div>}
-        {!savedBin && !savedCond && <span className="text-text-tertiary/30">—</span>}
+        {savedTemplate && (() => {
+          const resolved = resolveShippingTemplate(savedTemplate, amazonTemplates);
+          return resolved
+            ? <div className="text-[9px] text-text-tertiary/70 truncate">Template: {resolved.name}</div>
+            : <div className="text-[9px] text-text-tertiary/50 truncate">{savedTemplate} <span className="opacity-70">(not synced)</span></div>;
+        })()}
+        {!savedBin && !savedCond && !savedTemplate && <span className="text-text-tertiary/30">—</span>}
       </div>
 
       {/* Zone 6 — Price (w-16 fixed, always rendered): dash when missing */}
@@ -1092,6 +1106,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         onShowDetail={onShowDetail}
         focusQty={focusQty}
         onQtyFocused={onQtyFocused}
+        amazonTemplates={amazonTemplates}
       />
     );
   }
