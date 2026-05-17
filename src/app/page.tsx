@@ -37,7 +37,7 @@ interface DashboardData {
   };
 }
 
-const CHART_COLORS = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#f97316'];
+const CHART_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#f97316'];
 
 interface DayDetail {
   order_id: string;
@@ -443,28 +443,28 @@ export default function Dashboard() {
           <h3 className="text-sm font-medium text-text-secondary mb-4">Revenue & Profit</h3>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={chartData} barGap={2} style={{ cursor: 'pointer' }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e24" />
-              <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#606070' }} tickLine={false} axisLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: '#606070' }} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v >= 1000 ? `${(v/1000).toFixed(0)}k` : v}`} />
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+              <XAxis dataKey="day" tick={{ fontSize: 11, fill: '#64748b' }} tickLine={false} axisLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: '#64748b' }} tickLine={false} axisLine={false} tickFormatter={(v) => `$${v >= 1000 ? `${(v/1000).toFixed(0)}k` : v}`} />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: '#18181c',
-                  border: '1px solid #2a2a33',
+                  backgroundColor: '#334155',
+                  border: '1px solid #475569',
                   borderRadius: '8px',
                   fontSize: '12px',
                   boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
                 }}
-                labelStyle={{ color: '#a0a0b0' }}
+                labelStyle={{ color: '#94a3b8' }}
                 cursor={{ fill: 'rgba(255,255,255,0.05)' }}
                 formatter={(value: any, name: any) => [`$${Number(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`, name]}
               />
-              <Bar dataKey="revenue" fill="#6366f1" radius={[4, 4, 0, 0]} name="Revenue"
+              <Bar dataKey="revenue" fill="#3b82f6" radius={[4, 4, 0, 0]} name="Revenue"
                 onClick={(data: any) => { if (data?.rawDate) setSelectedDay(data.rawDate); }}
               />
               <Bar dataKey="profit" fill="#22c55e" radius={[4, 4, 0, 0]} name="Profit"
                 onClick={(data: any) => { if (data?.rawDate) setSelectedDay(data.rawDate); }}
               />
-              <Legend wrapperStyle={{ fontSize: '11px', color: '#606070' }} iconType="circle" iconSize={8} />
+              <Legend wrapperStyle={{ fontSize: '11px', color: '#64748b' }} iconType="circle" iconSize={8} />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -491,8 +491,8 @@ export default function Dashboard() {
                   </Pie>
                   <Tooltip
                     contentStyle={{
-                      backgroundColor: '#18181c',
-                      border: '1px solid #2a2a33',
+                      backgroundColor: '#334155',
+                      border: '1px solid #475569',
                       borderRadius: '8px',
                       fontSize: '12px',
                       boxShadow: '0 4px 12px rgba(0,0,0,0.4)',
