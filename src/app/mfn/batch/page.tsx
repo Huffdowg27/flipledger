@@ -407,7 +407,7 @@ function WarningChip({ chip }: { chip: Chip }) {
     ? 'bg-red-500/10 text-red-400 border-red-500/30'
     : chip.tone === 'warn'
       ? 'bg-amber-500/10 text-amber-400/90 border-amber-500/25'
-      : 'bg-slate-800 text-text-tertiary/70 border-border-subtle';
+      : 'bg-slate-900/60 text-text-tertiary/70 border-border-subtle';
   return (
     <span
       className={`inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border tabular-nums ${cls}`}
@@ -440,7 +440,7 @@ function RowChips({ chips }: { chips: Chip[] }) {
       {shown.map(c => <WarningChip key={c.label} chip={c} />)}
       {hidden.length > 0 && (
         <span
-          className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-slate-800 border-border-subtle text-text-tertiary"
+          className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-slate-900/60 border-border-subtle text-text-tertiary"
           title={hidden.map(c => c.label).join(', ')}
         >
           +{hidden.length}
@@ -690,7 +690,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
             ? <button type="button" onClick={onImageClick} className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow" title="View larger">
                 <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
-            : <div className="w-14 h-14 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+            : <div className="w-14 h-14 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-text-primary leading-snug line-clamp-3" title={item.product_name ?? item.asin}>
               {item.product_name || item.asin}
@@ -821,7 +821,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
           )}
           <button
             onClick={onClose}
-            className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-slate-800 text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
+            className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-slate-900/40 text-[11px] text-text-secondary hover:bg-bg-hover transition-colors"
           >
             Close
           </button>
@@ -834,7 +834,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
 function UpcChip({ upc }: { upc: string }) {
   return (
     <span
-      className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-mono font-medium border bg-slate-800 text-text-tertiary border-border-subtle"
+      className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-mono font-medium border bg-slate-900/60 text-text-tertiary border-border-subtle"
       title="UPC"
     >
       UPC {upc}
@@ -873,7 +873,7 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
               <img src={result.image_url} alt="" className="w-14 h-14 object-contain block" />
             </button>
           )
-        : <div className="w-14 h-14 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+        : <div className="w-14 h-14 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
       <div className="min-w-0 flex-1">
         <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
@@ -974,7 +974,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
               <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
             </button>
           )
-        : <div className="w-8 h-8 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
+        : <div className="w-8 h-8 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
 
       {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
       <div className="min-w-0 flex-1">
@@ -1133,7 +1133,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
                 <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
             )
-          : <div className="w-14 h-14 bg-slate-800 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+          : <div className="w-14 h-14 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
@@ -1179,7 +1179,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
 
       {/* Profit strip */}
       {profit.listCents != null && profit.costCents != null && (
-        <div className="mb-2 px-2.5 py-1.5 bg-slate-800 rounded-lg border border-border-subtle">
+        <div className="mb-2 px-2.5 py-1.5 bg-slate-900/40 rounded-lg border border-border-subtle">
           <div className="flex items-center justify-between mb-1">
             <div className="flex items-baseline gap-2">
               <span className={`text-sm font-semibold tabular-nums ${
