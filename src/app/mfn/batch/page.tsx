@@ -676,7 +676,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose }:
             ? <button type="button" onClick={onImageClick} className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow" title="View larger">
                 <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
-            : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/25" /></div>}
+            : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-medium text-text-primary leading-snug line-clamp-3" title={item.product_name ?? item.asin}>
               {item.product_name || item.asin}
@@ -853,7 +853,7 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
               <img src={result.image_url} alt="" className="w-14 h-14 object-contain block" />
             </button>
           )
-        : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/25" /></div>}
+        : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
       <div className="min-w-0 flex-1">
         <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
@@ -952,7 +952,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
               <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
             </button>
           )
-        : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/25" /></div>}
+        : <div className="w-8 h-8 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
 
       {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
       <div className="min-w-0 flex-1">
@@ -1082,11 +1082,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
   const borderClass = item.save_state === 'error'
     ? 'border-red-500/30 bg-red-500/5'
     : noLot
-      ? 'border-border-default bg-bg-surface'
+      ? 'border-border-subtle bg-bg-surface border-l-2 border-l-sky-500/30'
       : 'border-border-subtle bg-bg-surface';
 
   return (
-    <div className={`rounded-xl border p-4 transition-colors ${borderClass}`}>
+    <div className={`rounded-lg border p-4 transition-colors ${borderClass}`}>
 
       {/* Header */}
       <div className="flex items-start gap-3 mb-3">
@@ -1098,10 +1098,10 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
                 className="shrink-0 rounded overflow-hidden bg-bg-elevated hover:ring-2 hover:ring-accent/40 transition-shadow"
                 title="View larger"
               >
-                <img src={item.image_url} alt="" className="w-16 h-16 object-contain block" />
+                <img src={item.image_url} alt="" className="w-14 h-14 object-contain block" />
               </button>
             )
-          : <div className="w-16 h-16 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={22} className="text-text-tertiary/25" /></div>}
+          : <div className="w-14 h-14 bg-bg-elevated rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
@@ -1831,8 +1831,8 @@ export default function MfnBatchReceivePage() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Toolbar row 1 — title · counts · actions */}
-      <div className="flex items-center justify-between px-4 py-2.5 mb-3 bg-bg-elevated border border-border-subtle rounded-lg">
+      {/* Workbench header — title, actions, search (visually unified) */}
+      <div className="flex items-center justify-between px-4 py-2 bg-bg-elevated border border-border-subtle rounded-t-lg border-b border-border-subtle/60">
         <div className="flex items-center gap-3 min-w-0">
           <h1 className="text-sm font-semibold text-text-primary shrink-0">MFN Receive</h1>
           {batchArray.length > 0 && (
@@ -1871,9 +1871,9 @@ export default function MfnBatchReceivePage() {
         )}
       </div>
 
-      {/* Search bar — full width, results as dropdown overlay */}
-      <div ref={searchContainerRef} className="relative mb-3">
-        <div className="relative">
+      {/* Search — lower half of unified header block */}
+      <div ref={searchContainerRef} className="relative bg-bg-elevated border-x border-b border-border-subtle rounded-b-lg mb-3">
+        <div className="relative px-3 py-2">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
           {searching && (
             <Loader2 size={13} className="absolute right-3 top-1/2 -translate-y-1/2 text-text-tertiary animate-spin" />
@@ -1961,9 +1961,9 @@ export default function MfnBatchReceivePage() {
         )}
       </div>
 
-      {/* Toolbar row 2 — filters left · KPI right — only when batch non-empty */}
+      {/* Filter strip + KPI — flat tab-strip below the header */}
       {batchArray.length > 0 && (
-        <div className="flex items-start justify-between gap-4 px-3 py-2 mb-3 bg-bg-elevated border border-border-subtle rounded-lg">
+        <div className="flex items-start justify-between gap-4 px-3 py-1.5 mb-2 border-b border-border-subtle/60">
           {/* Filter pills — left */}
           <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
             {([
@@ -2083,7 +2083,7 @@ export default function MfnBatchReceivePage() {
               <div className="w-32 shrink-0">Status</div>
               <div className="w-24 shrink-0 text-right">Actions</div>
             </div>
-            <div className="flex-1 overflow-y-auto space-y-1.5 min-h-0 pr-1">
+            <div className="flex-1 overflow-y-auto space-y-1 min-h-0 pr-1">
               {receiveFilter !== 'all' && visibleBatch.length === 0 && (
                 <div className="flex flex-col items-center justify-center py-10 text-center text-text-tertiary">
                   <p className="text-sm">No items match this filter.</p>
