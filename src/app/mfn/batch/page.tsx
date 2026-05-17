@@ -1158,6 +1158,29 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           })()}
         </div>
 
+        {noLot ? (
+          <button
+            ref={primaryActionRef}
+            onClick={onCreateLot}
+            disabled={item.create_lot_state === 'creating'}
+            className="shrink-0 h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
+          >
+            {item.create_lot_state === 'creating'
+              ? <><Loader2 size={11} className="animate-spin" /> Saving…</>
+              : <><PackagePlus size={11} /> Save item</>}
+          </button>
+        ) : (
+          <button
+            ref={primaryActionRef}
+            onClick={onSave}
+            disabled={item.save_state === 'saving'}
+            className="shrink-0 h-8 px-3 flex items-center gap-1.5 rounded-md text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
+          >
+            {item.save_state === 'saving'
+              ? <><Loader2 size={11} className="animate-spin" /> Saving…</>
+              : <><Save size={11} /> Save changes</>}
+          </button>
+        )}
         <button
           onClick={onShowDetail}
           className="shrink-0 p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors"
@@ -1371,50 +1394,17 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         )}
       </div>
 
-      {/* Error message */}
+      {/* Error / slow-save status */}
       {(item.save_state === 'error' || item.create_lot_state === 'error') && (
-        <p className="text-[10px] text-red-400 mb-2">
+        <p className="text-[10px] text-red-400 mt-1">
           {item.save_state === 'error' ? (item.save_error || 'Save failed') : (item.create_lot_error || 'Create failed')}
         </p>
       )}
-
-      {/* Primary action button */}
-      {noLot ? (
-        <>
-          <button
-            ref={primaryActionRef}
-            onClick={onCreateLot}
-            disabled={item.create_lot_state === 'creating'}
-            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
-          >
-            {item.create_lot_state === 'creating'
-              ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-              : <><PackagePlus size={13} /> Save item</>}
-          </button>
-          {item.create_lot_state === 'creating' && item.slow_create_lot && (
-            <p className="text-[10px] text-text-tertiary italic mt-1.5 text-center">
-              Still saving…
-            </p>
-          )}
-        </>
-      ) : (
-        <>
-          <button
-            ref={primaryActionRef}
-            onClick={onSave}
-            disabled={item.save_state === 'saving'}
-            className="w-full h-9 flex items-center justify-center gap-1.5 rounded-lg text-sm font-semibold bg-blue-600 text-white hover:bg-blue-700 transition-colors disabled:opacity-60"
-          >
-            {item.save_state === 'saving'
-              ? <><Loader2 size={13} className="animate-spin" /> Saving…</>
-              : <><Save size={13} /> Save changes</>}
-          </button>
-          {item.save_state === 'saving' && item.slow_save && (
-            <p className="text-[10px] text-text-tertiary italic mt-1.5 text-center">
-              Still working — saving…
-            </p>
-          )}
-        </>
+      {item.create_lot_state === 'creating' && item.slow_create_lot && (
+        <p className="text-[10px] text-text-tertiary italic mt-1 text-center">Still saving…</p>
+      )}
+      {item.save_state === 'saving' && item.slow_save && (
+        <p className="text-[10px] text-text-tertiary italic mt-1 text-center">Still working — saving…</p>
       )}
     </div>
   );
