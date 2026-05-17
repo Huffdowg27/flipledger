@@ -9,6 +9,7 @@ import { syncOrders } from './orders';
 import { syncFBAInventory } from './inventory';
 import { enrichProductCatalog } from './catalog';
 import { syncSettlementReports } from './reports';
+import { syncMerchantListings } from './merchantListings';
 import { estimateAndBackfillFees, overrideEstimatedFees } from './fee-estimator';
 import { generateRecurringExpenses } from '../recurring-expenses';
 import type { SPAPICredentials, SyncResult, SyncStatus } from './types';
@@ -136,6 +137,37 @@ export async function runFullSync(
     currentSync.results.push(setSyncResult);
     console.log(`[Sync] Settlement Reports: ${setResult.reportsProcessed} reports, ${setResult.shippingCostsUpdated} shipping costs updated, ${setResult.errors.length} errors`);
 
+    // 5b. Merchant Listings — Seller Central listing status / qty / price truth.
+    // Read-only from Amazon's perspective; powers MFN freshness on the
+    // /analyze/merchant-inventory and /mfn/batch surfaces. Failures here must
+    // NOT abort the rest of the sync — they're isolated in a try/catch.
+    const mlStart = Date.now();
+    const mlSyncResult: SyncResult = {
+      syncType: 'merchant_listings',
+      recordsFetched: 0,
+      errors: [],
+      duration: 0,
+    };
+    try {
+      console.log('[Sync] Starting merchant listings sync...');
+      const mlResult = await syncMerchantListings(credentials);
+      mlSyncResult.recordsFetched = mlResult.reportRows;
+      mlSyncResult.duration = Date.now() - mlStart;
+      const db3 = getDb();
+      db3.prepare(`
+        INSERT INTO settings (key, value) VALUES ('merchant_listings_last_sync', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(new Date().toISOString());
+      db3.close();
+      console.log(`[Sync] Merchant Listings: ${mlResult.reportRows} rows, ${mlResult.inserted} inserted, ${mlResult.updated} updated`);
+    } catch (err) {
+      const msg = `merchant_listings: ${String(err)}`;
+      mlSyncResult.errors.push(msg);
+      mlSyncResult.duration = Date.now() - mlStart;
+      console.error('[Sync] Merchant listings error:', err);
+    }
+    currentSync.results.push(mlSyncResult);
+
     // 6. Override estimated fees with real data, then estimate fees for remaining orders
     console.log('[Sync] Overriding estimated fees and backfilling...');
     const overridden = overrideEstimatedFees();
@@ -158,6 +190,7 @@ export async function runFullSync(
       ...invResult.errors,
       ...catResult.errors,
       ...setResult.errors,
+      ...mlSyncResult.errors,
     ];
 
     // Update sync log

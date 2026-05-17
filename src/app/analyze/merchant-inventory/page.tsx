@@ -1039,11 +1039,15 @@ export default function MerchantInventoryPage() {
             {syncError && (
               <p className="text-[10px] text-red-400 max-w-[180px] text-right">{syncError}</p>
             )}
-            {lastSynced && !syncError && (
-              <p className="text-[10px] text-text-tertiary">
-                Synced {new Date(lastSynced).toLocaleDateString()} {new Date(lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-              </p>
-            )}
+            {lastSynced && !syncError && (() => {
+              const ageMs = Date.now() - new Date(lastSynced).getTime();
+              const stale = ageMs > 2 * 3600 * 1000;
+              return (
+                <p className={`text-[10px] ${stale ? 'text-amber-400' : 'text-text-tertiary'}`}>
+                  {stale && '⚠ Stale — '}Synced {new Date(lastSynced).toLocaleDateString()} {new Date(lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </p>
+              );
+            })()}
             {!lastSynced && !syncError && (
               <p className="text-[10px] text-text-tertiary">Not yet synced</p>
             )}
