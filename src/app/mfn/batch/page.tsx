@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { formatCurrency } from '@/lib/formatters';
+import { formatCurrency, formatRelativeTime } from '@/lib/formatters';
 import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
@@ -18,6 +18,7 @@ interface SearchResult {
   amazon_status: string | null;
   fulfillment_channel: string | null;
   amazon_list_price_cents: number | null;
+  last_synced: string | null;
   product_name: string | null;
   image_url: string | null;
   buy_price: number | null;
@@ -143,6 +144,27 @@ function liveStateBadge(status: string | null, qty: number | null) {
     return <span className="inline-flex px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-500/10 text-red-400 border border-red-500/20">{status}</span>;
   }
   return null;
+}
+
+function listingFreshness(results: SearchResult[]) {
+  const latest = results.reduce<number | null>((max, result) => {
+    if (!result.last_synced) return max;
+    const time = new Date(result.last_synced).getTime();
+    if (!Number.isFinite(time)) return max;
+    return max == null || time > max ? time : max;
+  }, null);
+
+  if (latest == null) return null;
+
+  const ageMs = Date.now() - latest;
+  const syncedAt = new Date(latest);
+  const stale = ageMs > 2 * 3600 * 1000;
+
+  return {
+    stale,
+    label: `${stale ? 'Stale - ' : ''}Synced ${formatRelativeTime(syncedAt.toISOString())}`,
+    title: `Merchant listing data last synced ${syncedAt.toLocaleString()}`,
+  };
 }
 
 function makeBatchItem(r: SearchResult): BatchItem {
@@ -1918,6 +1940,7 @@ export default function MfnBatchReceivePage() {
   const visibleBatch = receiveFilter === 'all'
     ? batchArray
     : batchArray.filter(predicateFor[receiveFilter]);
+  const searchFreshness = !searching && results.length > 0 ? listingFreshness(results) : null;
 
   return (
     <div className="flex flex-col h-full bg-slate-900">
@@ -2012,20 +2035,30 @@ export default function MfnBatchReceivePage() {
           <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-slate-800 border border-border-default rounded-lg shadow-xl overflow-hidden">
             {/* Helper / status line */}
             <div className="px-3 py-1.5 border-b border-border-subtle">
-              <p className="text-xs text-text-tertiary">
-                {searching
-                  ? 'Searching…'
-                  : results.length === 1
-                    ? batch.has(results[0].sku)
-                      ? 'Press Enter to focus this item in the batch.'
-                      : 'Press Enter to add this item.'
-                    : results.length > 1
-                      ? 'Refine search or click the correct item.'
-                      : `No results for "${query}"`}
-                {multiMatchNote && (
-                  <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
+              <div className="flex items-center justify-between gap-3">
+                <p className="min-w-0 text-xs text-text-tertiary">
+                  {searching
+                    ? 'Searching…'
+                    : results.length === 1
+                      ? batch.has(results[0].sku)
+                        ? 'Press Enter to focus this item in the batch.'
+                        : 'Press Enter to add this item.'
+                      : results.length > 1
+                        ? 'Refine search or click the correct item.'
+                        : `No results for "${query}"`}
+                  {multiMatchNote && (
+                    <span className="ml-2 text-amber-500">Multiple matches — choose an item.</span>
+                  )}
+                </p>
+                {searchFreshness && (
+                  <span
+                    className={`shrink-0 text-[10px] ${searchFreshness.stale ? 'text-amber-400' : 'text-text-tertiary/70'}`}
+                    title={searchFreshness.title}
+                  >
+                    {searchFreshness.label}
+                  </span>
                 )}
-              </p>
+              </div>
             </div>
             {/* Results list */}
             {results.length > 0 && (

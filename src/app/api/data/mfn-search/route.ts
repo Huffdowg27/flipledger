@@ -291,7 +291,10 @@ export async function GET(request: NextRequest) {
 
     const asins = catalogItems.map(ci => ci.asin);
     // Map ASIN → catalog image URL so we can fall back when products.image_url is null
-    const catalogImageByAsin = new Map(catalogItems.map(ci => [ci.asin, ci.imageUrl]));
+    const catalogImageByAsin = new Map<string, string>();
+    for (const item of catalogItems) {
+      if (item.imageUrl) catalogImageByAsin.set(item.asin, item.imageUrl);
+    }
 
     const db = getDb();
     try {
@@ -299,6 +302,8 @@ export async function GET(request: NextRequest) {
       const rows = db.prepare(
         `${LISTING_SELECT} AND ml.asin IN (${placeholders}) ${LISTING_ORDER}`
       ).all(...asins) as DbRow[];
+
+      cacheCatalogImages(rows, catalogImageByAsin);
 
       const results = rows.map(row => ({
         ...row,
