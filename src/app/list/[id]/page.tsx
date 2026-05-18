@@ -1751,22 +1751,54 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                             </div>
                           )}
 
-                          {/* Selected SKU summary */}
-                          {selectedExistingSku && (
-                            <div className="mt-1 bg-positive/5 border border-positive/20 rounded p-2.5 text-[11px]">
-                              <div className="text-positive font-semibold mb-1">Selected for replenishment</div>
-                              <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-text-primary">
-                                <span className="text-text-tertiary">MSKU:</span><MskuLink sku={selectedExistingSku.sku} className="break-all hover:text-accent hover:underline" />
-                                <span className="text-text-tertiary">FNSKU:</span><span>{selectedExistingSku.fnsku || '—'}</span>
-                                <span className="text-text-tertiary">Channel:</span><span>{selectedExistingSku.fulfillmentChannel}</span>
-                                <span className="text-text-tertiary">Status:</span><span>{skuStatusLabel(selectedExistingSku).label}</span>
-                                <span className="text-text-tertiary">FBA stock:</span><span>{selectedExistingSku.fbaStock}</span>
-                                {selectedExistingSku.listPriceCents > 0 && (
-                                  <><span className="text-text-tertiary">Price:</span><span>{formatCurrency(selectedExistingSku.listPriceCents)}</span></>
+                          {/* Selected SKU summary — channel-aware presentation.
+                              MFN+REPLENISH uses an "Replenish existing MFN listing" panel that
+                              surfaces ASIN/MSKU as clickable links, current Amazon qty/status/price,
+                              and a soft note about reusing existing inventory. Other modes keep
+                              the original "Selected for replenishment" panel. */}
+                          {selectedExistingSku && (() => {
+                            const isMfnReplenish = batch?.channel === 'MFN'
+                              && listingMode === 'REPLENISH_EXISTING'
+                              && selectedExistingSku.fulfillmentChannel === 'MFN';
+                            const qtyLabel = selectedExistingSku.fulfillmentChannel === 'MFN'
+                              ? 'Amazon qty' : 'FBA stock';
+                            const heading = isMfnReplenish
+                              ? 'Replenish existing MFN listing'
+                              : 'Selected for replenishment';
+                            return (
+                              <div className="mt-1 bg-positive/5 border border-positive/20 rounded p-2.5 text-[11px]">
+                                <div className="text-positive font-semibold mb-1">{heading}</div>
+                                <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-text-primary">
+                                  <span className="text-text-tertiary">MSKU:</span>
+                                  <MskuLink sku={selectedExistingSku.sku} className="break-all hover:text-accent hover:underline" />
+                                  <span className="text-text-tertiary">ASIN:</span>
+                                  {selectedExistingSku.asin
+                                    ? <AsinLink asin={selectedExistingSku.asin} className="hover:text-accent hover:underline" />
+                                    : <span>—</span>}
+                                  {!isMfnReplenish && (
+                                    <>
+                                      <span className="text-text-tertiary">FNSKU:</span>
+                                      <span>{selectedExistingSku.fnsku || '—'}</span>
+                                      <span className="text-text-tertiary">Channel:</span>
+                                      <span>{selectedExistingSku.fulfillmentChannel}</span>
+                                    </>
+                                  )}
+                                  <span className="text-text-tertiary">Status:</span>
+                                  <span>{skuStatusLabel(selectedExistingSku).label}</span>
+                                  <span className="text-text-tertiary">{qtyLabel}:</span>
+                                  <span>{selectedExistingSku.fbaStock}</span>
+                                  {selectedExistingSku.listPriceCents > 0 && (
+                                    <><span className="text-text-tertiary">List price:</span><span>{formatCurrency(selectedExistingSku.listPriceCents)}</span></>
+                                  )}
+                                </div>
+                                {isMfnReplenish && (
+                                  <div className="mt-2 text-[10px] text-text-tertiary italic">
+                                    Links to existing inventory when available.
+                                  </div>
                                 )}
                               </div>
-                            </div>
-                          )}
+                            );
+                          })()}
 
                           <div className="flex gap-3 mt-1">
                             {listingMode === 'REPLENISH_EXISTING' && (
@@ -1897,7 +1929,13 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                       className="h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
                     >
                       <Plus size={14} />
-                      {saving ? 'Adding…' : 'Add to Batch'}
+                      {saving
+                        ? 'Adding…'
+                        : batch.channel === 'MFN' && listingMode === 'REPLENISH_EXISTING'
+                          ? 'Add Replenish Item'
+                          : batch.channel === 'MFN'
+                            ? 'Add to MFN Batch'
+                            : 'Add to Batch'}
                     </button>
                   </div>
                 </div>
