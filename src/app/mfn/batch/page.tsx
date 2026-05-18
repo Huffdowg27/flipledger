@@ -654,6 +654,56 @@ function isBatchItem(item: SearchResult | BatchItem): item is BatchItem {
   return 'draft_qty' in item;
 }
 
+function amazonAsinUrl(asin: string | null | undefined): string | null {
+  const value = (asin ?? '').trim();
+  return value ? `https://www.amazon.com/dp/${encodeURIComponent(value)}` : null;
+}
+
+function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
+  const value = (sku ?? '').trim();
+  return value
+    ? `https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${encodeURIComponent(value)}`
+    : null;
+}
+
+function AsinLink({ asin, className }: { asin: string | null | undefined; className?: string }) {
+  const value = (asin ?? '').trim();
+  const href = amazonAsinUrl(value);
+  if (!href) return null;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      className={className}
+      title={`Open ASIN on Amazon: ${value}`}
+    >
+      {value}
+    </a>
+  );
+}
+
+function MskuLink({ sku, className }: { sku: string | null | undefined; className?: string }) {
+  const value = (sku ?? '').trim();
+  const href = sellerCentralSkuUrl(value);
+  if (!href) return null;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      className={className}
+      title={`Open MSKU in Seller Central: ${value}`}
+    >
+      {value}
+    </a>
+  );
+}
+
 // Read-only details flyout. No API calls; reuses ChannelBadge,
 // WarningChip, ReceiveProgressBar, calcProfit, formatCurrency. Doesn't
 // mutate save_state or touch any draft_* fields.
@@ -696,7 +746,7 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
               {item.product_name || item.asin}
             </div>
             <div className="flex items-center gap-1.5 mt-1 flex-wrap text-[10px] text-text-tertiary">
-              <span className="font-mono text-blue-400">{item.asin}</span>
+              <AsinLink asin={item.asin} className="font-mono text-blue-400 hover:text-blue-300 hover:underline" />
               <ChannelBadge channel={item.fulfillment_channel} />
               {liveStateBadge(item.amazon_status, item.amazon_qty)}
             </div>
@@ -711,10 +761,10 @@ function ItemDetailDrawer({ item, onImageClick, onPrintLabel, onEdit, onClose, a
           <section>
             <div className="text-[10px] uppercase tracking-wider text-text-tertiary/70 mb-1.5">Identifiers</div>
             <div className="grid grid-cols-[80px_1fr] gap-y-1 gap-x-3">
-              <span className="text-text-tertiary">ASIN</span><span className="font-mono text-text-secondary">{item.asin}</span>
+              <span className="text-text-tertiary">ASIN</span><AsinLink asin={item.asin} className="font-mono text-text-secondary hover:text-blue-300 hover:underline" />
               {item.upc && (<><span className="text-text-tertiary">UPC</span><span className="font-mono text-text-secondary">{item.upc}</span></>)}
               <span className="text-text-tertiary">MSKU</span>
-              <span className="font-mono text-text-secondary break-all">{item.sku}</span>
+              <MskuLink sku={item.sku} className="font-mono text-text-secondary break-all hover:text-blue-300 hover:underline" />
             </div>
           </section>
 
@@ -880,12 +930,12 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
           {result.product_name || result.asin}
         </div>
         <div className="flex items-center gap-1.5 mt-0.5">
-          <span className="text-[10px] font-mono text-blue-400">{result.asin}</span>
+          <AsinLink asin={result.asin} className="text-[10px] font-mono text-blue-400 hover:text-blue-300 hover:underline" />
           {liveStateBadge(result.amazon_status, result.amazon_qty)}
           {result.upc && <UpcChip upc={result.upc} />}
         </div>
         <div className="mt-0.5">
-          <span className="font-mono text-[9px] text-text-tertiary/50 truncate block" title={result.sku}>{result.sku}</span>
+          <MskuLink sku={result.sku} className="font-mono text-[9px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
         </div>
         {(displayCost != null || displayPrice != null) && (
           <div className="flex items-center gap-2 mt-0.5">
@@ -985,14 +1035,14 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
           </span>
         </div>
         <div className="flex items-center gap-1 mt-0.5">
-          <span className="font-mono text-[10px] text-blue-400/80 shrink-0">{item.asin}</span>
+          <AsinLink asin={item.asin} className="font-mono text-[10px] text-blue-400/80 shrink-0 hover:text-blue-300 hover:underline" />
           <ChannelBadge channel={item.fulfillment_channel} />
         </div>
       </div>
 
       {/* Zone 3 — MSKU (112px, truncates) */}
       <div className="w-28 shrink-0">
-        <span className="font-mono text-[9px] text-text-tertiary/50 truncate block" title={item.sku}>{item.sku}</span>
+        <MskuLink sku={item.sku} className="font-mono text-[9px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
       </div>
 
       {/* Zone 4 — Qty (w-32 fixed): InlineQtyEdit + optional receive progress */}
@@ -1140,7 +1190,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             {item.product_name || item.asin}
           </div>
           <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            <span className="text-[10px] font-mono text-blue-400">{item.asin}</span>
+            <AsinLink asin={item.asin} className="text-[10px] font-mono text-blue-400 hover:text-blue-300 hover:underline" />
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
             <ChannelBadge channel={item.fulfillment_channel} />
             {item.amazon_qty != null && (
@@ -2229,8 +2279,8 @@ export default function MfnBatchReceivePage() {
                   {lightbox.title}
                 </div>
                 <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-text-tertiary">
-                  {lightbox.asin && <span className="text-blue-400/80">{lightbox.asin}</span>}
-                  <span className="truncate" title={lightbox.sku}>{lightbox.sku}</span>
+                  {lightbox.asin && <AsinLink asin={lightbox.asin} className="text-blue-400/80 hover:text-blue-300 hover:underline" />}
+                  <MskuLink sku={lightbox.sku} className="truncate hover:text-blue-300 hover:underline" />
                 </div>
               </div>
               <button
