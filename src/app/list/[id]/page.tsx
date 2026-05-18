@@ -205,6 +205,56 @@ interface CatalogResult {
   shippingEstimate?: ShippingEstimate | null;
 }
 
+function amazonAsinUrl(asin: string | null | undefined): string | null {
+  const value = (asin ?? '').trim();
+  return value ? `https://www.amazon.com/dp/${encodeURIComponent(value)}` : null;
+}
+
+function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
+  const value = (sku ?? '').trim();
+  return value
+    ? `https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${encodeURIComponent(value)}`
+    : null;
+}
+
+function AsinLink({ asin, className }: { asin: string | null | undefined; className?: string }) {
+  const value = (asin ?? '').trim();
+  const href = amazonAsinUrl(value);
+  if (!href) return null;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      className={className}
+      title={`Open ASIN on Amazon: ${value}`}
+    >
+      {value}
+    </a>
+  );
+}
+
+function MskuLink({ sku, className }: { sku: string | null | undefined; className?: string }) {
+  const value = (sku ?? '').trim();
+  const href = sellerCentralSkuUrl(value);
+  if (!href) return null;
+
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      className={className}
+      title={`Open MSKU in Seller Central: ${value}`}
+    >
+      {value}
+    </a>
+  );
+}
+
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
     draft:     'bg-bg-elevated text-text-secondary border-border-default',
@@ -1411,7 +1461,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-text-primary line-clamp-2">{scanned.name}</div>
                     <div className="flex items-center gap-2 mt-1 text-[11px] text-text-tertiary font-mono">
-                      <span>{scanned.asin}</span>
+                      <AsinLink asin={scanned.asin} className="hover:text-accent hover:underline" />
                       {scanned.brand && <span>· {scanned.brand}</span>}
                       <span className={`ml-auto px-1.5 py-0.5 rounded ${scanned.source === 'local' ? 'bg-positive/10 text-positive' : 'bg-accent/10 text-accent'}`}>
                         {scanned.source === 'local' ? 'IN YOUR CATALOG' : 'FROM AMAZON'}
@@ -1596,7 +1646,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                             }}
                           >
                             <div className="flex-1 min-w-0">
-                              <div className="font-mono text-text-primary break-all">{s.sku}</div>
+                              <MskuLink sku={s.sku} className="font-mono text-text-primary break-all hover:text-accent hover:underline" />
                               <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                                 <span className={`px-1 py-0.5 rounded text-[9px] font-semibold ${statusColor}`}>
                                   {statusLabel}
@@ -1684,7 +1734,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                             <div className="mt-1 bg-positive/5 border border-positive/20 rounded p-2.5 text-[11px]">
                               <div className="text-positive font-semibold mb-1">Selected for replenishment</div>
                               <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 font-mono text-text-primary">
-                                <span className="text-text-tertiary">MSKU:</span><span className="break-all">{selectedExistingSku.sku}</span>
+                                <span className="text-text-tertiary">MSKU:</span><MskuLink sku={selectedExistingSku.sku} className="break-all hover:text-accent hover:underline" />
                                 <span className="text-text-tertiary">FNSKU:</span><span>{selectedExistingSku.fnsku || '—'}</span>
                                 <span className="text-text-tertiary">Channel:</span><span>{selectedExistingSku.fulfillmentChannel}</span>
                                 <span className="text-text-tertiary">Status:</span><span>{skuStatusLabel(selectedExistingSku).label}</span>
@@ -1906,7 +1956,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                               {item.productName || item.asin}
                             </a>
                             <div className="flex items-center gap-1.5 text-[11px] text-text-tertiary font-mono">
-                              <span>{item.sku}</span>
+                              <MskuLink sku={item.sku} className="hover:text-accent hover:underline" />
                               {item.listingStatus === 'ACTIVE' && (
                                 <span className="text-[9px] text-positive bg-positive/10 px-1 rounded">LIVE</span>
                               )}
@@ -2361,9 +2411,9 @@ function SendStatusCard({
                   <div key={item.id} className="bg-bg-elevated rounded p-2 text-[11px] font-mono">
                     <div className="flex gap-2 items-start flex-wrap">
                       <span className="text-text-tertiary">SKU:</span>
-                      <span className="text-text-primary">{item.sku}</span>
+                      <MskuLink sku={item.sku} className="text-text-primary hover:text-accent hover:underline" />
                       <span className="text-text-tertiary ml-2">ASIN:</span>
-                      <span className="text-text-primary">{item.asin}</span>
+                      <AsinLink asin={item.asin} className="text-text-primary hover:text-accent hover:underline" />
                     </div>
                     <div className="flex gap-2 items-start flex-wrap mt-1">
                       <span className="text-text-tertiary">FNSKU:</span>
@@ -3126,7 +3176,7 @@ function BoxingWorkflow({
                                     <span className="text-text-primary truncate flex-1" title={batchItem.productName || ''}>
                                       {batchItem.productName || batchItem.asin}
                                     </span>
-                                    <span className="text-text-tertiary font-mono">{batchItem.sku}</span>
+                                    <MskuLink sku={batchItem.sku} className="text-text-tertiary font-mono hover:text-accent hover:underline" />
                                     {packingLocked ? (
                                       <span className="text-text-secondary font-mono w-10 text-right">× {quantity}</span>
                                     ) : (
@@ -4073,7 +4123,7 @@ function UnassignedItemRow({
       <span className="text-text-primary truncate flex-1" title={item.productName || ''}>
         {item.productName || item.asin}
       </span>
-      <span className="text-text-tertiary font-mono">{item.sku}</span>
+      <MskuLink sku={item.sku} className="text-text-tertiary font-mono hover:text-accent hover:underline" />
       <span className="text-amber-400 font-mono w-14 text-right">{remaining} left</span>
       <input
         type="number"
