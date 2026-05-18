@@ -4,9 +4,9 @@ import path from 'path';
 import { fetchCatalogByAsin, isBarcode, searchCatalog } from '@/lib/sp-api/catalog';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
 
-function getDb() {
+function getDb(readonly = true) {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath, { readonly: true });
+  const db = new Database(dbPath, { readonly });
   db.pragma('journal_mode = WAL');
   return db;
 }
@@ -155,6 +155,66 @@ function rowAsin(row: DbRow): string | null {
   return /^B[0-9A-Z]{9}$/.test(asin) ? asin : null;
 }
 
+function cacheCatalogImages(rows: DbRow[], catalogImageByAsin: Map<string, string>): void {
+  const now = new Date().toISOString();
+  const candidates = rows
+    .map(row => {
+      const asin = rowAsin(row);
+      const imageUrl = asin ? catalogImageByAsin.get(asin) : null;
+      return asin && imageUrl && !rowImageUrl(row)
+        ? {
+            asin,
+            sku: String(row.sku ?? '').trim() || null,
+            productName: String(row.product_name ?? '').trim() || null,
+            imageUrl,
+          }
+        : null;
+    })
+    .filter((row): row is { asin: string; sku: string | null; productName: string | null; imageUrl: string } => row != null);
+
+  if (candidates.length === 0) return;
+
+  const db = getDb(false);
+  try {
+    const upsertImage = db.prepare(`
+      INSERT INTO products (asin, sku, name, image_url, marketplace, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 'amazon', ?, ?)
+      ON CONFLICT(asin) DO UPDATE SET
+        image_url = CASE
+          WHEN products.image_url IS NULL OR TRIM(products.image_url) = ''
+          THEN excluded.image_url
+          ELSE products.image_url
+        END,
+        name = CASE
+          WHEN products.name IS NULL OR TRIM(products.name) = ''
+          THEN excluded.name
+          ELSE products.name
+        END,
+        sku = CASE
+          WHEN products.sku IS NULL OR TRIM(products.sku) = ''
+          THEN excluded.sku
+          ELSE products.sku
+        END,
+        updated_at = CASE
+          WHEN products.image_url IS NULL OR TRIM(products.image_url) = ''
+          THEN excluded.updated_at
+          ELSE products.updated_at
+        END
+    `);
+
+    const writeImages = db.transaction(() => {
+      for (const row of candidates) {
+        upsertImage.run(row.asin, row.sku, row.productName, row.imageUrl, now, now);
+      }
+    });
+    writeImages();
+  } catch (error) {
+    console.warn('[mfn-search] catalog image cache write failed:', error);
+  } finally {
+    db.close();
+  }
+}
+
 async function addCatalogImageFallback(rows: DbRow[]): Promise<DbRow[]> {
   const missingImageAsins = Array.from(new Set(
     rows
@@ -180,6 +240,8 @@ async function addCatalogImageFallback(rows: DbRow[]): Promise<DbRow[]> {
 
   if (catalogImageByAsin.size === 0) return rows;
 
+  cacheCatalogImages(rows, catalogImageByAsin);
+
   return rows.map(row => {
     const asin = rowAsin(row);
     return {
@@ -191,7 +253,8 @@ async function addCatalogImageFallback(rows: DbRow[]): Promise<DbRow[]> {
 
 // GET /api/data/mfn-search?q=<term>
 //
-// Read-only. No Amazon writes.
+// No Amazon writes. May cache Catalog image_url locally for exact ASINs
+// when the matching products row is missing a photo.
 //
 // Query routing:
 //   Barcode (10-14 digits) → Amazon Catalog Items GET (read-only) to resolve ASINs,
