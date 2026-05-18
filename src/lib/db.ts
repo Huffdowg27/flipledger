@@ -649,6 +649,7 @@ export function initializeDatabase() {
     `ALTER TABLE listing_batch_items ADD COLUMN fulfillment_channel TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN listing_source TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN amazon_inventory_status TEXT`,
+    `ALTER TABLE listing_batch_items ADD COLUMN inventory_ledger_id INTEGER`,
     `ALTER TABLE inventory_ledger ADD COLUMN bin_location TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN condition TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN quantity_received INTEGER`,
