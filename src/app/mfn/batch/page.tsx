@@ -1171,25 +1171,25 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
     <div className={`rounded-lg border p-3 transition-colors ${borderClass}`}>
 
       {/* Header */}
-      <div className="flex items-center gap-3 mb-2">
+      <div className="flex items-start gap-3 mb-2">
         {item.image_url
           ? (
               <button
                 type="button"
                 onClick={onImageClick}
-                className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
+                className="shrink-0 rounded-md overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-blue-500/40 transition-shadow"
                 title="View larger"
               >
-                <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
+                <img src={item.image_url} alt="" className="w-20 h-20 object-contain block p-1" />
               </button>
             )
-          : <div className="w-8 h-8 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
+          : <div className="w-20 h-20 bg-slate-700/40 rounded-md shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
         <div className="min-w-0 flex-1">
-          <div className="text-xs font-medium text-text-primary leading-snug line-clamp-1" title={item.product_name ?? item.asin}>
+          <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
-          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
             <AsinLink asin={item.asin} className="text-[10px] font-mono text-blue-400 hover:text-blue-300 hover:underline" />
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
             <ChannelBadge channel={item.fulfillment_channel} />
