@@ -159,35 +159,90 @@ export async function DELETE(
 
   const db = getDb();
   let affectedSku: string | null = null;
+  let ledgerChanged = false;
   try {
-    const batch = db.prepare('SELECT status FROM listing_batches WHERE id = ?').get(batchId) as any;
+    const batch = db.prepare('SELECT status FROM listing_batches WHERE id = ?').get(batchId) as { status?: string } | undefined;
     if (!batch) return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
     if (batch.status !== 'draft') {
       return NextResponse.json({ error: `Cannot remove items in status: ${batch.status}` }, { status: 400 });
     }
 
-    // Roll back the inventory_ledger add that happened when this item was created,
-    // so deleting a mistakenly-added batch item doesn't leave zombie inventory.
+    // Branch on listing_mode and inventory_ledger_id:
+    //
+    // - REPLENISH_EXISTING: the linked lot pre-existed and was never grown by
+    //   the POST. Do not touch inventory_ledger. Just remove the batch item.
+    //
+    // - CREATE_NEW with inventory_ledger_id: the lot was created by this item.
+    //   Decrement quantity and quantity_remaining by item.quantity. If the lot
+    //   has already had units consumed by FIFO (quantity_remaining < quantity
+    //   sold's worth), fail closed so we never roll back inventory that's
+    //   already attributed to a sale.
+    //
+    // - Legacy rows (inventory_ledger_id IS NULL): fall back to the pre-bridge
+    //   behavior — decrement by SKU with Math.max guards. Preserves correctness
+    //   for batch items created before this commit.
+    const LOT_CONSUMED = 'LOT_CONSUMED_FIFO_ALREADY_RAN';
+
     const rollback = db.transaction(() => {
-      const item = db.prepare('SELECT sku, quantity FROM listing_batch_items WHERE id = ? AND batch_id = ?')
-        .get(itemIdNum, batchId) as any;
+      const item = db.prepare(`
+        SELECT sku, quantity, listing_mode, inventory_ledger_id
+        FROM listing_batch_items
+        WHERE id = ? AND batch_id = ?
+      `).get(itemIdNum, batchId) as {
+        sku: string;
+        quantity: number;
+        listing_mode: string | null;
+        inventory_ledger_id: number | null;
+      } | undefined;
       if (!item) return null;
 
       affectedSku = item.sku;
+      const mode = item.listing_mode || 'CREATE_NEW';
 
-      // Decrement inventory_ledger by the item's quantity.
-      // The listing tool's POST handler either INSERTs a new row or INCREMENTs an existing one,
-      // so we roll back the same way: decrement quantity and quantity_remaining. If the row
-      // ends up at 0/0, delete it entirely (it was created by this add).
-      const ledger = db.prepare('SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE sku = ?').get(item.sku) as any;
-      if (ledger) {
-        const newQty = Math.max(0, ledger.quantity - item.quantity);
-        const newRemaining = Math.max(0, ledger.quantity_remaining - item.quantity);
-        if (newQty === 0) {
-          db.prepare('DELETE FROM inventory_ledger WHERE id = ?').run(ledger.id);
-        } else {
-          db.prepare('UPDATE inventory_ledger SET quantity = ?, quantity_remaining = ? WHERE id = ?')
-            .run(newQty, newRemaining, ledger.id);
+      if (mode === 'REPLENISH_EXISTING') {
+        // Pre-existing real inventory. Touch nothing on inventory_ledger.
+      } else if (item.inventory_ledger_id != null) {
+        // CREATE_NEW with a linked lot (new path from this commit forward).
+        const ledger = db.prepare(
+          'SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE id = ?'
+        ).get(item.inventory_ledger_id) as
+          { id: number; quantity: number; quantity_remaining: number } | undefined;
+        if (ledger) {
+          if (ledger.quantity < item.quantity || ledger.quantity_remaining < item.quantity) {
+            // FIFO has already consumed units from this lot. Rolling back the
+            // decrement would either go negative or contradict cogs already
+            // attributed to orders. Fail closed; the user can resolve via the
+            // inventory-lots admin path.
+            throw new Error(LOT_CONSUMED);
+          }
+          const newQty = ledger.quantity - item.quantity;
+          const newRemaining = ledger.quantity_remaining - item.quantity;
+          if (newQty === 0) {
+            db.prepare('DELETE FROM inventory_ledger WHERE id = ?').run(ledger.id);
+          } else {
+            db.prepare(
+              'UPDATE inventory_ledger SET quantity = ?, quantity_remaining = ? WHERE id = ?'
+            ).run(newQty, newRemaining, ledger.id);
+          }
+          ledgerChanged = true;
+        }
+      } else {
+        // Legacy fallback: batch item predates inventory_ledger_id population.
+        // Use the pre-bridge SKU-based decrement so existing rows keep working.
+        const ledger = db.prepare(
+          'SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE sku = ?'
+        ).get(item.sku) as { id: number; quantity: number; quantity_remaining: number } | undefined;
+        if (ledger) {
+          const newQty = Math.max(0, ledger.quantity - item.quantity);
+          const newRemaining = Math.max(0, ledger.quantity_remaining - item.quantity);
+          if (newQty === 0) {
+            db.prepare('DELETE FROM inventory_ledger WHERE id = ?').run(ledger.id);
+          } else {
+            db.prepare(
+              'UPDATE inventory_ledger SET quantity = ?, quantity_remaining = ? WHERE id = ?'
+            ).run(newQty, newRemaining, ledger.id);
+          }
+          ledgerChanged = true;
         }
       }
 
@@ -196,12 +251,29 @@ export async function DELETE(
       return item;
     });
 
-    const removed = rollback();
+    let removed;
+    try {
+      removed = rollback();
+    } catch (txErr) {
+      db.close();
+      const msg = txErr instanceof Error ? txErr.message : String(txErr);
+      if (msg === 'LOT_CONSUMED_FIFO_ALREADY_RAN') {
+        return NextResponse.json(
+          {
+            error:
+              'Cannot remove this item: its inventory lot has already had units consumed by recorded sales. Adjust the lot directly via the inventory-lots admin path.',
+          },
+          { status: 409 }
+        );
+      }
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+
     db.close();
 
-    // Re-run FIFO for the affected SKU so order_items cogs_per_unit rebalances
-    // against the reduced ledger.
-    if (affectedSku) {
+    // Only re-run FIFO when a lot actually changed. Replenish deletes touch
+    // no ledger row, so FIFO has nothing to re-allocate.
+    if (ledgerChanged && affectedSku) {
       try { recalculateFIFO({ sku: affectedSku }); } catch { /* best effort */ }
     }
 
