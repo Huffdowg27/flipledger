@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
-import { isBarcode, searchCatalog } from '@/lib/sp-api/catalog';
+import { fetchCatalogByAsin, isBarcode, searchCatalog } from '@/lib/sp-api/catalog';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
 
 function getDb() {
@@ -142,6 +142,53 @@ const LISTING_ORDER = `
 
 type DbRow = Record<string, unknown>;
 
+const CATALOG_IMAGE_LOOKUP_LIMIT = 15;
+
+function rowImageUrl(row: DbRow): string | null {
+  return typeof row.image_url === 'string' && row.image_url.trim()
+    ? row.image_url.trim()
+    : null;
+}
+
+function rowAsin(row: DbRow): string | null {
+  const asin = String(row.asin ?? '').trim().toUpperCase();
+  return /^B[0-9A-Z]{9}$/.test(asin) ? asin : null;
+}
+
+async function addCatalogImageFallback(rows: DbRow[]): Promise<DbRow[]> {
+  const missingImageAsins = Array.from(new Set(
+    rows
+      .filter(row => !rowImageUrl(row))
+      .map(rowAsin)
+      .filter((asin): asin is string => asin != null)
+  )).slice(0, CATALOG_IMAGE_LOOKUP_LIMIT);
+
+  if (missingImageAsins.length === 0) return rows;
+
+  const creds = getCredentials();
+  if (!creds) return rows;
+
+  const catalogImageByAsin = new Map<string, string>();
+  for (const asin of missingImageAsins) {
+    try {
+      const catalogItem = await fetchCatalogByAsin(creds, asin);
+      if (catalogItem?.imageUrl) catalogImageByAsin.set(asin, catalogItem.imageUrl);
+    } catch (error) {
+      console.warn(`[mfn-search] catalog image fallback failed asin=${asin}:`, error);
+    }
+  }
+
+  if (catalogImageByAsin.size === 0) return rows;
+
+  return rows.map(row => {
+    const asin = rowAsin(row);
+    return {
+      ...row,
+      image_url: rowImageUrl(row) || (asin ? catalogImageByAsin.get(asin) : null) || null,
+    };
+  });
+}
+
 // GET /api/data/mfn-search?q=<term>
 //
 // Read-only. No Amazon writes.
@@ -150,7 +197,8 @@ type DbRow = Record<string, unknown>;
 //   Barcode (10-14 digits) → Amazon Catalog Items GET (read-only) to resolve ASINs,
 //     then cross-reference with local merchant_listings. Falls back to empty results
 //     when SP-API credentials are not configured.
-//   ASIN / MSKU / title → local SQLite search only.
+//   ASIN / MSKU / title → local SQLite search, with read-only Catalog image
+//     fallback for rows missing cached product photos.
 //
 // Returns up to 15 results ordered by: Active first, then OOS, then others.
 export async function GET(request: NextRequest) {
@@ -209,12 +257,13 @@ export async function GET(request: NextRequest) {
 
   // --- Local path (ASIN / MSKU / title) ---
   const db = getDb();
+  let rows: DbRow[];
   try {
     const exactAsin = q.toUpperCase();
     const skuLike   = `%${q}%`;
     const titleLike = `%${q.toLowerCase()}%`;
 
-    const rows = db.prepare(`
+    rows = db.prepare(`
       ${LISTING_SELECT}
         AND (
           ml.asin = ?
@@ -223,17 +272,18 @@ export async function GET(request: NextRequest) {
         )
       ${LISTING_ORDER}
     `).all(exactAsin, skuLike, titleLike) as DbRow[];
-
-    const results = rows.map(row => ({
-      ...row,
-      ...parseSku(String(row.sku ?? '')),
-    }));
-
-    return NextResponse.json({ results });
   } catch (error) {
     console.error('[mfn-search] error:', error);
     return NextResponse.json({ error: 'Search failed' }, { status: 500 });
   } finally {
     db.close();
   }
+
+  const rowsWithImages = await addCatalogImageFallback(rows);
+  const results = rowsWithImages.map(row => ({
+    ...row,
+    ...parseSku(String(row.sku ?? '')),
+  }));
+
+  return NextResponse.json({ results });
 }
