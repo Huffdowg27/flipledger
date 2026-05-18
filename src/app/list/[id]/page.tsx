@@ -977,6 +977,28 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           setListingMode('REPLENISH_EXISTING');
           if (s.listPriceCents > 0) setListPrice((s.listPriceCents / 100).toFixed(2));
         }
+        // MFN auto-select (only when this batch is channel=MFN): exactly one
+        // ACTIVE/DISCOVERABLE MFN MSKU from SP-API and no other MFN candidates
+        // of any status. MFN listings don't have FNSKUs, so unlike the FBA
+        // rule there is no FNSKU requirement. Runs after the FBA rule so MFN
+        // wins when both an FBA and MFN match exist on an MFN batch.
+        if (batch?.channel === 'MFN') {
+          const amazonMfnSkus = skus.filter(
+            (s) => (s.source === 'AMAZON_INVENTORY' || s.source === 'sp-api') &&
+                   s.fulfillmentChannel === 'MFN'
+          );
+          const activeMfnSkus = amazonMfnSkus.filter(
+            (s) => s.listingStatus === 'ACTIVE' || s.listingStatus === 'DISCOVERABLE'
+          );
+          if (activeMfnSkus.length === 1 && amazonMfnSkus.length === 1) {
+            const s = activeMfnSkus[0];
+            setSelectedExistingSku(s);
+            setSku(s.sku);
+            setSkuManuallyEdited(true);
+            setListingMode('REPLENISH_EXISTING');
+            if (s.listPriceCents > 0) setListPrice((s.listPriceCents / 100).toFixed(2));
+          }
+        }
         // else: multiple or ambiguous — user must pick from the list
       }
     } catch (err) {

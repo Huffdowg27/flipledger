@@ -79,6 +79,26 @@ export async function GET(request: NextRequest) {
 
     const localBySkuMap = new Map(localRows.map((r) => [r.sku, r]));
 
+    // merchant_listings carries authoritative list price for MFN SKUs.
+    // live_inventory.list_price is FBA-only, so MFN rows would otherwise
+    // show no price. Preferred for MFN; FBA continues to read from local.
+    const merchantRows = db.prepare(`
+      SELECT sku, status, list_price_cents
+      FROM merchant_listings
+      WHERE asin = ? AND marketplace = 'amazon'
+    `).all(asin) as { sku: string; status: string | null; list_price_cents: number | null }[];
+    const merchantBySkuMap = new Map(merchantRows.map((r) => [r.sku, r]));
+
+    // Pick the list price for a row by channel: prefer merchant_listings for
+    // MFN, fall back to live_inventory for FBA (and as a last resort for MFN).
+    const pickListPriceCents = (sku: string, channel: 'FBA' | 'MFN'): number => {
+      if (channel === 'MFN') {
+        const m = merchantBySkuMap.get(sku);
+        if (m?.list_price_cents != null && m.list_price_cents > 0) return m.list_price_cents;
+      }
+      return localBySkuMap.get(sku)?.list_price ?? 0;
+    };
+
     const creds = getAmazonCredentials(db);
     db.close();
 
@@ -174,8 +194,8 @@ export async function GET(request: NextRequest) {
           conditionType: l.conditionType,
           // Use SP-API stock if available; fall back to local snapshot.
           fbaStock: l.fbaStock > 0 ? l.fbaStock : (local?.fulfillable_qty ?? 0),
-          // list_price only comes from local snapshot since Listings API doesn't surface it.
-          listPriceCents: local?.list_price ?? 0,
+          // MFN price comes from merchant_listings; FBA from live_inventory cache.
+          listPriceCents: pickListPriceCents(l.sku, l.fulfillmentChannel),
           itemName: l.itemName,
           source: 'AMAZON_INVENTORY' as const,
           lastSynced: new Date().toISOString(),
@@ -222,7 +242,6 @@ export async function GET(request: NextRequest) {
               : statusArr.includes('INACTIVE') ? 'INACTIVE'
               : statusArr[0] || 'DISCOVERABLE'; // FBA inventory implies at least DISCOVERABLE
             const fnsku = summary.fnSku || inv.fnSku || null;
-            const localSnap = localBySkuMap.get(inv.sellerSku);
             console.log(`[existing-skus] fbaInventory ${inv.sellerSku}: status=${listingStatus} fnsku=${fnsku} fulfillable=${inv.fulfillableQty}`);
             fbaInventorySkus.push({
               sku: inv.sellerSku,
@@ -232,7 +251,7 @@ export async function GET(request: NextRequest) {
               fulfillmentChannel: 'FBA',
               conditionType: summary.conditionType || 'new_new',
               fbaStock: inv.fulfillableQty,
-              listPriceCents: localSnap?.list_price || 0,
+              listPriceCents: pickListPriceCents(inv.sellerSku, 'FBA'),
               itemName: inv.productName || summary.itemName || null,
               source: 'AMAZON_INVENTORY' as const,
               lastSynced: new Date().toISOString(),
@@ -240,7 +259,6 @@ export async function GET(request: NextRequest) {
           } catch (err) {
             console.log(`[existing-skus] getListing for ${inv.sellerSku}: error — ${err}`);
             // Include with minimal data from FBA inventory — still AMAZON_INVENTORY.
-            const localSnap = localBySkuMap.get(inv.sellerSku);
             fbaInventorySkus.push({
               sku: inv.sellerSku,
               fnsku: inv.fnSku || null,
@@ -249,7 +267,7 @@ export async function GET(request: NextRequest) {
               fulfillmentChannel: 'FBA',
               conditionType: 'new_new',
               fbaStock: inv.fulfillableQty,
-              listPriceCents: localSnap?.list_price || 0,
+              listPriceCents: pickListPriceCents(inv.sellerSku, 'FBA'),
               itemName: inv.productName || null,
               source: 'AMAZON_INVENTORY' as const,
               lastSynced: new Date().toISOString(),
@@ -298,7 +316,7 @@ export async function GET(request: NextRequest) {
           fulfillmentChannel,
           conditionType: summary.conditionType || 'new_new',
           fbaStock,
-          listPriceCents: r.list_price || 0,
+          listPriceCents: pickListPriceCents(r.sku, fulfillmentChannel),
           itemName: summary.itemName || null,
           source: 'AMAZON_INVENTORY' as const,
           lastSynced: new Date().toISOString(),
