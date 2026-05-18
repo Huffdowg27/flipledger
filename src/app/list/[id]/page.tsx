@@ -1509,7 +1509,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                         <span className="text-text-primary font-mono">{scanned.unitsSoldLast30d ?? 0}</span>
                       </div>
                       <div>
-                        <span className="text-text-tertiary">FBA stock: </span>
+                        <span className="text-text-tertiary">{batch.channel === 'MFN' ? 'Amazon qty: ' : 'FBA stock: '}</span>
                         <span className="text-text-primary font-mono">{scanned.currentFbaStock ?? 0}</span>
                       </div>
                     </div>
@@ -1635,7 +1635,11 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                           }
                           return { label: 'ACTIVE MFN', color: 'bg-positive/10 text-positive' };
                         }
-                        if (s.listingStatus === 'DISCOVERABLE') return { label: 'OUT OF STOCK / ACTIVE REPLENISHABLE', color: 'bg-accent/10 text-accent' };
+                        if (s.listingStatus === 'DISCOVERABLE') {
+                          return s.fulfillmentChannel === 'MFN'
+                            ? { label: 'Active · OOS', color: 'bg-accent/10 text-accent' }
+                            : { label: 'OUT OF STOCK / ACTIVE REPLENISHABLE', color: 'bg-accent/10 text-accent' };
+                        }
                         if (s.listingStatus === 'SUPPRESSED') return { label: 'SUPPRESSED', color: 'bg-negative/10 text-negative' };
                         if (s.listingStatus === 'INCOMPLETE') return { label: 'INCOMPLETE', color: 'bg-amber-500/10 text-amber-400' };
                         if (s.listingStatus === 'INACTIVE') return { label: 'INACTIVE', color: 'bg-text-tertiary/10 text-text-tertiary' };
@@ -1673,13 +1677,18 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                                 <span className={`px-1 py-0.5 rounded text-[9px] font-semibold ${statusColor}`}>
                                   {statusLabel}
                                 </span>
-                                {/* Source tag — always visible */}
+                                {/* Source tag — always visible.
+                                    For MFN-channel rows the source is shown as
+                                    "Seller Central" rather than the internal
+                                    "AMAZON_INVENTORY" identifier. */}
                                 <span className={`px-1 py-0.5 rounded text-[9px] font-semibold ${
                                   isAmazonSource(s)
                                     ? 'bg-accent/15 text-accent'
                                     : 'bg-text-tertiary/15 text-text-tertiary'
                                 }`}>
-                                  {isAmazonSource(s) ? 'AMAZON_INVENTORY' : 'LOCAL_DB'}
+                                  {isAmazonSource(s)
+                                    ? (s.fulfillmentChannel === 'MFN' ? 'Seller Central' : 'AMAZON_INVENTORY')
+                                    : 'LOCAL_DB'}
                                 </span>
                                 {s.conditionType && (
                                   <span className="text-text-tertiary">{s.conditionType.replace(/_/g, ' ')}</span>
