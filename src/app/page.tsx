@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import StatCard from '@/components/ui/StatCard';
-import StatusBadge from '@/components/ui/StatusBadge';
+import StatusBadge, { type StatusBadgeTone } from '@/components/ui/StatusBadge';
 import DateRangePicker, { type DateRange } from '@/components/ui/DateRangePicker';
 import MarketplaceFilter from '@/components/ui/MarketplaceFilter';
 import { useFilters } from '@/lib/useFilters';
@@ -39,6 +39,22 @@ interface DashboardData {
 }
 
 const CHART_COLORS = ['#3b82f6', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#f97316'];
+
+function marketplaceTone(m: string): StatusBadgeTone {
+  if (m === 'amazon')  return 'amazon';
+  if (m === 'walmart') return 'walmart';
+  if (m === 'ebay')    return 'ebay';
+  if (m === 'paypal')  return 'paypal';
+  return 'neutral';
+}
+
+function marketplaceLabel(m: string): string {
+  if (m === 'amazon')  return 'AMZ';
+  if (m === 'walmart') return 'WMT';
+  if (m === 'ebay')    return 'EBAY';
+  if (m === 'paypal')  return 'PP';
+  return (m || '').toUpperCase();
+}
 
 interface DayDetail {
   order_id: string;
@@ -569,15 +585,9 @@ export default function Dashboard() {
                         <div className="text-[11px] text-text-tertiary font-mono">{item.sku}</div>
                       </td>
                       <td className="px-4 py-2">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${
-                          item.marketplace === 'amazon' ? 'bg-orange-500/10 text-orange-400' :
-                          item.marketplace === 'walmart' ? 'bg-blue-500/10 text-blue-400' :
-                          item.marketplace === 'ebay' ? 'bg-green-500/10 text-green-400' :
-                          item.marketplace === 'paypal' ? 'bg-cyan-500/10 text-cyan-400' :
-                          'bg-purple-500/10 text-purple-400'
-                        }`}>
-                          {item.marketplace === 'amazon' ? 'AMZ' : item.marketplace === 'walmart' ? 'WMT' : item.marketplace === 'ebay' ? 'EBAY' : item.marketplace === 'paypal' ? 'PP' : (item.marketplace || '').toUpperCase()}
-                        </span>
+                        <StatusBadge tone={marketplaceTone(item.marketplace)} size="xs">
+                          {marketplaceLabel(item.marketplace)}
+                        </StatusBadge>
                       </td>
                       <td className="px-4 py-2 text-right text-sm font-mono text-text-secondary">{item.quantity}</td>
                       <td className="px-4 py-2 text-right text-sm font-mono text-text-primary">{formatCurrency(item.revenue)}</td>
@@ -608,15 +618,9 @@ export default function Dashboard() {
                           <div className="text-[11px] text-text-tertiary font-mono">{item.reason}</div>
                         </td>
                         <td className="px-4 py-2">
-                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${
-                            item.marketplace === 'amazon' ? 'bg-orange-500/10 text-orange-400' :
-                            item.marketplace === 'walmart' ? 'bg-blue-500/10 text-blue-400' :
-                            item.marketplace === 'ebay' ? 'bg-green-500/10 text-green-400' :
-                            item.marketplace === 'paypal' ? 'bg-cyan-500/10 text-cyan-400' :
-                            'bg-purple-500/10 text-purple-400'
-                          }`}>
-                            {item.marketplace === 'amazon' ? 'AMZ' : item.marketplace === 'walmart' ? 'WMT' : item.marketplace === 'ebay' ? 'EBAY' : item.marketplace === 'paypal' ? 'PP' : (item.marketplace || '').toUpperCase()}
-                          </span>
+                          <StatusBadge tone={marketplaceTone(item.marketplace)} size="xs">
+                            {marketplaceLabel(item.marketplace)}
+                          </StatusBadge>
                         </td>
                         <td className="px-4 py-2 text-right text-sm font-mono text-text-secondary">{item.quantity}</td>
                         <td className="px-4 py-2 text-right text-sm font-mono text-negative">{formatCurrency(-item.refund_amount)}</td>

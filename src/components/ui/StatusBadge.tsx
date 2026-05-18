@@ -8,7 +8,8 @@ export type StatusBadgeTone =
   | 'neutral'
   | 'amazon'
   | 'walmart'
-  | 'ebay';
+  | 'ebay'
+  | 'paypal';
 
 export type StatusBadgeSize = 'xs' | 'sm';
 
@@ -28,6 +29,7 @@ const TONE_CLASSES: Record<StatusBadgeTone, string> = {
   amazon:   'bg-amazon/10 text-amazon border-amazon/30',
   walmart:  'bg-walmart/10 text-walmart border-walmart/30',
   ebay:     'bg-ebay/10 text-ebay border-ebay/30',
+  paypal:   'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
 };
 
 const SIZE_CLASSES: Record<StatusBadgeSize, string> = {

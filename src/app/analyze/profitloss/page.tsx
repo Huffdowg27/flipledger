@@ -2,11 +2,28 @@
 
 import { useEffect, useState, useCallback } from 'react';
 import StatCard from '@/components/ui/StatCard';
+import StatusBadge, { type StatusBadgeTone } from '@/components/ui/StatusBadge';
 import PageHeader from '@/components/ui/PageHeader';
 import { type DateRange } from '@/components/ui/DateRangePicker';
 import { useFilters } from '@/lib/useFilters';
 import { formatCurrency, formatCurrencyParens, formatNumber } from '@/lib/formatters';
 import { ChevronDown, ChevronRight, Package } from 'lucide-react';
+
+function marketplaceTone(m: string): StatusBadgeTone {
+  if (m === 'amazon')  return 'amazon';
+  if (m === 'walmart') return 'walmart';
+  if (m === 'ebay')    return 'ebay';
+  if (m === 'paypal')  return 'paypal';
+  return 'neutral';
+}
+
+function marketplaceLabel(m: string): string {
+  if (m === 'amazon')  return 'AMZ';
+  if (m === 'walmart') return 'WMT';
+  if (m === 'ebay')    return 'EBAY';
+  if (m === 'paypal')  return 'PP';
+  return (m || '').toUpperCase();
+}
 
 interface SaleItem {
   order_id: string;
@@ -231,8 +248,6 @@ export default function ProfitLossPage() {
                   const settledTime = new Date(item.posted_date);
                   const timeStr = settledTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
                   const dateStr = settledTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                  const mktLabel = item.marketplace === 'amazon' ? 'AMZ' : item.marketplace === 'walmart' ? 'WMT' : item.marketplace === 'ebay' ? 'EBAY' : item.marketplace === 'paypal' ? 'PP' : (item.marketplace || '').toUpperCase();
-                  const mktColor = item.marketplace === 'amazon' ? 'bg-orange-500/10 text-orange-400' : item.marketplace === 'walmart' ? 'bg-blue-500/10 text-blue-400' : item.marketplace === 'ebay' ? 'bg-green-500/10 text-green-400' : item.marketplace === 'paypal' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-text-tertiary/10 text-text-tertiary';
                   return (
                     <tr key={`${item.order_id}-${item.sku}-${i}`} className="border-b border-border-subtle/50 hover:bg-bg-hover transition-colors">
                       <td className="px-4 py-2 text-sm">
@@ -240,9 +255,9 @@ export default function ProfitLossPage() {
                         <div className="text-[11px] text-text-tertiary font-mono">{item.sku}</div>
                       </td>
                       <td className="px-4 py-2">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${mktColor}`}>
-                          {mktLabel}
-                        </span>
+                        <StatusBadge tone={marketplaceTone(item.marketplace)} size="xs">
+                          {marketplaceLabel(item.marketplace)}
+                        </StatusBadge>
                       </td>
                       <td className="px-4 py-2 text-right text-sm font-mono text-text-secondary">{item.quantity}</td>
                       <td className="px-4 py-2 text-right text-sm font-mono text-text-primary">{formatCurrency(item.revenue)}</td>
@@ -294,8 +309,6 @@ export default function ProfitLossPage() {
                   const refundTime = new Date(item.refund_date);
                   const timeStr = refundTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
                   const dateStr = refundTime.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                  const mktLabel = item.marketplace === 'amazon' ? 'AMZ' : item.marketplace === 'walmart' ? 'WMT' : item.marketplace === 'ebay' ? 'EBAY' : item.marketplace === 'paypal' ? 'PP' : (item.marketplace || '').toUpperCase();
-                  const mktColor = item.marketplace === 'amazon' ? 'bg-orange-500/10 text-orange-400' : item.marketplace === 'walmart' ? 'bg-blue-500/10 text-blue-400' : item.marketplace === 'ebay' ? 'bg-green-500/10 text-green-400' : item.marketplace === 'paypal' ? 'bg-cyan-500/10 text-cyan-400' : 'bg-text-tertiary/10 text-text-tertiary';
                   return (
                     <tr key={`refund-${item.order_id}-${i}`} className="border-b border-border-subtle/50 hover:bg-bg-hover transition-colors">
                       <td className="px-4 py-2 text-sm">
@@ -303,9 +316,9 @@ export default function ProfitLossPage() {
                         <div className="text-[11px] text-text-tertiary font-mono">{item.sku}</div>
                       </td>
                       <td className="px-4 py-2">
-                        <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wider ${mktColor}`}>
-                          {mktLabel}
-                        </span>
+                        <StatusBadge tone={marketplaceTone(item.marketplace)} size="xs">
+                          {marketplaceLabel(item.marketplace)}
+                        </StatusBadge>
                       </td>
                       <td className="px-4 py-2 text-right text-sm font-mono text-text-secondary">{item.quantity}</td>
                       <td className="px-4 py-2 text-right text-sm font-mono text-negative">{formatCurrency(-item.refund_amount)}</td>
