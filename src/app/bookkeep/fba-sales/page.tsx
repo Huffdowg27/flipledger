@@ -9,6 +9,7 @@ import { useFilters } from '@/lib/useFilters';
 import DataTable from '@/components/tables/DataTable';
 import StatusBadge from '@/components/ui/StatusBadge';
 import { formatCurrency, formatPercent, formatDate } from '@/lib/formatters';
+import { Info } from 'lucide-react';
 
 interface SaleRow {
   soldDate: string;
@@ -29,6 +30,8 @@ interface SaleRow {
   isEstimated: boolean;
 }
 
+type StatusFilter = 'all' | 'estimated' | 'reconciled';
+
 function amazonOrderUrl(orderId: string): string {
   // Seller Central order detail page — works for the seller's own orders.
   return `https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(orderId)}`;
@@ -36,8 +39,8 @@ function amazonOrderUrl(orderId: string): string {
 
 export default function FBASalesPage() {
   const [rows, setRows] = useState<SaleRow[]>([]);
-  const [averages, setAverages] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const { dateRange, setDateRange, marketplace, setMarketplace, marketplaceParam } = useFilters();
 
   const fetchData = useCallback(async () => {
@@ -45,14 +48,79 @@ export default function FBASalesPage() {
     const res = await fetch(`/api/data/fba-sales?startDate=${dateRange.startDate}&endDate=${dateRange.endDate}${marketplaceParam}`);
     const data = await res.json();
     setRows(data.items || data.rows || []);
-    setAverages(data.averages || null);
     setLoading(false);
   }, [dateRange, marketplace]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const totalRevenue = rows.reduce((s, r) => s + r.salePrice, 0);
-  const totalProfit = rows.reduce((s, r) => s + r.profit, 0);
+  const statusCounts = useMemo(() => ({
+    all: rows.length,
+    estimated: rows.filter((row) => row.status === 'estimated').length,
+    reconciled: rows.filter((row) => row.status === 'reconciled').length,
+  }), [rows]);
+
+  const visibleRows = useMemo(() => (
+    statusFilter === 'all'
+      ? rows
+      : rows.filter((row) => row.status === statusFilter)
+  ), [rows, statusFilter]);
+
+  const visibleTotals = useMemo(() => {
+    const totalRevenue = visibleRows.reduce((s, r) => s + r.salePrice, 0);
+    const totalProfit = visibleRows.reduce((s, r) => s + r.profit, 0);
+    const totalBuyCost = visibleRows.reduce((s, r) => s + r.buyCost, 0);
+    return {
+      totalRevenue,
+      totalProfit,
+      avgProfit: visibleRows.length > 0 ? totalProfit / visibleRows.length : 0,
+      avgRoi: totalBuyCost > 0 ? (totalProfit / totalBuyCost) * 100 : 0,
+    };
+  }, [visibleRows]);
+
+  const kpiLabels = {
+    all: {
+      sales: 'All Sales',
+      revenue: 'All Revenue',
+      profit: 'Est. + Reconciled Profit',
+      avgProfit: 'Avg Profit/Sale',
+      avgRoi: 'Blended ROI',
+    },
+    estimated: {
+      sales: 'Estimated Sales',
+      revenue: 'Estimated Revenue',
+      profit: 'Estimated Profit',
+      avgProfit: 'Est. Profit/Sale',
+      avgRoi: 'Estimated ROI',
+    },
+    reconciled: {
+      sales: 'Reconciled Sales',
+      revenue: 'Reconciled Revenue',
+      profit: 'Reconciled Profit',
+      avgProfit: 'Rec. Profit/Sale',
+      avgRoi: 'Reconciled ROI',
+    },
+  }[statusFilter];
+
+  const statusFilters: Array<{ id: StatusFilter; label: string; count: number; help: string }> = [
+    {
+      id: 'all',
+      label: 'All',
+      count: statusCounts.all,
+      help: 'All FBA orders placed in this date range. Includes estimated recent orders and reconciled orders with posted Amazon financial events.',
+    },
+    {
+      id: 'estimated',
+      label: 'Estimated',
+      count: statusCounts.estimated,
+      help: 'Recent FBA orders that have not posted Amazon financial events yet. Fees and profit are operational estimates, useful for seeing what is selling today.',
+    },
+    {
+      id: 'reconciled',
+      label: 'Reconciled',
+      count: statusCounts.reconciled,
+      help: 'FBA orders with posted Amazon shipment financial events. These are the cleaner rows for accounting review and InventoryLab-style reconciliation.',
+    },
+  ];
 
   const columns = useMemo<ColumnDef<SaleRow, any>[]>(() => [
     {
@@ -125,7 +193,7 @@ export default function FBASalesPage() {
 
   function handleExport() {
     const headers = ['Sold Date', 'Posted Date', 'Status', 'Order ID', 'ASIN', 'SKU', 'Product', 'Qty', 'Sale Price', 'Buy Cost', 'Fees', 'Profit', 'Margin %', 'ROI %'];
-    const csvRows = rows.map(r => [
+    const csvRows = visibleRows.map(r => [
       (r.soldDate || r.date).split('T')[0],
       r.postedDate ? r.postedDate.split('T')[0] : '',
       r.status,
@@ -147,14 +215,39 @@ export default function FBASalesPage() {
       <PageHeader title="FBA Sales" subtitle="Bookkeeping > FBA Sales" dateRange={dateRange} onDateRangeChange={setDateRange}
         marketplace={marketplace}
         onMarketplaceChange={setMarketplace} onExport={handleExport} />
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-        <StatCard label="Total Sales" value={rows.length} format="number" />
-        <StatCard label="Total Revenue" value={totalRevenue} format="currency" />
-        <StatCard label="Total Profit" value={totalProfit} format="currency" accentColor={totalProfit >= 0 ? 'positive' : 'negative'} />
-        <StatCard label="Avg Profit/Sale" value={averages?.avgProfit || 0} format="currency" />
-        <StatCard label="Avg ROI" value={averages?.avgRoi || 0} format="percent" />
+      <div className="flex flex-wrap items-center gap-2 mb-4">
+        {statusFilters.map((filter) => {
+          const active = statusFilter === filter.id;
+          return (
+            <div key={filter.id} className="relative group">
+              <button
+                type="button"
+                onClick={() => setStatusFilter(filter.id)}
+                className={`flex h-8 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition-colors ${
+                  active
+                    ? 'border-accent/60 bg-accent/15 text-accent'
+                    : 'border-border-subtle bg-bg-elevated text-text-secondary hover:border-border-default hover:bg-bg-hover hover:text-text-primary'
+                }`}
+              >
+                <span>{filter.label}</span>
+                <span className="font-mono text-[11px] opacity-80">{filter.count.toLocaleString()}</span>
+                <Info size={11} className="shrink-0 opacity-45" />
+              </button>
+              <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-md border border-border-default bg-bg-elevated p-2.5 text-left text-xs leading-relaxed text-text-secondary opacity-0 shadow-lg transition-opacity duration-150 pointer-events-none group-hover:opacity-100">
+                {filter.help}
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <DataTable data={rows} columns={columns} searchPlaceholder="Search by order ID, ASIN, or product name..." density="compact" />
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+        <StatCard label={kpiLabels.sales} value={visibleRows.length} format="number" />
+        <StatCard label={kpiLabels.revenue} value={visibleTotals.totalRevenue} format="currency" />
+        <StatCard label={kpiLabels.profit} value={visibleTotals.totalProfit} format="currency" accentColor={visibleTotals.totalProfit >= 0 ? 'positive' : 'negative'} />
+        <StatCard label={kpiLabels.avgProfit} value={visibleTotals.avgProfit} format="currency" />
+        <StatCard label={kpiLabels.avgRoi} value={visibleTotals.avgRoi} format="percent" />
+      </div>
+      <DataTable data={visibleRows} columns={columns} searchPlaceholder="Search by order ID, ASIN, or product name..." density="compact" />
     </div>
   );
 }
