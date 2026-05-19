@@ -31,10 +31,17 @@ export async function GET(request: NextRequest) {
   const cutoffEnd = endDateNext + 'T00:00:00Z';
 
   try {
-    // Fulfilled Sales: FBA (Amazon) + WFS (Walmart)
+    // FBA Sales — date range filtered by purchase_date (sold date) so
+    // recently-placed orders that Amazon hasn't yet posted a ShipmentEvent
+    // for are visible as Estimated/Pending. LEFT JOIN on ShipmentEvent;
+    // status='reconciled' when joined, 'estimated' otherwise. Per-row
+    // values for reconciled rows are identical to the prior INNER-JOIN
+    // query (fee_details + COGS lookups unchanged). Accounting / P&L
+    // totals are NOT affected by this route.
     const rows = db.prepare(`
       SELECT
-        o.purchase_date as date,
+        o.purchase_date as soldDate,
+        fep.posted_date as postedDate,
         o.order_id as orderId,
         oi.asin,
         oi.sku,
@@ -46,10 +53,11 @@ export async function GET(request: NextRequest) {
           THEN CAST(COALESCE(fd.totalFees, 0) * oi.total_price * 1.0 / ot.order_total AS INTEGER)
           ELSE COALESCE(fd.totalFees, 0)
         END as fees,
+        CASE WHEN fep.posted_date IS NOT NULL THEN 'reconciled' ELSE 'estimated' END as status,
         o.is_estimated as isEstimated
       FROM orders o
       JOIN order_items oi ON o.order_id = oi.order_id
-      JOIN (SELECT order_id, MIN(posted_date) as posted_date FROM financial_events WHERE event_type = 'ShipmentEvent' AND order_id IS NOT NULL GROUP BY order_id) fep ON o.order_id = fep.order_id
+      LEFT JOIN (SELECT order_id, MIN(posted_date) as posted_date FROM financial_events WHERE event_type = 'ShipmentEvent' AND order_id IS NOT NULL GROUP BY order_id) fep ON o.order_id = fep.order_id
       LEFT JOIN products p ON oi.asin = p.asin
       LEFT JOIN (
         SELECT order_id, SUM(ABS(amount)) as totalFees FROM fee_details WHERE order_id IS NOT NULL AND order_id != '' GROUP BY order_id
@@ -58,8 +66,8 @@ export async function GET(request: NextRequest) {
         SELECT order_id, SUM(total_price) as order_total FROM order_items GROUP BY order_id
       ) ot ON o.order_id = ot.order_id
       WHERE o.fulfillment_channel = 'FBA'
-        AND fep.posted_date >= ? AND fep.posted_date < ?
-      ORDER BY fep.posted_date DESC
+        AND o.purchase_date >= ? AND o.purchase_date < ?
+      ORDER BY o.purchase_date DESC
     `).all(startDate, endDateNext) as any[];
 
     const items = rows.map((row) => {
@@ -67,8 +75,13 @@ export async function GET(request: NextRequest) {
       const profit = row.salePrice - buyCost - row.fees;
       const profitPercent = row.salePrice > 0 ? (profit / row.salePrice) * 100 : 0;
       const roiPercent = buyCost > 0 ? (profit / buyCost) * 100 : 0;
+      const isReconciled = row.status === 'reconciled';
       return {
-        date: row.date,
+        // soldDate is canonical; `date` aliased for any legacy consumer.
+        soldDate: row.soldDate,
+        date: row.soldDate,
+        postedDate: row.postedDate,
+        status: row.status as 'reconciled' | 'estimated',
         orderId: row.orderId,
         asin: row.asin,
         sku: row.sku,
@@ -80,7 +93,9 @@ export async function GET(request: NextRequest) {
         profit,
         profitPercent,
         roiPercent,
-        isEstimated: !!row.isEstimated,
+        // isEstimated now means "no ShipmentEvent yet" — same boolean shape
+        // the UI was already using for the status badge.
+        isEstimated: !isReconciled,
       };
     });
 

@@ -11,7 +11,10 @@ import StatusBadge from '@/components/ui/StatusBadge';
 import { formatCurrency, formatPercent, formatDate } from '@/lib/formatters';
 
 interface SaleRow {
-  date: string;
+  soldDate: string;
+  postedDate: string | null;
+  status: 'reconciled' | 'estimated';
+  date: string; // legacy alias for soldDate; preserved for any consumer still reading it
   orderId: string;
   asin: string;
   sku: string;
@@ -24,6 +27,11 @@ interface SaleRow {
   profitPercent: number;
   roiPercent: number;
   isEstimated: boolean;
+}
+
+function amazonOrderUrl(orderId: string): string {
+  // Seller Central order detail page — works for the seller's own orders.
+  return `https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(orderId)}`;
 }
 
 export default function FBASalesPage() {
@@ -47,19 +55,39 @@ export default function FBASalesPage() {
   const totalProfit = rows.reduce((s, r) => s + r.profit, 0);
 
   const columns = useMemo<ColumnDef<SaleRow, any>[]>(() => [
-    { id: 'date', header: 'Date', accessorKey: 'date', cell: ({ getValue }) => <span className="font-mono text-sm text-text-secondary">{formatDate(getValue() as string)}</span>, size: 110 },
     {
-      id: 'status', header: 'Status', accessorKey: 'isEstimated',
-      cell: ({ getValue }) => getValue()
-        ? <StatusBadge tone="warning">Estimated</StatusBadge>
-        : <StatusBadge tone="positive">Reconciled</StatusBadge>,
+      id: 'date', header: 'Date',
+      accessorFn: (row) => row.soldDate || row.date,
+      cell: ({ row }) => (
+        <div className="font-mono text-sm">
+          <div className="text-text-secondary">{formatDate((row.original.soldDate || row.original.date) as string)}</div>
+          {row.original.status === 'reconciled' && row.original.postedDate && (
+            <div className="text-[10px] text-text-tertiary">settled {formatDate(row.original.postedDate)}</div>
+          )}
+        </div>
+      ),
+      size: 130,
+    },
+    {
+      id: 'status', header: 'Status', accessorKey: 'status',
+      cell: ({ row }) => row.original.status === 'reconciled'
+        ? <StatusBadge tone="positive">Reconciled</StatusBadge>
+        : <StatusBadge tone="warning">Estimated</StatusBadge>,
       size: 90,
     },
     {
       id: 'order', header: 'Order Details', accessorFn: (row) => row.productName || row.orderId,
       cell: ({ row }) => (
         <div className="min-w-[200px]">
-          <div className="text-sm font-mono text-accent">{row.original.orderId}</div>
+          <a
+            href={amazonOrderUrl(row.original.orderId)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm font-mono text-accent hover:underline"
+            title="Open in Seller Central"
+          >
+            {row.original.orderId}
+          </a>
           <div className="text-sm text-text-secondary truncate max-w-[250px]">{row.original.productName || row.original.asin}</div>
           {row.original.quantity > 1 && <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-bg-active text-xs font-mono text-text-secondary mt-0.5">{row.original.quantity}</span>}
         </div>
@@ -96,9 +124,12 @@ export default function FBASalesPage() {
   ], []);
 
   function handleExport() {
-    const headers = ['Date', 'Order ID', 'ASIN', 'SKU', 'Product', 'Qty', 'Sale Price', 'Buy Cost', 'Fees', 'Profit', 'Margin %', 'ROI %'];
+    const headers = ['Sold Date', 'Posted Date', 'Status', 'Order ID', 'ASIN', 'SKU', 'Product', 'Qty', 'Sale Price', 'Buy Cost', 'Fees', 'Profit', 'Margin %', 'ROI %'];
     const csvRows = rows.map(r => [
-      r.date.split('T')[0], r.orderId, r.asin, r.sku, `"${r.productName}"`, r.quantity,
+      (r.soldDate || r.date).split('T')[0],
+      r.postedDate ? r.postedDate.split('T')[0] : '',
+      r.status,
+      r.orderId, r.asin, r.sku, `"${r.productName}"`, r.quantity,
       (r.salePrice / 100).toFixed(2), (r.buyCost / 100).toFixed(2), (r.fees / 100).toFixed(2),
       (r.profit / 100).toFixed(2), r.profitPercent.toFixed(1), r.roiPercent.toFixed(1),
     ].join(','));
