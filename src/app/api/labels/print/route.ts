@@ -58,23 +58,33 @@ function realFnsku(value: string | null | undefined): string {
 }
 
 // -- ASIN Label (Customer Safe) --
-// Barcode = ASIN. Shows: ASIN + condition at top, barcode middle, title at bottom.
+// Barcode = ASIN. Customer-safe label modeled after InventoryLab's 2x1 hierarchy:
+// large barcode, large human-readable ASIN, then condition/title detail.
 // No MSKU, no cost, no supplier.
 
 function renderAsin2x1(spec: LabelSpec, barcodeUrl: string): string {
   const asin  = esc(spec.asin || '');
-  const cond  = esc(spec.condition || '');
-  const title = esc(trunc(spec.title || spec.asin, 52));
+  const rawTitle = trunc(spec.title || spec.asin, 58);
+  const title = esc(rawTitle);
+  const detail = esc(spec.condition && !rawTitle.toLowerCase().startsWith(`${spec.condition.toLowerCase()} -`)
+    ? `${spec.condition} - ${rawTitle}`
+    : rawTitle);
+  const bin   = spec.showBin ? esc(spec.bin || '') : '';
 
-  return `<div class="label label-2x1">
-  <div style="font-size:6.5pt;line-height:1.2;display:flex;align-items:center;gap:4px;margin-bottom:1px;overflow:hidden;white-space:nowrap;">
-    <span style="font-family:monospace;color:#111;font-weight:600;">${asin}</span>
-    ${cond ? `<span style="color:#6b7280;">|</span><span style="color:#374151;">${cond}</span>` : ''}
-  </div>
+  return `<div class="label label-2x1 asin-label-2x1" style="padding:3px 5px;">
   ${barcodeUrl
-    ? `<img src="${barcodeUrl}" style="height:28pt;width:100%;object-fit:contain;object-position:left;display:block;flex-shrink:0;" alt="">`
-    : '<div style="height:28pt;flex-shrink:0;"></div>'}
-  <div style="font-size:5pt;color:#4b5563;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">${title}</div>
+    ? `<img src="${barcodeUrl}" style="height:34pt;width:100%;object-fit:fill;display:block;flex-shrink:0;" alt="">`
+    : '<div style="height:34pt;flex-shrink:0;"></div>'}
+  <div style="font-size:11pt;line-height:1;font-family:monospace;color:#111;font-weight:800;text-align:center;letter-spacing:0.35px;margin-top:1px;white-space:nowrap;">${asin}</div>
+  <div style="display:flex;align-items:stretch;gap:4px;margin-top:1px;min-height:17pt;overflow:hidden;">
+    <div style="width:13pt;flex:0 0 13pt;border:1px solid #111;color:#111;font-size:5.5pt;font-weight:900;line-height:1;text-align:center;display:flex;flex-direction:column;justify-content:center;letter-spacing:0.4px;">
+      <span>M</span><span>F</span><span>N</span>
+    </div>
+    <div style="min-width:0;display:flex;flex-direction:column;justify-content:center;line-height:1.08;overflow:hidden;">
+      <div style="font-size:7.5pt;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${detail || title}</div>
+      ${bin ? `<div style="font-size:6pt;color:#374151;font-family:monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px;">Bin ${bin}</div>` : ''}
+    </div>
+  </div>
 </div>`;
 }
 
