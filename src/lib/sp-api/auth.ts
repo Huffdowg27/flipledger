@@ -115,6 +115,9 @@ export async function spApiRequest(
     });
 
     if (response.ok) {
+      if (attempt > 0) {
+        console.log(`SP-API ${path} recovered on attempt ${attempt + 1}/${retries}`);
+      }
       return response.json();
     }
 

@@ -27,6 +27,75 @@ const SYNC_INTERVAL_HOURS = 1;
 const CHECK_INTERVAL_MS = 15 * 60 * 1000; // Check every 15 minutes
 const LOOKBACK_DAYS = 14; // Sync last 2 weeks each run
 
+// Per-job in-process lock — prevents two 15-min ticks from overlapping the same
+// long-running report sync. Cleared on process restart (PM2 handles that).
+const inFlight = new Set<string>();
+
+// Hard timeout on each long-running async report sync. Prevents a hung Amazon
+// report endpoint from permanently occupying the event loop.
+const JOB_TIMEOUT_MS = 8 * 60 * 1000; // 8 minutes
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutHandle = setTimeout(
+      () => reject(new Error(`${label} timed out after ${ms / 1000}s`)),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }) as Promise<T>;
+}
+
+/**
+ * Run a gated long-running sync job at most once per interval, with safety
+ * rails to prevent the 15-min re-entry storm that previously wedged the app.
+ *
+ * Three guards stacked:
+ *   1. In-process lock (`inFlight`) — second tick that finds the job already
+ *      running just logs and returns.
+ *   2. Attempt-timestamp persisted BEFORE running — so a thrown error (or a
+ *      hard process kill) still throttles the next attempt for the full
+ *      interval, not the next 15-min tick. This is the actual fix for the
+ *      reimbursements-report re-entry storm.
+ *   3. Hard timeout — wraps run() in Promise.race so a hung Amazon report
+ *      endpoint cannot permanently occupy the event loop. Note: the underlying
+ *      fetch is not cancellable, so the wrapped work may complete in the
+ *      background; subsequent ticks could in theory overlap with it. That's
+ *      still vastly better than the prior 15-min re-spam.
+ */
+async function runGatedSync(opts: {
+  key: string;             // e.g. 'reimbursements_report_last_sync'
+  intervalHours: number;
+  label: string;           // human-readable, for logging
+  run: () => Promise<unknown>;
+}) {
+  const { key, intervalHours, label, run } = opts;
+
+  if (inFlight.has(key)) {
+    console.log(`[AutoSync] ${label}: skipping (already in-flight)`);
+    return;
+  }
+
+  const lastSync = getLastSyncTime(key);
+  const lastAttempt = getLastSyncTime(key + '_attempted_at');
+  const lastTouch = Math.max(lastSync, lastAttempt);
+  if (hoursSince(lastTouch) < intervalHours) return;
+
+  inFlight.add(key);
+  setLastSyncTime(key + '_attempted_at', new Date().toISOString());
+
+  try {
+    await withTimeout(run(), JOB_TIMEOUT_MS, label);
+    setLastSyncTime(key, new Date().toISOString());
+  } catch (err) {
+    console.error(`[AutoSync] ${label} error:`, err);
+  } finally {
+    inFlight.delete(key);
+  }
+}
+
 // Customer returns report is async (60-120s per run) and data only changes
 // after Amazon physically receives + processes returns. Daily is plenty —
 // running hourly would block the auto-sync loop with no benefit.
@@ -133,22 +202,23 @@ async function autoSyncTick() {
   // refunds (DEFECTIVE, UNWANTED_ITEM, etc.) from the Reports API. Financial
   // Events API doesn't provide these, so this is the only way to get them.
   // Skipped if the Amazon sync isn't configured — no point otherwise.
-  const customerReturnsLastSync = getLastSyncTime('customer_returns_last_sync');
-  if (hoursSince(customerReturnsLastSync) >= CUSTOMER_RETURNS_INTERVAL_HOURS) {
+  {
     const amazonCreds = getAmazonCredentials();
     if (amazonCreds) {
-      console.log(`[AutoSync] Starting FBA customer returns sync (last ${CUSTOMER_RETURNS_LOOKBACK_DAYS} days)`);
-      try {
-        const end = new Date().toISOString();
-        const start = new Date(Date.now() - CUSTOMER_RETURNS_LOOKBACK_DAYS * 86400000).toISOString();
-        const result = await syncFbaCustomerReturns(amazonCreds, start, end);
-        setLastSyncTime('customer_returns_last_sync', new Date().toISOString());
-        console.log(
-          `[AutoSync] Customer returns: ${result.reportRows} rows, ${result.refundsUpdated} refunds updated, ${result.unmatched} unmatched`
-        );
-      } catch (err) {
-        console.error('[AutoSync] Customer returns error:', err);
-      }
+      await runGatedSync({
+        key: 'customer_returns_last_sync',
+        intervalHours: CUSTOMER_RETURNS_INTERVAL_HOURS,
+        label: 'FBA customer returns sync',
+        run: async () => {
+          console.log(`[AutoSync] Starting FBA customer returns sync (last ${CUSTOMER_RETURNS_LOOKBACK_DAYS} days)`);
+          const end = new Date().toISOString();
+          const start = new Date(Date.now() - CUSTOMER_RETURNS_LOOKBACK_DAYS * 86400000).toISOString();
+          const result = await syncFbaCustomerReturns(amazonCreds, start, end);
+          console.log(
+            `[AutoSync] Customer returns: ${result.reportRows} rows, ${result.refundsUpdated} refunds updated, ${result.unmatched} unmatched`
+          );
+        },
+      });
     }
   }
 
@@ -165,20 +235,21 @@ async function autoSyncTick() {
 
   // Amazon Sales Rank (daily) — snapshots BSR for every active ASIN.
   // Used by Inventory Valuation + SKU Profitability for trend tracking.
-  const salesRankLastSync = getLastSyncTime('sales_rank_last_sync');
-  if (hoursSince(salesRankLastSync) >= SALES_RANK_INTERVAL_HOURS) {
+  {
     const amazonCreds = getAmazonCredentials();
     if (amazonCreds) {
-      console.log('[AutoSync] Starting sales rank sync');
-      try {
-        const result = await syncSalesRanks(amazonCreds);
-        setLastSyncTime('sales_rank_last_sync', new Date().toISOString());
-        console.log(
-          `[AutoSync] Sales rank: ${result.asinsChecked} ASINs checked, ${result.asinsUpdated} updated, ${result.errors} errors`
-        );
-      } catch (err) {
-        console.error('[AutoSync] Sales rank error:', err);
-      }
+      await runGatedSync({
+        key: 'sales_rank_last_sync',
+        intervalHours: SALES_RANK_INTERVAL_HOURS,
+        label: 'Sales rank sync',
+        run: async () => {
+          console.log('[AutoSync] Starting sales rank sync');
+          const result = await syncSalesRanks(amazonCreds);
+          console.log(
+            `[AutoSync] Sales rank: ${result.asinsChecked} ASINs checked, ${result.asinsUpdated} updated, ${result.errors} errors`
+          );
+        },
+      });
     }
   }
 
@@ -186,24 +257,25 @@ async function autoSyncTick() {
   // every reimbursement Amazon has paid. Must run BEFORE reimbursement
   // candidates so the matcher sees the latest paid claims and doesn't
   // surface "pending" for things Amazon already paid.
-  const reimbursementsReportLastSync = getLastSyncTime('reimbursements_report_last_sync');
-  if (hoursSince(reimbursementsReportLastSync) >= REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS) {
+  {
     const amazonCreds = getAmazonCredentials();
     if (amazonCreds) {
-      console.log('[AutoSync] Starting reimbursements report sync (18-month window)');
-      try {
-        const end = new Date().toISOString();
-        const start = new Date(Date.now() - 540 * 86400000).toISOString();
-        const result = await syncReimbursementsReport(amazonCreds, start, end);
-        setLastSyncTime('reimbursements_report_last_sync', new Date().toISOString());
-        console.log(
-          `[AutoSync] Reimbursements report: ${result.reportRows} rows, ${result.inserted} inserted, ${result.updated} updated, $${(result.totalAmountCents / 100).toFixed(2)} total`
-        );
-        // Sweep any ADJ/SETTLEMENT placeholders the new canonical rows supersede.
-        dedupAmazonReimbursements();
-      } catch (err) {
-        console.error('[AutoSync] Reimbursements report error:', err);
-      }
+      await runGatedSync({
+        key: 'reimbursements_report_last_sync',
+        intervalHours: REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS,
+        label: 'Reimbursements report sync',
+        run: async () => {
+          console.log('[AutoSync] Starting reimbursements report sync (18-month window)');
+          const end = new Date().toISOString();
+          const start = new Date(Date.now() - 540 * 86400000).toISOString();
+          const result = await syncReimbursementsReport(amazonCreds, start, end);
+          console.log(
+            `[AutoSync] Reimbursements report: ${result.reportRows} rows, ${result.inserted} inserted, ${result.updated} updated, $${(result.totalAmountCents / 100).toFixed(2)} total`
+          );
+          // Sweep any ADJ/SETTLEMENT placeholders the new canonical rows supersede.
+          dedupAmazonReimbursements();
+        },
+      });
     }
   }
 
@@ -211,22 +283,23 @@ async function autoSyncTick() {
   // report and matches against existing reimbursements. Surfaces dollars
   // Amazon owes for lost/damaged warehouse inventory that haven't been
   // refunded yet, with a 60-day claim window.
-  const reimbursementCandidatesLastSync = getLastSyncTime('reimbursement_candidates_last_sync');
-  if (hoursSince(reimbursementCandidatesLastSync) >= REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS) {
+  {
     const amazonCreds = getAmazonCredentials();
     if (amazonCreds) {
-      console.log(`[AutoSync] Starting reimbursement candidates sync (last ${REIMBURSEMENT_CANDIDATES_LOOKBACK_DAYS} days)`);
-      try {
-        const end = new Date().toISOString();
-        const start = new Date(Date.now() - REIMBURSEMENT_CANDIDATES_LOOKBACK_DAYS * 86400000).toISOString();
-        const result = await syncReimbursementCandidates(amazonCreds, start, end);
-        setLastSyncTime('reimbursement_candidates_last_sync', new Date().toISOString());
-        console.log(
-          `[AutoSync] Reimbursement candidates: ${result.reportRows} rows, ${result.reimbursableRows} reimbursable, ${result.newCandidates} new, ${result.alreadyReimbursed} already paid`
-        );
-      } catch (err) {
-        console.error('[AutoSync] Reimbursement candidates error:', err);
-      }
+      await runGatedSync({
+        key: 'reimbursement_candidates_last_sync',
+        intervalHours: REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS,
+        label: 'Reimbursement candidates sync',
+        run: async () => {
+          console.log(`[AutoSync] Starting reimbursement candidates sync (last ${REIMBURSEMENT_CANDIDATES_LOOKBACK_DAYS} days)`);
+          const end = new Date().toISOString();
+          const start = new Date(Date.now() - REIMBURSEMENT_CANDIDATES_LOOKBACK_DAYS * 86400000).toISOString();
+          const result = await syncReimbursementCandidates(amazonCreds, start, end);
+          console.log(
+            `[AutoSync] Reimbursement candidates: ${result.reportRows} rows, ${result.reimbursableRows} reimbursable, ${result.newCandidates} new, ${result.alreadyReimbursed} already paid`
+          );
+        },
+      });
     }
   }
 
