@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
 import StatCard from '@/components/ui/StatCard';
 import StatusBadge, { type StatusBadgeTone } from '@/components/ui/StatusBadge';
 import DateRangePicker, { type DateRange } from '@/components/ui/DateRangePicker';
@@ -80,9 +81,24 @@ interface CashBalance {
   pendingSinceLastReserveCents: number;
 }
 
+interface OpsPulse {
+  // Fixed-window operational cards — independent of the user's date picker.
+  // "today" uses accrual basis (purchase_date) because cash settles ~10 days later.
+  // "7d" uses cash basis (posted_date) to match P&L.
+  todayAccrual: { revenue: number; orders: number };
+  week7d: { revenue: number; profit: number; prevRevenue: number; prevProfit: number };
+  mfn7d: {
+    estimated: { count: number; revenue: number };
+    reconciled: { count: number; revenue: number };
+  };
+  returnsMonth: { count: number; netImpact: number };
+  draftMfnBatches: { count: number };
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [cashBalance, setCashBalance] = useState<CashBalance | null>(null);
+  const [opsPulse, setOpsPulse] = useState<OpsPulse | null>(null);
   const [loading, setLoading] = useState(true);
   const [dayDetails, setDayDetails] = useState<DayDetail[]>([]);
   const [dayRefunds, setDayRefunds] = useState<any[]>([]);
@@ -100,6 +116,66 @@ export default function Dashboard() {
       .then(r => r.json())
       .then(setCashBalance)
       .catch(() => {});
+  }, []);
+
+  // Ops Pulse: fixed-window operational cards, independent of the date picker.
+  useEffect(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const sevenDaysAgo = new Date(Date.now() - 6 * 86400000).toISOString().split('T')[0];
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0];
+    const daysSinceMonthStart = Math.max(
+      1,
+      Math.floor((now.getTime() - new Date(monthStart + 'T00:00:00').getTime()) / 86400000) + 1
+    );
+
+    Promise.all([
+      fetch(`/api/data/dashboard?startDate=${today}&endDate=${today}&dateBasis=purchase`).then(r => r.json()),
+      fetch(`/api/data/dashboard?startDate=${sevenDaysAgo}&endDate=${today}`).then(r => r.json()),
+      fetch(`/api/data/merchant-sales?startDate=${sevenDaysAgo}&endDate=${today}`).then(r => r.json()),
+      fetch(`/api/data/refunds?days=${daysSinceMonthStart}`).then(r => r.json()),
+      fetch(`/api/list/batches`).then(r => r.json()),
+    ])
+      .then(([todayRes, week7dRes, mfn7dRes, refundsRes, batchesRes]) => {
+        const monthRefunds = (refundsRes.items || []).filter(
+          (r: any) => r.refundDate >= monthStart
+        );
+        const mfnItems = mfn7dRes.items || [];
+        const mfnEst = mfnItems.filter((i: any) => i.status === 'estimated');
+        const mfnRec = mfnItems.filter((i: any) => i.status === 'reconciled');
+        const mfnDraftBatches = (batchesRes.batches || []).filter(
+          (b: any) => b.channel === 'MFN' && b.status === 'draft'
+        );
+
+        setOpsPulse({
+          todayAccrual: {
+            revenue: todayRes.stats?.totalRevenue ?? 0,
+            orders: todayRes.stats?.totalOrders ?? 0,
+          },
+          week7d: {
+            revenue: week7dRes.stats?.totalRevenue ?? 0,
+            profit: week7dRes.stats?.totalProfit ?? 0,
+            prevRevenue: week7dRes.stats?.prevRevenue ?? 0,
+            prevProfit: week7dRes.stats?.prevProfit ?? 0,
+          },
+          mfn7d: {
+            estimated: {
+              count: mfnEst.length,
+              revenue: mfnEst.reduce((s: number, i: any) => s + (i.salePrice || 0), 0),
+            },
+            reconciled: {
+              count: mfnRec.length,
+              revenue: mfnRec.reduce((s: number, i: any) => s + (i.salePrice || 0), 0),
+            },
+          },
+          returnsMonth: {
+            count: monthRefunds.length,
+            netImpact: monthRefunds.reduce((s: number, r: any) => s + (r.netImpact || 0), 0),
+          },
+          draftMfnBatches: { count: mfnDraftBatches.length },
+        });
+      })
+      .catch(err => console.error('Ops pulse fetch failed', err));
   }, []);
 
   const fetchData = useCallback(async () => {
@@ -229,6 +305,113 @@ export default function Dashboard() {
             value={dateRange}
             onChange={setDateRange}
           />
+        </div>
+      </div>
+
+      {/* Daily Pulse — fixed-window operational cards */}
+      <div className="mb-6">
+        <div className="flex items-baseline justify-between mb-3">
+          <h2 className="text-xs font-medium tracking-widest uppercase text-text-tertiary">Daily Pulse</h2>
+          <span className="text-[10px] text-text-tertiary">independent of date filter above</span>
+        </div>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4">
+          {opsPulse ? (
+            <>
+              {/* Sold today (accrual basis — orders placed today; cash settles ~10d later) */}
+              <div className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-accent">
+                <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Sold Today</div>
+                <div className="text-2xl font-bold font-mono text-text-primary tracking-tight">
+                  {formatCurrency(opsPulse.todayAccrual.revenue)}
+                </div>
+                <div className="text-xs text-text-tertiary mt-1.5">
+                  {opsPulse.todayAccrual.orders} order{opsPulse.todayAccrual.orders === 1 ? '' : 's'} · estimated; settles ~10d
+                </div>
+              </div>
+
+              {/* Sold last 7d (cash basis) with Δ vs prior 7d */}
+              <div className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-accent">
+                <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Sold Last 7d (Cash)</div>
+                <div className="text-2xl font-bold font-mono text-text-primary tracking-tight">
+                  {formatCurrency(opsPulse.week7d.revenue)}
+                </div>
+                {opsPulse.week7d.prevRevenue > 0 && (() => {
+                  const delta = ((opsPulse.week7d.revenue - opsPulse.week7d.prevRevenue) / opsPulse.week7d.prevRevenue) * 100;
+                  return (
+                    <div className={`text-xs font-mono mt-1.5 ${delta >= 0 ? 'text-positive' : 'text-negative'}`}>
+                      {delta >= 0 ? '+' : ''}{delta.toFixed(1)}% vs prior 7d
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Profit last 7d (cash basis) with Δ vs prior 7d */}
+              <div className={`bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 ${opsPulse.week7d.profit >= 0 ? 'border-t-positive' : 'border-t-negative'}`}>
+                <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Profit Last 7d (Cash)</div>
+                <div className={`text-2xl font-bold font-mono tracking-tight ${opsPulse.week7d.profit >= 0 ? 'text-positive' : 'text-negative'}`}>
+                  {formatCurrency(opsPulse.week7d.profit)}
+                </div>
+                {opsPulse.week7d.prevProfit !== 0 && (() => {
+                  const delta = ((opsPulse.week7d.profit - opsPulse.week7d.prevProfit) / Math.abs(opsPulse.week7d.prevProfit)) * 100;
+                  return (
+                    <div className={`text-xs font-mono mt-1.5 ${delta >= 0 ? 'text-positive' : 'text-negative'}`}>
+                      {delta >= 0 ? '+' : ''}{delta.toFixed(1)}% vs prior 7d
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* MFN Sales 7d — estimated + reconciled split */}
+              <Link
+                href="/bookkeep/merchant-sales"
+                className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-accent block hover:border-border-default transition-colors"
+              >
+                <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">MFN Sales 7d</div>
+                <div className="text-2xl font-bold font-mono text-text-primary tracking-tight">
+                  {formatCurrency(opsPulse.mfn7d.estimated.revenue + opsPulse.mfn7d.reconciled.revenue)}
+                </div>
+                <div className="text-xs text-text-tertiary mt-1.5 flex gap-3 flex-wrap">
+                  <span><span className="text-warning">est</span> {formatCurrency(opsPulse.mfn7d.estimated.revenue)} <span className="text-text-tertiary">({opsPulse.mfn7d.estimated.count})</span></span>
+                  <span><span className="text-positive">rec</span> {formatCurrency(opsPulse.mfn7d.reconciled.revenue)} <span className="text-text-tertiary">({opsPulse.mfn7d.reconciled.count})</span></span>
+                </div>
+              </Link>
+
+              {/* Returns this month — count + net $ impact */}
+              <Link
+                href="/bookkeep/refunds"
+                className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-negative block hover:border-border-default transition-colors"
+              >
+                <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Returns This Month</div>
+                <div className="text-2xl font-bold font-mono text-negative tracking-tight">
+                  {formatCurrency(-opsPulse.returnsMonth.netImpact)}
+                </div>
+                <div className="text-xs text-text-tertiary mt-1.5">
+                  {opsPulse.returnsMonth.count} return{opsPulse.returnsMonth.count === 1 ? '' : 's'} · net of fee clawbacks
+                </div>
+              </Link>
+
+              {/* Open MFN Draft Batches — listing_batches.channel='MFN' AND status='draft' */}
+              <Link
+                href="/list"
+                className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-amazon block hover:border-border-default transition-colors"
+              >
+                <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Open MFN Draft Batches</div>
+                <div className="text-2xl font-bold font-mono text-text-primary tracking-tight">
+                  {formatNumber(opsPulse.draftMfnBatches.count)}
+                </div>
+                <div className="text-xs text-text-tertiary mt-1.5">
+                  unsent MFN listing work
+                </div>
+              </Link>
+            </>
+          ) : (
+            Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="bg-bg-surface border border-border-subtle rounded-lg p-4">
+                <div className="skeleton h-3 w-24 mb-3" />
+                <div className="skeleton h-7 w-28 mb-2" />
+                <div className="skeleton h-3 w-32" />
+              </div>
+            ))
+          )}
         </div>
       </div>
 
