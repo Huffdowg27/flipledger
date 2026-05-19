@@ -345,7 +345,10 @@ export default function Dashboard() {
               </div>
 
               {/* Profit last 7d (cash basis) with Δ vs prior 7d */}
-              <div className={`bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 ${opsPulse.week7d.profit >= 0 ? 'border-t-positive' : 'border-t-negative'}`}>
+              <Link
+                href="/analyze/profitloss?preset=7d"
+                className={`bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 block hover:border-border-default transition-colors ${opsPulse.week7d.profit >= 0 ? 'border-t-positive' : 'border-t-negative'}`}
+              >
                 <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Profit Last 7d (Cash)</div>
                 <div className={`text-2xl font-bold font-mono tracking-tight ${opsPulse.week7d.profit >= 0 ? 'text-positive' : 'text-negative'}`}>
                   {formatCurrency(opsPulse.week7d.profit)}
@@ -358,11 +361,11 @@ export default function Dashboard() {
                     </div>
                   );
                 })()}
-              </div>
+              </Link>
 
               {/* MFN Sales 7d — estimated + reconciled split */}
               <Link
-                href="/bookkeep/merchant-sales"
+                href="/bookkeep/merchant-sales?preset=7d"
                 className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-accent block hover:border-border-default transition-colors"
               >
                 <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">MFN Sales 7d</div>
@@ -377,7 +380,7 @@ export default function Dashboard() {
 
               {/* Returns this month — count + net $ impact */}
               <Link
-                href="/bookkeep/refunds"
+                href="/bookkeep/refunds?preset=this-month"
                 className="bg-bg-surface border border-border-subtle rounded-lg p-4 border-t-2 border-t-negative block hover:border-border-default transition-colors"
               >
                 <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Returns This Month</div>
