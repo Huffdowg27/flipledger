@@ -31,9 +31,15 @@ export async function GET(request: NextRequest) {
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
   try {
+    // Merchant Sales — date range filtered by purchase_date (sold date), with
+    // ShipmentEvent left-joined so recent MFN/Seller orders can appear as
+    // Estimated before Amazon posts final financial events. Reconciled row math
+    // keeps the existing fee/COGS lookups intact; this route does not affect
+    // P&L/accounting calculations.
     const rows = db.prepare(`
       SELECT
-        fe.posted_date as date,
+        o.purchase_date as soldDate,
+        fe.posted_date as postedDate,
         o.order_id as orderId,
         oi.asin,
         oi.sku,
@@ -47,11 +53,12 @@ export async function GET(request: NextRequest) {
           THEN CAST(COALESCE(fd.totalFees, 0) * oi.total_price * 1.0 / ot.order_total AS INTEGER)
           ELSE COALESCE(fd.totalFees, 0)
         END as fees,
+        CASE WHEN fe.posted_date IS NOT NULL THEN 'reconciled' ELSE 'estimated' END as status,
         o.is_estimated as isEstimated,
         o.marketplace
       FROM orders o
       JOIN order_items oi ON o.order_id = oi.order_id
-      JOIN ${ORDER_POSTED} fe ON o.order_id = fe.order_id
+      LEFT JOIN ${ORDER_POSTED} fe ON o.order_id = fe.order_id
       LEFT JOIN products p ON oi.asin = p.asin
       LEFT JOIN products p2 ON oi.sku = p2.asin AND p.asin IS NULL
       LEFT JOIN (
@@ -62,8 +69,8 @@ export async function GET(request: NextRequest) {
       ) ot ON o.order_id = ot.order_id
       WHERE o.fulfillment_channel IN ('MFN', 'Seller')
         AND o.marketplace != 'ebay'
-        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-      ORDER BY fe.posted_date DESC
+        AND o.purchase_date >= ? AND o.purchase_date < ? ${MF}
+      ORDER BY o.purchase_date DESC
     `).all(startDate, endDateNext) as any[];
 
     const items = rows.map((row) => {
@@ -72,8 +79,12 @@ export async function GET(request: NextRequest) {
       const profit = row.salePrice - buyCost - row.fees + shippingProfit;
       const profitPercent = row.salePrice > 0 ? (profit / row.salePrice) * 100 : 0;
       const roiPercent = buyCost > 0 ? (profit / buyCost) * 100 : 0;
+      const isReconciled = row.status === 'reconciled';
       return {
-        date: row.date,
+        soldDate: row.soldDate,
+        date: row.soldDate,
+        postedDate: row.postedDate,
+        status: row.status as 'reconciled' | 'estimated',
         orderId: row.orderId,
         asin: row.asin,
         sku: row.sku,
@@ -88,7 +99,8 @@ export async function GET(request: NextRequest) {
         profit,
         profitPercent,
         roiPercent,
-        isEstimated: !!row.isEstimated,
+        isEstimated: !isReconciled,
+        marketplace: row.marketplace,
       };
     });
 
