@@ -9,6 +9,8 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
+const FIFO_IL_INFINITE = process.env.FIFO_IL_INFINITE === 'true';
+
 interface InventoryBatch {
   id: number;
   sku: string;
@@ -17,6 +19,7 @@ interface InventoryBatch {
   quantity: number;
   quantityRemaining: number;
   datePurchased: string;
+  notes: string | null;
 }
 
 interface SaleItem {
@@ -41,6 +44,12 @@ function getDb(readonly = false) {
   const db = new Database(dbPath, { readonly });
   db.pragma('journal_mode = WAL');
   return db;
+}
+
+function isInfiniteLot(batch: InventoryBatch): boolean {
+  return FIFO_IL_INFINITE
+    && (batch.notes || '').startsWith('il:')
+    && !batch.sku.startsWith('amzn.gr.');
 }
 
 /**
@@ -104,7 +113,7 @@ export function recalculateFIFO(options: {
 
     // Prepared statements
     const getBatches = db.prepare(`
-      SELECT id, sku, asin, buy_price as buyPrice, quantity, quantity_remaining as quantityRemaining, date_purchased as datePurchased
+      SELECT id, sku, asin, buy_price as buyPrice, quantity, quantity_remaining as quantityRemaining, date_purchased as datePurchased, notes
       FROM inventory_ledger
       WHERE sku = ? AND buy_price > 0
       ORDER BY date_purchased ASC, id ASC
@@ -149,6 +158,7 @@ export function recalculateFIFO(options: {
         if (sales.length === 0) {
           // No sales — reset all batches to full quantity
           for (const batch of batches) {
+            if (isInfiniteLot(batch)) continue;
             updateBatchRemaining.run(batch.quantity, batch.id);
             result.batchesUpdated++;
           }
@@ -159,6 +169,7 @@ export function recalculateFIFO(options: {
         // Reset batch quantities to full before recalculating
         const batchState = batches.map(b => ({
           ...b,
+          isInfinite: isInfiniteLot(b),
           remaining: b.quantity,
         }));
 
@@ -175,12 +186,12 @@ export function recalculateFIFO(options: {
               continue;
             }
 
-            const unitsFromBatch = Math.min(unitsNeeded, batch.remaining);
+            const unitsFromBatch = batch.isInfinite ? unitsNeeded : Math.min(unitsNeeded, batch.remaining);
             totalCost += unitsFromBatch * batch.buyPrice;
-            batch.remaining -= unitsFromBatch;
+            if (!batch.isInfinite) batch.remaining -= unitsFromBatch;
             unitsNeeded -= unitsFromBatch;
 
-            if (batch.remaining <= 0) batchIdx++;
+            if (!batch.isInfinite && batch.remaining <= 0) batchIdx++;
           }
 
           // Calculate weighted average COGS per unit for this sale
@@ -196,6 +207,7 @@ export function recalculateFIFO(options: {
 
         // Update batch remaining quantities
         for (let i = 0; i < batchState.length; i++) {
+          if (batchState[i].isInfinite) continue;
           if (batchState[i].remaining !== batches[i].quantityRemaining) {
             updateBatchRemaining.run(batchState[i].remaining, batches[i].id);
             result.batchesUpdated++;
