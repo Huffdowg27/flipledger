@@ -7,6 +7,7 @@ import { generateMSKU } from '@/lib/listing-msku';
 import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import type { MapShipmentMeta } from '@/components/PlacementMap';
+import MfnBatchReceiveWorkflow from '@/components/mfn/MfnBatchReceiveWorkflow';
 const PlacementMap = dynamic(() => import('@/components/PlacementMap'), { ssr: false });
 
 interface Batch {
@@ -1233,17 +1234,34 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
     );
   }
 
-  return (
-    <div>
-      {batch.channel === 'MFN' && (
-        <div className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-text-primary">
-          <div className="font-medium">MFN receive, labels, and push happen in MFN Batches.</div>
-          <div className="mt-1 text-text-secondary">
-            This screen is the FBA batch surface — the MFN replenish controls here are not the supported workflow.{' '}
-            <Link href="/mfn/batch" className="text-accent hover:underline">Open MFN Batches →</Link>
+  // MFN batches use the shared MFN receive workflow (the same component that
+  // backs standalone /mfn/batch). batchId scopes lot creation + hydration to
+  // this batch. The legacy MFN replenish UI further down the page is
+  // unreachable for MFN batches via this early return.
+  if (batch.channel === 'MFN') {
+    return (
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-3">
+            <Link href="/list" className="p-1.5 rounded-md hover:bg-bg-hover text-text-tertiary hover:text-text-primary transition-colors">
+              <ArrowLeft size={18} />
+            </Link>
+            <div>
+              <div className="flex items-center gap-2">
+                <h1 className="text-xl font-semibold tracking-tight">{batch.name}</h1>
+                <span className="text-xs text-text-tertiary uppercase tracking-wider">MFN</span>
+              </div>
+              <p className="text-xs text-text-tertiary mt-0.5">Merchant Fulfilled batch · receive · label · push</p>
+            </div>
           </div>
         </div>
-      )}
+        <MfnBatchReceiveWorkflow batchId={batch.id} />
+      </div>
+    );
+  }
+
+  return (
+    <div>
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
