@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useMemo } from 'react';
+import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
 import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download, Send, Loader2 } from 'lucide-react';
 
@@ -1020,9 +1021,9 @@ export default function MerchantInventoryPage() {
       {/* Page header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Merchant Fulfilled Inventory</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Merchant Inventory</h1>
           <p className="text-sm text-text-tertiary mt-0.5">
-            Amazon MFN listings (LV_ SKUs) · local lot data enriched from FlipLedger
+            Read-only visibility · Amazon MFN listings (LV_ SKUs) enriched with local lot data · receive and push happen in <Link href="/list" className="text-accent hover:underline">Batches</Link>
           </p>
         </div>
         <div className="flex items-center gap-3">

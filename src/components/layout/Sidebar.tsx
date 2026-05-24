@@ -63,14 +63,14 @@ const navSections: NavSection[] = [
   {
     title: 'LISTING',
     items: [
-      { label: 'FBA Batches', href: '/list', icon: <ScanBarcode size={18} /> },
-      { label: 'MFN Batches', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
+      { label: 'Batches', href: '/list', icon: <ScanBarcode size={18} /> },
+      { label: 'MFN Quick Tray', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
     ],
   },
   {
     title: 'ANALYZE',
     items: [
-      { label: 'Merchant Fulfilled', href: '/analyze/merchant-inventory', icon: <Warehouse size={18} /> },
+      { label: 'Merchant Inventory', href: '/analyze/merchant-inventory', icon: <Warehouse size={18} /> },
       { label: 'Profit & Loss', href: '/analyze/profitloss', icon: <TrendingUp size={18} /> },
       { label: 'Sales Tax', href: '/analyze/salestax', icon: <Receipt size={18} /> },
       { label: 'Removals', href: '/analyze/removals', icon: <PackageMinus size={18} /> },

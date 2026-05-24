@@ -103,8 +103,8 @@ export default function BatchesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Listing Batches</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">FBA and Merchant Fulfilled batches</p>
+          <h1 className="text-xl font-semibold tracking-tight">Batches</h1>
+          <p className="text-sm text-text-tertiary mt-0.5">FBA shipments and Merchant Fulfilled inventory · receive, label, and push from inside a batch</p>
         </div>
         <button
           onClick={() => { setName(defaultName()); setShowNew(true); }}
