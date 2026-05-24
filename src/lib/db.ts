@@ -658,6 +658,11 @@ export function initializeDatabase() {
     `ALTER TABLE inventory_ledger ADD COLUMN receive_notes TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN list_price_cents INTEGER`,
     `ALTER TABLE inventory_ledger ADD COLUMN merchant_shipping_group_name TEXT`,
+    // MFN batch linkage: nullable batch_id associates a lot with a listing_batches row
+    // for Merchant Fulfilled batches. FBA batches use listing_batch_items instead; this
+    // column is only populated by /api/data/inventory-lots/create-mfn-local-lot.
+    `ALTER TABLE inventory_ledger ADD COLUMN batch_id INTEGER`,
+    `CREATE INDEX IF NOT EXISTS idx_inventory_ledger_batch ON inventory_ledger(batch_id)`,
     // merchant_listings new columns — populated by GET_MERCHANT_LISTINGS_ALL_DATA
     `ALTER TABLE merchant_listings ADD COLUMN listing_id TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN item_name TEXT`,
