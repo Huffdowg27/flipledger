@@ -18,6 +18,13 @@ function getDb() {
 export async function GET() {
   const db = getDb();
   try {
+    // Batch totals come from two sources depending on channel:
+    //   - FBA batches aggregate listing_batch_items (rows the FBA flow writes there)
+    //   - MFN batches aggregate inventory_ledger lots tagged with batch_id by
+    //     /api/data/inventory-lots/create-mfn-local-lot
+    // No FBA batch will have inventory_ledger.batch_id rows, and no MFN batch
+    // will have listing_batch_items rows, so COALESCE picks the populated side
+    // without double-counting.
     const batches = db.prepare(`
       SELECT
         b.id,
@@ -28,14 +35,34 @@ export async function GET() {
         b.inbound_plan_id as inboundPlanId,
         b.created_at as createdAt,
         b.updated_at as updatedAt,
-        COALESCE(SUM(i.quantity), 0) as totalUnits,
-        COUNT(DISTINCT i.id) as skuCount,
-        COALESCE(SUM(i.list_price_cents * i.quantity), 0) as expectedRevenue,
-        COALESCE(SUM(i.buy_price_cents * i.quantity), 0) as totalCost,
-        COALESCE(SUM(i.estimated_fee_cents * i.quantity), 0) as estimatedFees
+        COALESCE(fba.totalUnits, mfn.totalUnits, 0) as totalUnits,
+        COALESCE(fba.skuCount, mfn.skuCount, 0) as skuCount,
+        COALESCE(fba.expectedRevenue, mfn.expectedRevenue, 0) as expectedRevenue,
+        COALESCE(fba.totalCost, mfn.totalCost, 0) as totalCost,
+        COALESCE(fba.estimatedFees, 0) as estimatedFees
       FROM listing_batches b
-      LEFT JOIN listing_batch_items i ON i.batch_id = b.id
-      GROUP BY b.id
+      LEFT JOIN (
+        SELECT
+          batch_id,
+          SUM(quantity) as totalUnits,
+          COUNT(DISTINCT id) as skuCount,
+          SUM(list_price_cents * quantity) as expectedRevenue,
+          SUM(buy_price_cents * quantity) as totalCost,
+          SUM(estimated_fee_cents * quantity) as estimatedFees
+        FROM listing_batch_items
+        GROUP BY batch_id
+      ) fba ON fba.batch_id = b.id
+      LEFT JOIN (
+        SELECT
+          batch_id,
+          SUM(quantity) as totalUnits,
+          COUNT(DISTINCT id) as skuCount,
+          SUM(COALESCE(list_price_cents, 0) * quantity) as expectedRevenue,
+          SUM(buy_price * quantity) as totalCost
+        FROM inventory_ledger
+        WHERE batch_id IS NOT NULL
+        GROUP BY batch_id
+      ) mfn ON mfn.batch_id = b.id
       ORDER BY b.created_at DESC
     `).all();
 

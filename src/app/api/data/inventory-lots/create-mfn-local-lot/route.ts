@@ -29,6 +29,11 @@ function getDb() {
 //   markReceived?: boolean    -- if true, sets received_at = now
 //   markInspected?: boolean   -- if true (and markReceived), sets inspected_at = now
 //   datePurchased?: string    -- ISO date string, defaults to now
+//   batchId?: number          -- if provided, associates this lot with a listing_batches row.
+//                                For the existing-lot path: claims the lot into this batch
+//                                only when its current batch_id IS NULL (never re-assigns).
+//                                Setting batch_id does not touch buy_price, quantity,
+//                                quantity_remaining, or date_purchased — FIFO is unaffected.
 // }
 //
 // Output: {
@@ -73,6 +78,10 @@ export async function POST(request: NextRequest) {
   const datePurchased     = typeof body.datePurchased === 'string' && body.datePurchased.trim()
     ? body.datePurchased.trim()
     : null;
+  const batchIdRaw        = body.batchId;
+  const batchId           = batchIdRaw != null && Number.isFinite(Number(batchIdRaw)) && Number(batchIdRaw) > 0
+    ? Math.round(Number(batchIdRaw))
+    : null;
 
   const db = getDb();
   try {
@@ -85,7 +94,7 @@ export async function POST(request: NextRequest) {
         id, sku, asin, buy_price, quantity, quantity_remaining,
         bin_location, condition, list_price_cents,
         merchant_shipping_group_name, received_at, inspected_at,
-        date_purchased, created_at
+        date_purchased, batch_id, created_at
       FROM inventory_ledger
       WHERE sku = ? AND quantity_remaining > 0
       ORDER BY date_purchased DESC
@@ -94,11 +103,22 @@ export async function POST(request: NextRequest) {
     const guardMs = Date.now() - tGuard;
 
     if (existing) {
+      // Claim into batch only when the existing lot is unclaimed (batch_id IS NULL).
+      // Never re-assigns a lot already belonging to another batch — that protects
+      // batch boundaries and prevents accidental cross-batch theft of stock.
+      let claimedNow = false;
+      if (batchId != null && existing.batch_id == null) {
+        db.prepare(`UPDATE inventory_ledger SET batch_id = ? WHERE id = ? AND batch_id IS NULL`)
+          .run(batchId, existing.id);
+        existing.batch_id = batchId;
+        claimedNow = true;
+      }
       const totalMs = Date.now() - t0;
-      console.log(`[create-mfn-local-lot] sku=${sku} existing-lot-returned total=${totalMs}ms guard=${guardMs}ms`);
+      console.log(`[create-mfn-local-lot] sku=${sku} existing-lot-returned batch_id=${existing.batch_id ?? 'null'} claimed=${claimedNow} total=${totalMs}ms guard=${guardMs}ms`);
       return NextResponse.json({
         created: false,
         existingLotUsed: true,
+        claimedIntoBatch: claimedNow,
         lot: existing,
         message: 'An existing lot with remaining quantity was found — no new lot created.',
       });
@@ -119,8 +139,8 @@ export async function POST(request: NextRequest) {
         asin, sku, buy_price, quantity, quantity_remaining,
         date_purchased, bin_location, condition, list_price_cents,
         merchant_shipping_group_name, received_at, inspected_at,
-        quantity_received, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        quantity_received, batch_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       asin ?? sku,
       sku,
@@ -135,6 +155,7 @@ export async function POST(request: NextRequest) {
       receivedAt,
       inspectedAt,
       markReceived ? Math.round(quantity) : null,  // quantity_received
+      batchId,
       now
     );
     const insertMs = Date.now() - tInsert;
@@ -148,7 +169,7 @@ export async function POST(request: NextRequest) {
         id, sku, asin, buy_price, quantity, quantity_remaining,
         bin_location, condition, list_price_cents,
         merchant_shipping_group_name, received_at, inspected_at,
-        quantity_received, date_purchased, created_at
+        quantity_received, batch_id, date_purchased, created_at
       FROM inventory_ledger WHERE id = ?
     `).get(newId) as Record<string, unknown>;
     const readbackMs = Date.now() - tReadback;
