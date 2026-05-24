@@ -63,8 +63,8 @@ const navSections: NavSection[] = [
   {
     title: 'LISTING',
     items: [
-      { label: 'Batches', href: '/list', icon: <ScanBarcode size={18} /> },
-      { label: 'MFN Receive', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
+      { label: 'FBA Batches', href: '/list', icon: <ScanBarcode size={18} /> },
+      { label: 'MFN Batches', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
     ],
   },
   {

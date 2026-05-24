@@ -1235,6 +1235,15 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
   return (
     <div>
+      {batch.channel === 'MFN' && (
+        <div className="mb-4 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-text-primary">
+          <div className="font-medium">MFN receive, labels, and push happen in MFN Batches.</div>
+          <div className="mt-1 text-text-secondary">
+            This screen is the FBA batch surface — the MFN replenish controls here are not the supported workflow.{' '}
+            <Link href="/mfn/batch" className="text-accent hover:underline">Open MFN Batches →</Link>
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">

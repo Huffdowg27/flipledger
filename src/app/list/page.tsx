@@ -64,6 +64,12 @@ export default function BatchesPage() {
 
   async function handleCreate() {
     if (!name.trim()) return;
+    // MFN batches are operated from /mfn/batch, not /list/[id].
+    // Don't create a listing_batches row for MFN — that surface is FBA-only.
+    if (channel === 'MFN') {
+      window.location.href = '/mfn/batch';
+      return;
+    }
     setCreating(true);
     try {
       const res = await fetch('/api/list/batches', {
@@ -100,8 +106,8 @@ export default function BatchesPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Listing Batches</h1>
-          <p className="text-sm text-text-tertiary mt-0.5">Create, prep, and ship inventory to Amazon</p>
+          <h1 className="text-xl font-semibold tracking-tight">FBA Batches</h1>
+          <p className="text-sm text-text-tertiary mt-0.5">Create, prep, and ship inventory to Amazon · MFN lives in <Link href="/mfn/batch" className="text-accent hover:underline">MFN Batches</Link></p>
         </div>
         <button
           onClick={() => { setName(defaultName()); setShowNew(true); }}
