@@ -21,6 +21,136 @@ interface SPAPICredentials {
 
 let cachedToken: { accessToken: string; expiresAt: number } | null = null;
 
+type EndpointFamily =
+  | 'catalog'
+  | 'inventory'
+  | 'orders'
+  | 'finances'
+  | 'reports'
+  | 'listings'
+  | 'inbound'
+  | 'sellers'
+  | 'default';
+
+interface EndpointRateLimit {
+  ratePerSecond: number;
+  burst: number;
+}
+
+const ENDPOINT_RATE_LIMITS: Record<EndpointFamily, EndpointRateLimit> = {
+  catalog: { ratePerSecond: 1.8, burst: 2 },
+  inventory: { ratePerSecond: 1.8, burst: 2 },
+  orders: { ratePerSecond: 0.8, burst: 2 },
+  finances: { ratePerSecond: 0.5, burst: 1 },
+  reports: { ratePerSecond: 0.5, burst: 1 },
+  listings: { ratePerSecond: 1.5, burst: 2 },
+  inbound: { ratePerSecond: 1.5, burst: 2 },
+  sellers: { ratePerSecond: 1, burst: 1 },
+  default: { ratePerSecond: 2, burst: 2 },
+};
+
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+class EndpointRateLimiter {
+  private tokens: number;
+  private updatedAt = Date.now();
+  private queue: Promise<void> = Promise.resolve();
+  private cooldownUntil = 0;
+
+  constructor(private readonly limit: EndpointRateLimit) {
+    this.tokens = limit.burst;
+  }
+
+  async wait() {
+    const previous = this.queue.catch(() => undefined);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    this.queue = previous.then(() => gate);
+
+    await previous;
+    try {
+      await this.takeToken();
+    } finally {
+      release();
+    }
+  }
+
+  recordThrottle(waitMs: number) {
+    this.tokens = 0;
+    this.cooldownUntil = Math.max(this.cooldownUntil, Date.now() + waitMs);
+  }
+
+  private refill(now: number) {
+    const elapsedSeconds = Math.max(0, (now - this.updatedAt) / 1000);
+    this.tokens = Math.min(
+      this.limit.burst,
+      this.tokens + elapsedSeconds * this.limit.ratePerSecond
+    );
+    this.updatedAt = now;
+  }
+
+  private async takeToken() {
+    while (true) {
+      const now = Date.now();
+
+      if (this.cooldownUntil > now) {
+        await sleep(this.cooldownUntil - now);
+        continue;
+      }
+
+      this.refill(now);
+
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+
+      const waitMs = Math.ceil(((1 - this.tokens) / this.limit.ratePerSecond) * 1000);
+      await sleep(Math.max(waitMs, 50));
+    }
+  }
+}
+
+const limiters = new Map<EndpointFamily, EndpointRateLimiter>();
+
+function endpointFamilyForPath(path: string): EndpointFamily {
+  if (path.startsWith('/catalog/')) return 'catalog';
+  if (path.startsWith('/fba/inventory/')) return 'inventory';
+  if (path.startsWith('/orders/')) return 'orders';
+  if (path.startsWith('/finances/')) return 'finances';
+  if (path.startsWith('/reports/')) return 'reports';
+  if (path.startsWith('/listings/')) return 'listings';
+  if (path.startsWith('/fba/inbound/') || path.startsWith('/inbound/')) return 'inbound';
+  if (path.startsWith('/sellers/')) return 'sellers';
+  return 'default';
+}
+
+function getEndpointLimiter(path: string) {
+  const family = endpointFamilyForPath(path);
+  let limiter = limiters.get(family);
+  if (!limiter) {
+    limiter = new EndpointRateLimiter(ENDPOINT_RATE_LIMITS[family]);
+    limiters.set(family, limiter);
+  }
+  return limiter;
+}
+
+function getRetryAfterSeconds(value: string | null, fallbackSeconds: number) {
+  if (!value) return fallbackSeconds;
+
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds;
+
+  const retryDate = Date.parse(value);
+  if (Number.isFinite(retryDate)) {
+    return Math.max(1, Math.ceil((retryDate - Date.now()) / 1000));
+  }
+
+  return fallbackSeconds;
+}
+
 /**
  * Get a valid access token, refreshing if needed.
  * Caches the token in memory and refreshes 60s before expiry.
@@ -97,7 +227,7 @@ export async function spApiRequest(
   sandbox: boolean = false
 ): Promise<any> {
   const endpoint = getEndpoint(credentials.marketplaceId, sandbox);
-  const accessToken = await getAccessToken(credentials);
+  const limiter = getEndpointLimiter(path);
 
   const url = new URL(path, endpoint);
   if (params) {
@@ -107,6 +237,9 @@ export async function spApiRequest(
   }
 
   for (let attempt = 0; attempt < retries; attempt++) {
+    await limiter.wait();
+    const accessToken = await getAccessToken(credentials);
+
     const response = await fetch(url.toString(), {
       headers: {
         'x-amz-access-token': accessToken,
@@ -123,10 +256,11 @@ export async function spApiRequest(
 
     // Rate limited — wait with exponential backoff and retry
     if (response.status === 429) {
-      const baseWait = parseInt(response.headers.get('Retry-After') || '3');
+      const baseWait = getRetryAfterSeconds(response.headers.get('Retry-After'), 3);
       const waitTime = baseWait * Math.pow(2, attempt); // 3s, 6s, 12s, 24s, 48s
+      limiter.recordThrottle(waitTime * 1000);
       console.warn(`SP-API 429 on ${path}, retrying in ${waitTime}s (attempt ${attempt + 1}/${retries})`);
-      await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+      await sleep(waitTime * 1000);
       continue;
     }
 
@@ -134,7 +268,7 @@ export async function spApiRequest(
     if (response.status >= 500) {
       const waitTime = 5 * Math.pow(2, attempt);
       console.warn(`SP-API ${response.status} on ${path}, retrying in ${waitTime}s (attempt ${attempt + 1}/${retries})`);
-      await new Promise(resolve => setTimeout(resolve, waitTime * 1000));
+      await sleep(waitTime * 1000);
       continue;
     }
 

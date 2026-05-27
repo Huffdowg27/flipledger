@@ -212,18 +212,28 @@ export async function runFullSync(
 
     console.log(`[Sync] Complete. ${totalRecords} total records, ${currentSync.totalErrors.length} errors.`);
   } catch (error) {
-    const db2 = getDb();
-    db2.prepare(`
-      UPDATE sync_log SET completed_at = ?, status = 'error', error = ?
-      WHERE id = ?
-    `).run(new Date().toISOString(), String(error), syncLogId);
-    db2.close();
+    try {
+      const db2 = getDb();
+      db2.prepare(`
+        UPDATE sync_log SET completed_at = ?, status = 'error', error = ?
+        WHERE id = ?
+      `).run(new Date().toISOString(), String(error), syncLogId);
+      db2.close();
+    } catch (logError) {
+      console.error('[Sync] Failed to update sync_log after fatal error:', logError);
+    }
 
     currentSync.totalErrors.push(String(error));
     console.error('[Sync] Fatal error:', error);
+  } finally {
+    // Always release the in-process sync lock so the next 15-min tick can run.
+    // Without this, an uncaught error in any sync stage would wedge
+    // currentSync.running = true forever, blocking auto-sync until restart.
+    if (currentSync) {
+      currentSync.running = false;
+      currentSync.completedAt = new Date().toISOString();
+    }
   }
 
-  currentSync.running = false;
-  currentSync.completedAt = new Date().toISOString();
-  return currentSync;
+  return currentSync!;
 }

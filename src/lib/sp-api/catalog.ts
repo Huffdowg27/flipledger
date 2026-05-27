@@ -198,7 +198,9 @@ export async function enrichProductCatalog(
   let enriched = 0;
 
   try {
-    // Find products missing names or images, oldest-updated first
+    // Find products missing names or images, but do not hammer the same failed
+    // ASINs every hourly sync. Catalog metadata is slow-changing, so a weekly
+    // retry cadence is enough for rows that did not enrich cleanly.
     const missingProducts = db.prepare(`
       SELECT DISTINCT asin FROM products
       WHERE (
@@ -207,6 +209,10 @@ export async function enrichProductCatalog(
       )
       AND TRIM(asin) <> ''
       AND asin IS NOT NULL
+      AND (
+        catalog_last_enriched IS NULL
+        OR julianday(catalog_last_enriched) <= julianday('now', '-7 days')
+      )
       ORDER BY updated_at ASC
       LIMIT 50
     `).all() as { asin: string }[];
@@ -233,20 +239,27 @@ export async function enrichProductCatalog(
         const category = classification?.classifications?.[0]?.displayName || null;
         const imageUrl = image?.link || null;
 
+        const enrichedAt = new Date().toISOString();
         db.prepare(`
           UPDATE products SET
             name = COALESCE(?, name),
             category = COALESCE(?, category),
             image_url = COALESCE(?, image_url),
+            catalog_last_enriched = ?,
             updated_at = ?
           WHERE asin = ?
-        `).run(name, category, imageUrl, new Date().toISOString(), asin);
+        `).run(name, category, imageUrl, enrichedAt, enrichedAt, asin);
 
         enriched++;
 
-        // Rate limit: ~5 requests per second for Catalog API
+        // SP-API pacing happens in spApiRequest; this gives the event loop a
+        // small breather between per-ASIN DB updates.
         await new Promise(resolve => setTimeout(resolve, 250));
       } catch (err) {
+        db.prepare(`
+          UPDATE products SET catalog_last_enriched = ?
+          WHERE asin = ?
+        `).run(new Date().toISOString(), asin);
         errors.push(`Catalog ${asin}: ${err}`);
       }
     }

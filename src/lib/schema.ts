@@ -25,6 +25,7 @@ export const products = sqliteTable('products', {
   name: text('name'),
   category: text('category'),
   imageUrl: text('image_url'),
+  catalogLastEnriched: text('catalog_last_enriched'),
   marketplace: text('marketplace').default('amazon'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull(),

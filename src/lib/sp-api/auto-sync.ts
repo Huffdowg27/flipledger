@@ -181,13 +181,22 @@ async function autoSyncTick() {
   }
 
   const amazonLastSync = getLastSyncTime('lastSync');
+  const amazonLastAttempt = getLastSyncTime('lastSync_attempted_at');
   const walmartLastSync = getLastSyncTime('walmart_last_sync');
+  const walmartLastAttempt = getLastSyncTime('walmart_last_sync_attempted_at');
 
-  // Amazon
-  if (hoursSince(amazonLastSync) >= SYNC_INTERVAL_HOURS) {
+  // Amazon — gated on max(last success, last attempt) so a crashed mid-sync
+  // process can't re-fire the next tick. We DO NOT wrap in withTimeout because
+  // the underlying SP-API fetches aren't cancellable; a fired timeout that
+  // cleared currentSync.running would let the very next tick start a parallel
+  // runFullSync writing to the same tables. The in-process currentSync.running
+  // guard above is the only safe overlap-prevention while a sync is alive in
+  // this process; attempted_at extends that to survive a crash/restart.
+  if (hoursSince(Math.max(amazonLastSync, amazonLastAttempt)) >= SYNC_INTERVAL_HOURS) {
     const amazonCreds = getAmazonCredentials();
     if (amazonCreds) {
       console.log(`[AutoSync] Starting Amazon sync (last ${LOOKBACK_DAYS} days)`);
+      setLastSyncTime('lastSync_attempted_at', new Date().toISOString());
       try {
         await runFullSync(amazonCreds, LOOKBACK_DAYS);
         setLastSyncTime('lastSync', new Date().toISOString());
@@ -303,11 +312,12 @@ async function autoSyncTick() {
     }
   }
 
-  // Walmart
-  if (hoursSince(walmartLastSync) >= SYNC_INTERVAL_HOURS) {
+  // Walmart — same attempted_at gate as Amazon
+  if (hoursSince(Math.max(walmartLastSync, walmartLastAttempt)) >= SYNC_INTERVAL_HOURS) {
     const walmartCreds = getWalmartCredentials();
     if (walmartCreds) {
       console.log(`[AutoSync] Starting Walmart sync (last ${LOOKBACK_DAYS} days)`);
+      setLastSyncTime('walmart_last_sync_attempted_at', new Date().toISOString());
       try {
         await runWalmartSync(walmartCreds, LOOKBACK_DAYS);
         setLastSyncTime('walmart_last_sync', new Date().toISOString());
@@ -329,12 +339,14 @@ async function autoSyncTick() {
     }
   }
 
-  // eBay
+  // eBay — same attempted_at gate
   const ebayLastSync = getLastSyncTime('ebay_last_sync');
-  if (hoursSince(ebayLastSync) >= SYNC_INTERVAL_HOURS) {
+  const ebayLastAttempt = getLastSyncTime('ebay_last_sync_attempted_at');
+  if (hoursSince(Math.max(ebayLastSync, ebayLastAttempt)) >= SYNC_INTERVAL_HOURS) {
     const ebayCreds = getEbayCredentials();
     if (ebayCreds) {
       console.log(`[AutoSync] Starting eBay sync (last ${LOOKBACK_DAYS} days)`);
+      setLastSyncTime('ebay_last_sync_attempted_at', new Date().toISOString());
       try {
         await runEbaySync(ebayCreds, LOOKBACK_DAYS);
         setLastSyncTime('ebay_last_sync', new Date().toISOString());

@@ -36,6 +36,7 @@ export function initializeDatabase() {
       name TEXT,
       category TEXT,
       image_url TEXT,
+      catalog_last_enriched TEXT,
       marketplace TEXT DEFAULT 'amazon',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -670,6 +671,10 @@ export function initializeDatabase() {
     `ALTER TABLE merchant_listings ADD COLUMN open_date TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN item_condition TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN source_report_type TEXT`,
+    // Catalog enrichment cooldown — populated by enrichProductCatalog on every
+    // attempt (success or failure) so we don't re-hammer the same failed ASINs
+    // on the next hourly sync. Retry window is 7 days, enforced in catalog.ts.
+    `ALTER TABLE products ADD COLUMN catalog_last_enriched TEXT`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }
