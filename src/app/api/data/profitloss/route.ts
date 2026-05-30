@@ -144,6 +144,7 @@ export async function GET(request: NextRequest) {
           fe.event_type = 'ServiceFeeEvent'
           AND fd.fee_type IN (
             'FBAStorageFee',
+            'FBALongTermStorageFee',
             'FBARemovalFee',
             'Subscription',
             'FBACustomerReturnPerUnitFee',
@@ -203,9 +204,10 @@ export async function GET(request: NextRequest) {
         AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
     `).get(startDate, endDateNext) as any;
 
-    // Sales tax
+    // Sales tax — stored as negative (Amazon reports withheld tax as a deduction);
+    // negate so the P&L surfaces tax collected/remitted as a positive figure.
     const taxTotal = db.prepare(`
-      SELECT COALESCE(SUM(tax_collected), 0) as collected, COALESCE(SUM(marketplace_facilitator_tax), 0) as facilitator
+      SELECT COALESCE(SUM(-tax_collected), 0) as collected, COALESCE(SUM(-marketplace_facilitator_tax), 0) as facilitator
       FROM sales_tax WHERE posted_date >= ? AND posted_date < ? ${MF_R}
     `).get(startDate, endDateNext) as any;
 

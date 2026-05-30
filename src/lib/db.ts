@@ -675,6 +675,21 @@ export function initializeDatabase() {
     // attempt (success or failure) so we don't re-hammer the same failed ASINs
     // on the next hourly sync. Retry window is 7 days, enforced in catalog.ts.
     `ALTER TABLE products ADD COLUMN catalog_last_enriched TEXT`,
+    // sales_tax had no unique constraint, so INSERT OR IGNORE never deduped and
+    // every sync re-inserted all rows (observed 255x). Collapse to one row per
+    // (order_id, amount, facilitator_tax, posted_date), preferring a real state
+    // over the 'Unknown' placeholder written by the financial-events path, then
+    // enforce uniqueness so future syncs stay idempotent.
+    `DELETE FROM sales_tax WHERE id NOT IN (
+       SELECT id FROM (
+         SELECT id, ROW_NUMBER() OVER (
+           PARTITION BY COALESCE(order_id,''), tax_collected, marketplace_facilitator_tax, posted_date
+           ORDER BY (state='Unknown') ASC, id ASC
+         ) rn FROM sales_tax
+       ) WHERE rn=1
+     )`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_tax_unique
+       ON sales_tax(COALESCE(order_id,''), tax_collected, marketplace_facilitator_tax, posted_date)`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }
