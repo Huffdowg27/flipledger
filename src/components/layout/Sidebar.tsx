@@ -57,7 +57,6 @@ const navSections: NavSection[] = [
     items: [
       { label: 'Dashboard', href: '/', icon: <LayoutDashboard size={18} /> },
       { label: 'Products & COGS', href: '/products', icon: <ShoppingBag size={18} /> },
-      { label: 'Sync', href: '/sync', icon: <Activity size={18} /> },
     ],
   },
   {
@@ -235,7 +234,25 @@ export default function Sidebar() {
             {!collapsed && <span>{lastSync ? formatSyncTime(lastSync) : 'No data synced yet'}</span>}
           </div>
           <Link
+            href="/sync"
+            onClick={() => setMobileOpen(false)}
+            title={collapsed ? 'Sync' : undefined}
+            className={`
+              flex items-center gap-2.5 h-8 px-3 rounded-md text-sm transition-colors
+              ${collapsed ? 'justify-center px-0' : ''}
+              ${pathname === '/sync'
+                ? 'bg-bg-active text-text-primary'
+                : 'text-text-secondary hover:bg-bg-hover hover:text-text-primary'
+              }
+            `}
+          >
+            <Activity size={18} className="text-text-tertiary shrink-0" />
+            {!collapsed && <span>Sync</span>}
+          </Link>
+          <Link
             href="/settings"
+            onClick={() => setMobileOpen(false)}
+            title={collapsed ? 'Settings' : undefined}
             className={`
               flex items-center gap-2.5 h-8 px-3 rounded-md text-sm transition-colors
               ${collapsed ? 'justify-center px-0' : ''}
