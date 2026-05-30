@@ -2371,9 +2371,9 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
               <X size={18} />
             </button>
             <img
-              src={lightbox.src}
+              src={lightbox.src.replace(/\._[A-Z0-9,]+_\.(jpg|jpeg|png)/i, '.$1')}
               alt={lightbox.title}
-              className="block max-w-[92vw] max-h-[88vh] object-contain"
+              className="block h-[85vh] w-auto max-w-[92vw] object-contain"
             />
             <div className="absolute bottom-0 inset-x-0 px-4 py-2.5 bg-gradient-to-t from-black/70 to-transparent">
               <div className="text-sm font-medium text-white leading-snug line-clamp-2" title={lightbox.title}>
