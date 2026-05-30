@@ -1041,36 +1041,36 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
   const showMarkInspected = item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded border border-border-subtle border-l-2 border-l-green-500/40">
+    <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg border border-border-subtle border-l-2 border-l-green-500/40">
 
-      {/* Zone 1 — image (32px fixed) */}
+      {/* Zone 1 — image */}
       {item.image_url
         ? (
             <button type="button" onClick={onImageClick}
-              className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
+              className="shrink-0 rounded-lg overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-blue-500/40 transition-shadow"
               title="View larger">
-              <img src={item.image_url} alt="" className="w-8 h-8 object-contain block" />
+              <img src={item.image_url} alt="" className="w-14 h-14 object-contain block p-1" />
             </button>
           )
-        : <div className="w-8 h-8 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={11} className="text-text-tertiary/40" /></div>}
+        : <div className="w-14 h-14 bg-slate-700/40 rounded-lg shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
 
       {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
       <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-1">
-          <CheckCircle2 size={10} className="text-green-400 shrink-0" />
-          <span className="text-xs font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
+        <div className="flex items-center gap-1.5">
+          <CheckCircle2 size={13} className="text-green-400 shrink-0" />
+          <span className="text-sm font-medium text-text-primary truncate" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </span>
         </div>
-        <div className="flex items-center gap-1 mt-0.5">
-          <AsinLink asin={item.asin} className="font-mono text-[10px] text-blue-400/80 shrink-0 hover:text-blue-300 hover:underline" />
+        <div className="flex items-center gap-1.5 mt-1">
+          <AsinLink asin={item.asin} className="font-mono text-xs text-blue-400/80 shrink-0 hover:text-blue-300 hover:underline" />
           <ChannelBadge channel={item.fulfillment_channel} />
         </div>
       </div>
 
       {/* Zone 3 — MSKU (112px, truncates) */}
       <div className="w-28 shrink-0">
-        <MskuLink sku={item.sku} className="font-mono text-[9px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
+        <MskuLink sku={item.sku} className="font-mono text-[10px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
       </div>
 
       {/* Zone 4 — Qty (w-32 fixed): InlineQtyEdit + optional receive progress */}
@@ -1080,7 +1080,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
       </div>
 
       {/* Zone 5 — Bin/Cond/Template (w-24 fixed, always rendered): dash when all empty */}
-      <div className="w-24 shrink-0 text-[10px] leading-tight">
+      <div className="w-24 shrink-0 text-xs leading-tight">
         {savedBin && <div className="text-text-tertiary">Bin <span className="font-mono text-text-secondary">{savedBin}</span></div>}
         {savedCond && <div className="text-text-secondary truncate">{savedCond}</div>}
         {savedTemplate && (() => {
@@ -1095,7 +1095,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
       {/* Zone 6 — Price (w-16 fixed, always rendered): dash when missing */}
       <div className="w-16 shrink-0 text-right">
         {savedPrice != null
-          ? <span className="font-mono text-[11px] text-text-secondary">{formatCurrency(savedPrice)}</span>
+          ? <span className="font-mono text-sm text-text-secondary">{formatCurrency(savedPrice)}</span>
           : <span className="text-text-tertiary/30">—</span>}
       </div>
 
