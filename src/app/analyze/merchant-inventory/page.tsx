@@ -868,6 +868,41 @@ export default function MerchantInventoryPage() {
   const [receiveRow, setReceiveRow]         = useState<MerchantRow | null>(null);
   const [receiveModalTitle, setReceiveModalTitle] = useState('Update Stock');
   const [refreshKey, setRefreshKey]         = useState(0);
+  const [lightbox, setLightbox]             = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
+  const [backfilling, setBackfilling]       = useState(false);
+  const [backfillProgress, setBackfillProgress] = useState<{ done: number; remaining: number } | null>(null);
+
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox]);
+
+  async function handleBackfillImages() {
+    setBackfilling(true);
+    setBackfillProgress(null);
+    let done = 0;
+    try {
+      for (let i = 0; i < 200; i++) {
+        const res = await fetch('/api/data/merchant-inventory/backfill-images', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ limit: 100 }),
+        });
+        const data = await res.json();
+        if (!res.ok) break;
+        done += data.updated ?? 0;
+        setBackfillProgress({ done, remaining: data.remaining ?? 0 });
+        if ((data.remaining ?? 0) <= 0 || (data.processed ?? 0) === 0) break;
+      }
+      setRefreshKey(k => k + 1);
+    } catch {
+      /* network error — stop the loop */
+    } finally {
+      setBackfilling(false);
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -1100,6 +1135,17 @@ export default function MerchantInventoryPage() {
             </button>
           )}
           <button
+            onClick={handleBackfillImages}
+            disabled={backfilling}
+            className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-border-subtle text-sm text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-60"
+            title="Fetch missing product images from Amazon's catalog"
+          >
+            {backfilling ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+            {backfilling
+              ? `Fetching images… ${backfillProgress ? `${backfillProgress.done} done, ${backfillProgress.remaining} left` : ''}`
+              : 'Backfill Images'}
+          </button>
+          <button
             onClick={() => { setSelected(new Set()); setShowPrintModal(true); }}
             className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-border-subtle text-sm text-text-secondary hover:bg-bg-hover transition-colors"
           >
@@ -1267,7 +1313,13 @@ export default function MerchantInventoryPage() {
                       </td>
                       <td className="px-3 py-3">
                         {row.image_url
-                          ? <img src={row.image_url} alt="" className="w-16 h-16 object-contain rounded-lg bg-white border border-border-subtle p-1" />
+                          ? <button
+                              onClick={e => { e.stopPropagation(); setLightbox({ src: row.image_url!, title: row.product_name || row.asin, asin: row.asin, sku: row.sku }); }}
+                              className="block cursor-zoom-in"
+                              title="View larger image"
+                            >
+                              <img src={row.image_url} alt="" className="w-16 h-16 object-contain rounded-lg bg-white border border-border-subtle p-1 hover:border-accent transition-colors" />
+                            </button>
                           : <div className="w-16 h-16 bg-bg-elevated rounded-lg border border-border-subtle flex items-center justify-center"><Package size={20} className="text-text-tertiary/40" /></div>}
                       </td>
                       <td className="px-4 py-3 max-w-[360px]">
@@ -1384,6 +1436,40 @@ export default function MerchantInventoryPage() {
           onClose={() => setReceiveRow(null)}
           onSaved={() => { setRefreshKey(k => k + 1); setReceiveRow(null); }}
         />
+      )}
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative flex flex-col bg-white rounded-xl overflow-hidden shadow-2xl max-w-[92vw] max-h-[92vh]"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 bg-bg-elevated border-b border-border-subtle px-5 py-3.5">
+              <div className="min-w-0">
+                <div className="text-text-primary text-base font-semibold leading-snug line-clamp-2">{lightbox.title}</div>
+                <div className="mt-1 flex gap-4 text-[11px] font-mono text-text-tertiary">
+                  {lightbox.asin && <span>ASIN {lightbox.asin}</span>}
+                  {lightbox.sku && <span>MSKU {lightbox.sku}</span>}
+                </div>
+              </div>
+              <button
+                onClick={() => setLightbox(null)}
+                className="ml-auto shrink-0 flex items-center justify-center w-9 h-9 rounded-full text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                title="Close (Esc)"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <img
+              src={lightbox.src.replace(/\._[A-Z0-9,]+_\.(jpg|jpeg|png)/i, '.$1')}
+              alt={lightbox.title}
+              className="h-[80vh] w-auto max-w-[92vw] object-contain bg-white"
+            />
+          </div>
+        </div>
       )}
 
     </div>

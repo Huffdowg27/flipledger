@@ -190,6 +190,86 @@ export async function searchCatalog(
  * Fetch and store product details for ASINs missing names/categories.
  * Batches requests to avoid rate limits.
  */
+/**
+ * Backfill product images for merchant listings that lack one.
+ *
+ * Two gaps this closes that the weekly enrichProductCatalog sweep does not:
+ *   1. Merchant ASINs with no `products` row at all (enrichment only SELECTs
+ *      from products, so it never sees them) — we insert a stub row first.
+ *   2. The weekly sweep only does 50/run; this processes a caller-set chunk so
+ *      a one-time bulk backfill finishes in minutes instead of weeks.
+ *
+ * Chunked: returns `remaining` so the caller can loop until it hits 0.
+ */
+export async function backfillMerchantListingImages(
+  credentials: SPAPICredentials,
+  limit = 100
+): Promise<{ processed: number; updated: number; remaining: number; errors: string[] }> {
+  const db = getDb();
+  const errors: string[] = [];
+  let processed = 0;
+  let updated = 0;
+
+  try {
+    // 1. Ensure every merchant ASIN has a products row so it becomes enrichable.
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO products (asin, created_at, updated_at)
+      SELECT DISTINCT ml.asin, ?, ?
+      FROM merchant_listings ml
+      WHERE TRIM(ml.asin) <> '' AND ml.asin IS NOT NULL
+    `).run(now, now);
+
+    // 2. Pull a chunk of merchant ASINs still missing an image.
+    const targets = db.prepare(`
+      SELECT DISTINCT ml.asin AS asin
+      FROM merchant_listings ml
+      JOIN products p ON p.asin = ml.asin
+      WHERE (p.image_url IS NULL OR TRIM(p.image_url) = '')
+        AND TRIM(ml.asin) <> '' AND ml.asin IS NOT NULL
+      ORDER BY ml.asin
+      LIMIT ?
+    `).all(limit) as { asin: string }[];
+
+    for (const { asin } of targets) {
+      processed++;
+      try {
+        const item = await fetchCatalogByAsin(credentials, asin);
+        const enrichedAt = new Date().toISOString();
+        db.prepare(`
+          UPDATE products SET
+            name = COALESCE(?, name),
+            category = COALESCE(?, category),
+            image_url = COALESCE(?, image_url),
+            catalog_last_enriched = ?,
+            updated_at = ?
+          WHERE asin = ?
+        `).run(item?.name ?? null, item?.category ?? null, item?.imageUrl ?? null, enrichedAt, enrichedAt, asin);
+        if (item?.imageUrl) updated++;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      } catch (err) {
+        db.prepare(`UPDATE products SET catalog_last_enriched = ? WHERE asin = ?`)
+          .run(new Date().toISOString(), asin);
+        errors.push(`Catalog ${asin}: ${err}`);
+      }
+    }
+
+    const rem = db.prepare(`
+      SELECT COUNT(*) AS n FROM (
+        SELECT DISTINCT ml.asin
+        FROM merchant_listings ml
+        JOIN products p ON p.asin = ml.asin
+        WHERE (p.image_url IS NULL OR TRIM(p.image_url) = '')
+          AND TRIM(ml.asin) <> '' AND ml.asin IS NOT NULL
+      )
+    `).get() as { n: number };
+
+    return { processed, updated, remaining: rem.n, errors };
+  } finally {
+    db.close();
+  }
+}
+
 export async function enrichProductCatalog(
   credentials: SPAPICredentials
 ): Promise<{ enriched: number; errors: string[] }> {
