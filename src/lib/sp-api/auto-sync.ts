@@ -31,6 +31,11 @@ const LOOKBACK_DAYS = 14; // Sync last 2 weeks each run
 // long-running report sync. Cleared on process restart (PM2 handles that).
 const inFlight = new Set<string>();
 
+/** Read-only snapshot of the in-process lock set, for /api/sync/status. */
+export function getInFlightJobs(): string[] {
+  return Array.from(inFlight);
+}
+
 // Hard timeout on each long-running async report sync. Prevents a hung Amazon
 // report endpoint from permanently occupying the event loop.
 const JOB_TIMEOUT_MS = 8 * 60 * 1000; // 8 minutes
@@ -112,6 +117,90 @@ const SALES_RANK_INTERVAL_HOURS = 24;
 // Weekly is enough to catch them well within the 60-day claim window.
 const REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS = 24 * 7;
 const REIMBURSEMENT_CANDIDATES_LOOKBACK_DAYS = 90;
+
+/**
+ * Job metadata for the /sync status surface. Keep this in sync with autoSyncTick
+ * — if a new gated job is added there, add its row here so the dashboard can
+ * show it and the force-run button can target it.
+ */
+export const SYNC_JOB_REGISTRY = [
+  {
+    key: 'lastSync',
+    label: 'Amazon — full sync',
+    description: 'Orders, finances, inventory, catalog, settlement, listings',
+    intervalHours: SYNC_INTERVAL_HOURS,
+    runRoute: '/api/sync',
+    method: 'POST',
+    body: { lookbackDays: LOOKBACK_DAYS },
+    family: 'amazon',
+  },
+  {
+    key: 'walmart_last_sync',
+    label: 'Walmart',
+    description: 'Orders, returns, WFS inventory, recon reports',
+    intervalHours: SYNC_INTERVAL_HOURS,
+    runRoute: '/api/sync/walmart',
+    method: 'POST',
+    family: 'walmart',
+  },
+  {
+    key: 'ebay_last_sync',
+    label: 'eBay',
+    description: 'Orders + finances',
+    intervalHours: SYNC_INTERVAL_HOURS,
+    runRoute: '/api/sync/ebay',
+    method: 'POST',
+    family: 'ebay',
+  },
+  {
+    key: 'customer_returns_last_sync',
+    label: 'FBA customer returns',
+    description: 'Real return reason codes (DEFECTIVE, UNWANTED_ITEM, etc.)',
+    intervalHours: CUSTOMER_RETURNS_INTERVAL_HOURS,
+    runRoute: '/api/sync/customer-returns',
+    method: 'POST',
+    family: 'amazon',
+  },
+  {
+    key: 'sales_rank_last_sync',
+    label: 'Sales rank',
+    description: 'BSR snapshot for every active ASIN',
+    intervalHours: SALES_RANK_INTERVAL_HOURS,
+    runRoute: '/api/sync/sales-rank',
+    method: 'POST',
+    family: 'amazon',
+  },
+  {
+    key: 'reimbursements_report_last_sync',
+    label: 'Reimbursements report',
+    description: '18-month canonical record of every Amazon reimbursement',
+    intervalHours: REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS,
+    runRoute: '/api/sync/reimbursements-report',
+    method: 'POST',
+    family: 'amazon',
+  },
+  {
+    key: 'reimbursement_candidates_last_sync',
+    label: 'Reimbursement candidates',
+    description: 'Lost/damaged inventory Amazon owes you (60-day claim window)',
+    intervalHours: REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS,
+    runRoute: '/api/sync/reimbursement-candidates',
+    method: 'POST',
+    family: 'amazon',
+  },
+  {
+    key: 'merchant_listings_last_sync',
+    label: 'Merchant listings',
+    description: 'Seller Central listing status, qty, price (powers MFN freshness)',
+    intervalHours: SYNC_INTERVAL_HOURS,
+    runRoute: '/api/sync/merchant-listings',
+    method: 'POST',
+    family: 'amazon',
+    note: 'Also runs automatically as step 5b of every Amazon sync.',
+  },
+] as const;
+
+export type SyncJobRegistryEntry = (typeof SYNC_JOB_REGISTRY)[number];
 
 function getAmazonCredentials(): SPAPICredentials | null {
   try {

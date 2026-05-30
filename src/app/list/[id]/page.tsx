@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback, use, useMemo } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
 import { generateMSKU } from '@/lib/listing-msku';
-import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown } from 'lucide-react';
+import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown, Copy } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import type { MapShipmentMeta } from '@/components/PlacementMap';
 import MfnBatchReceiveWorkflow from '@/components/mfn/MfnBatchReceiveWorkflow';
@@ -206,6 +206,25 @@ interface CatalogResult {
   shippingEstimate?: ShippingEstimate | null;
 }
 
+interface PendingAddDraft {
+  query: string;
+  scanned: CatalogResult | null;
+  sku: string;
+  skuManuallyEdited: boolean;
+  buyPrice: string;
+  listPrice: string;
+  shipCost: string;
+  quantity: string;
+  supplier: string;
+  condition: string;
+  listingMode: 'CREATE_NEW' | 'REPLENISH_EXISTING';
+  selectedExistingSku: ExistingSku | null;
+  existingSkus: ExistingSku[];
+  existingSkuFilter: string;
+  manualMsku: string;
+  savedAt: string;
+}
+
 function amazonAsinUrl(asin: string | null | undefined): string | null {
   const value = (asin ?? '').trim();
   return value ? `https://www.amazon.com/dp/${encodeURIComponent(value)}` : null;
@@ -297,6 +316,8 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   const [supplier, setSupplier] = useState('');
   const [condition, setCondition] = useState('NewItem');
   const [saving, setSaving] = useState(false);
+  const [pendingDraftHydrated, setPendingDraftHydrated] = useState(false);
+  const [pendingDraftRestored, setPendingDraftRestored] = useState(false);
 
   // Phase 2: Send to Amazon state
   const [showSendModal, setShowSendModal] = useState(false);
@@ -336,6 +357,108 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   // Cancel & edit — undoes the inbound plan and resets to draft so the user
   // can add items / fix mistakes and re-send. Listings stay on Amazon.
   const [cancelling, setCancelling] = useState(false);
+
+  const pendingDraftStorageKey = useMemo(() => `flipledger:list-batch:${id}:pending-add`, [id]);
+
+  useEffect(() => {
+    setPendingDraftHydrated(false);
+    setPendingDraftRestored(false);
+
+    try {
+      const raw = window.localStorage.getItem(pendingDraftStorageKey);
+      if (!raw) {
+        setPendingDraftHydrated(true);
+        return;
+      }
+
+      const draft = JSON.parse(raw) as Partial<PendingAddDraft>;
+      setQuery(draft.query || '');
+      setScanned(draft.scanned || null);
+      setSku(draft.sku || '');
+      setSkuManuallyEdited(!!draft.skuManuallyEdited);
+      setBuyPrice(draft.buyPrice || '');
+      setListPrice(draft.listPrice || '');
+      setShipCost(draft.shipCost || '');
+      setQuantity(draft.quantity || '1');
+      setSupplier(draft.supplier || '');
+      setCondition(draft.condition || 'NewItem');
+      setListingMode(draft.listingMode || 'CREATE_NEW');
+      setSelectedExistingSku(draft.selectedExistingSku || null);
+      setExistingSkus(draft.existingSkus || []);
+      setExistingSkuFilter(draft.existingSkuFilter || '');
+      setManualMsku(draft.manualMsku || '');
+      setPendingDraftRestored(true);
+    } catch (err) {
+      console.warn('pending add draft restore failed:', err);
+      window.localStorage.removeItem(pendingDraftStorageKey);
+    } finally {
+      setPendingDraftHydrated(true);
+    }
+  }, [pendingDraftStorageKey]);
+
+  useEffect(() => {
+    if (!pendingDraftHydrated) return;
+
+    const hasDraft =
+      !!scanned ||
+      !!query.trim() ||
+      !!sku.trim() ||
+      !!buyPrice.trim() ||
+      !!listPrice.trim() ||
+      !!shipCost.trim() ||
+      !!supplier.trim() ||
+      quantity !== '1' ||
+      condition !== 'NewItem' ||
+      listingMode !== 'CREATE_NEW' ||
+      !!selectedExistingSku ||
+      existingSkus.length > 0 ||
+      !!existingSkuFilter.trim() ||
+      !!manualMsku.trim();
+
+    if (!hasDraft) {
+      window.localStorage.removeItem(pendingDraftStorageKey);
+      setPendingDraftRestored(false);
+      return;
+    }
+
+    const draft: PendingAddDraft = {
+      query,
+      scanned,
+      sku,
+      skuManuallyEdited,
+      buyPrice,
+      listPrice,
+      shipCost,
+      quantity,
+      supplier,
+      condition,
+      listingMode,
+      selectedExistingSku,
+      existingSkus,
+      existingSkuFilter,
+      manualMsku,
+      savedAt: new Date().toISOString(),
+    };
+    window.localStorage.setItem(pendingDraftStorageKey, JSON.stringify(draft));
+  }, [
+    pendingDraftHydrated,
+    pendingDraftStorageKey,
+    query,
+    scanned,
+    sku,
+    skuManuallyEdited,
+    buyPrice,
+    listPrice,
+    shipCost,
+    quantity,
+    supplier,
+    condition,
+    listingMode,
+    selectedExistingSku,
+    existingSkus,
+    existingSkuFilter,
+    manualMsku,
+  ]);
 
   // Auto-generate MSKU whenever supplier / buyPrice / productName changes,
   // unless the user has manually typed into the MSKU field.
@@ -673,6 +796,30 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
   function removeBoxAt(idx: number) {
     setBoxes((prev) => prev.filter((_, i) => i !== idx));
+  }
+
+  // Duplicate one box N times — copies dimensions, weight, packing group, and
+  // contents (item assignments) as-is. Use case: 25 units / 5 per box / 5
+  // identical boxes — assign 5 to box 1, duplicate 4 times. Items array is
+  // copied verbatim, so each duplicate claims the same units; batch validation
+  // will flag if total assigned exceeds available batch qty.
+  function duplicateBoxAt(idx: number, copies: number = 1) {
+    if (copies < 1) return;
+    const clamped = Math.min(copies, 50); // sanity cap
+    setBoxes((prev) => {
+      const source = prev[idx];
+      if (!source) return prev;
+      const dupes = Array.from({ length: clamped }, () => ({
+        lengthIn: source.lengthIn,
+        widthIn: source.widthIn,
+        heightIn: source.heightIn,
+        weightLb: source.weightLb,
+        packingGroupId: source.packingGroupId,
+        items: source.items.map((bi) => ({ ...bi })),
+      }));
+      // Insert directly after the source box so the visual order is intuitive.
+      return [...prev.slice(0, idx + 1), ...dupes, ...prev.slice(idx + 1)];
+    });
   }
 
   function updateBoxField(idx: number, field: keyof Box, value: number) {
@@ -1408,6 +1555,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           confirmingPlacementId={confirmingPlacementId}
           onAddBox={addEmptyBox}
           onRemoveBox={removeBoxAt}
+          onDuplicateBox={duplicateBoxAt}
           onUpdateBoxField={updateBoxField}
           onSetBoxItemQty={setBoxItemQty}
           onSaveBoxes={handleSaveBoxes}
@@ -1493,6 +1641,15 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
             {scanError && (
               <div className="text-sm text-negative">{scanError}</div>
+            )}
+
+            {pendingDraftRestored && (
+              <div className="flex items-start gap-2 rounded-md border border-accent/25 bg-accent/10 px-3 py-2 text-xs text-text-secondary">
+                <AlertCircle size={14} className="mt-0.5 shrink-0 text-accent" />
+                <div>
+                  Restored an unsaved product entry for this batch. Click Add to Batch when it is ready.
+                </div>
+              </div>
             )}
 
             {scanned && (
@@ -2781,6 +2938,56 @@ function buildTransportSummary(rawOptions: any[], shipmentDetails?: any[]): Tran
 //   2. Placement: Amazon returns 3 options (Optimized/Partial/Minimal), pick one
 //   3. Shipping:  confirmed placement — show shipment IDs + destinations (map TBD)
 
+// Small inline control in the box header: shows a Copy icon button.
+// Click once = duplicate one identical box (dims, weight, packing group,
+// contents). Hold + scroll or use the number input to duplicate N times.
+function DuplicateBoxControl({ onDuplicate }: { onDuplicate: (copies: number) => void }) {
+  const [open, setOpen] = useState(false);
+  const [count, setCount] = useState(1);
+  return (
+    <div className="relative">
+      <button
+        onClick={() => {
+          if (open) {
+            onDuplicate(Math.max(1, Math.min(50, count)));
+            setOpen(false);
+            setCount(1);
+          } else {
+            setOpen(true);
+          }
+        }}
+        className="p-1 text-text-tertiary hover:text-accent transition-colors inline-flex items-center gap-1"
+        title={open ? `Duplicate ${count}x` : 'Duplicate box'}
+      >
+        <Copy size={12} />
+        {open && <span className="text-[10px] font-medium">×{count}</span>}
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 top-full mt-1 z-10 flex items-center gap-1 bg-bg-elevated border border-border-subtle rounded shadow-sm p-1"
+          onMouseLeave={() => { setOpen(false); setCount(1); }}
+        >
+          <input
+            type="number"
+            min={1}
+            max={50}
+            value={count}
+            onChange={(e) => setCount(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+            className="w-12 px-1 py-0.5 text-xs border border-border-subtle rounded bg-bg-base text-text-primary"
+            autoFocus
+          />
+          <button
+            onClick={() => { onDuplicate(count); setOpen(false); setCount(1); }}
+            className="px-2 py-0.5 text-xs rounded bg-accent text-white"
+          >
+            Copy
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface BoxingWorkflowProps {
   batch: Batch;
   items: BatchItem[];
@@ -2797,6 +3004,7 @@ interface BoxingWorkflowProps {
   confirmingPlacementId: string | null;
   onAddBox: (packingGroupId?: string) => void;
   onRemoveBox: (idx: number) => void;
+  onDuplicateBox: (idx: number, copies?: number) => void;
   onUpdateBoxField: (idx: number, field: keyof Box, value: number) => void;
   onSetBoxItemQty: (boxIdx: number, itemId: number, qty: number) => void;
   onSaveBoxes: () => void;
@@ -2825,6 +3033,7 @@ function BoxingWorkflow({
   confirmingPlacementId,
   onAddBox,
   onRemoveBox,
+  onDuplicateBox,
   onUpdateBoxField,
   onSetBoxItemQty,
   onSaveBoxes,
@@ -3243,6 +3452,11 @@ function BoxingWorkflow({
                           <BoxIcon size={14} className="text-text-tertiary" />
                           <span className="text-xs font-medium text-text-primary">Box {boxIdxInSection + 1}</span>
                           <span className="text-[11px] text-text-tertiary ml-auto">{boxUnits} unit{boxUnits === 1 ? '' : 's'}</span>
+                          {!packingLocked && (
+                            <DuplicateBoxControl
+                              onDuplicate={(copies) => onDuplicateBox(idx, copies)}
+                            />
+                          )}
                           {!packingLocked && section.boxIndices.length > 1 && (
                             <button
                               onClick={() => onRemoveBox(idx)}

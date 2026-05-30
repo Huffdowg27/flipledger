@@ -6,7 +6,6 @@ import {
   LayoutDashboard,
   TrendingUp,
   Receipt,
-  DollarSign,
   Package,
   ShoppingBag,
   PackageMinus,
@@ -16,17 +15,17 @@ import {
   ShoppingCart,
   Undo2,
   HandCoins,
-  Wallet,
   Truck,
   CreditCard,
   FileText,
   Settings,
   ChevronLeft,
   Menu,
-  RefreshCw,
   ScanBarcode,
   Warehouse,
   PackageCheck,
+  Printer,
+  Activity,
 } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import GlobalSearch from '@/components/ui/GlobalSearch';
@@ -58,13 +57,16 @@ const navSections: NavSection[] = [
     items: [
       { label: 'Dashboard', href: '/', icon: <LayoutDashboard size={18} /> },
       { label: 'Products & COGS', href: '/products', icon: <ShoppingBag size={18} /> },
+      { label: 'Sync', href: '/sync', icon: <Activity size={18} /> },
     ],
   },
   {
     title: 'LISTING',
     items: [
       { label: 'Batches', href: '/list', icon: <ScanBarcode size={18} /> },
+      { label: 'MFN Upload List', href: '/mfn/upload-list', icon: <FileText size={18} /> },
       { label: 'MFN Quick Tray', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
+      { label: 'Labels', href: '/labels', icon: <Printer size={18} /> },
     ],
   },
   {
