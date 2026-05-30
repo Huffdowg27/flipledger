@@ -354,6 +354,15 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   const [printingFnsku, setPrintingFnsku] = useState(false);
   const [printingItemId, setPrintingItemId] = useState<number | null>(null);
 
+  // Photo lightbox — click any product image to view it large (Prep Ship Hub style)
+  const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [lightbox]);
+
   // Cancel & edit — undoes the inbound plan and resets to draft so the user
   // can add items / fix mistakes and re-send. Listings stay on Amazon.
   const [cancelling, setCancelling] = useState(false);
@@ -1675,15 +1684,22 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                 {/* Product header */}
                 <div className="flex items-start gap-4 p-4 bg-bg-elevated">
                   {scanned.imageUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={scanned.imageUrl} alt={scanned.name || ''} className="w-16 h-16 rounded object-contain bg-white" />
+                    <button
+                      type="button"
+                      onClick={() => scanned.imageUrl && setLightbox({ src: scanned.imageUrl, title: scanned.name || scanned.asin, asin: scanned.asin, sku: null })}
+                      className="shrink-0 rounded-lg overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-accent/40 transition-shadow"
+                      title="View larger"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={scanned.imageUrl} alt={scanned.name || ''} className="w-24 h-24 object-contain block p-1.5" />
+                    </button>
                   ) : (
-                    <div className="w-16 h-16 rounded bg-bg-hover flex items-center justify-center">
-                      <Package size={24} className="text-text-tertiary" />
+                    <div className="w-24 h-24 rounded-lg bg-bg-hover flex items-center justify-center">
+                      <Package size={28} className="text-text-tertiary" />
                     </div>
                   )}
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm font-medium text-text-primary line-clamp-2">{scanned.name}</div>
+                    <div className="text-base font-medium text-text-primary line-clamp-2">{scanned.name}</div>
                     <div className="flex items-center gap-2 mt-1 text-[11px] text-text-tertiary font-mono">
                       <AsinLink asin={scanned.asin} className="hover:text-accent hover:underline" />
                       {scanned.brand && <span>· {scanned.brand}</span>}
@@ -2206,14 +2222,21 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                             : 'hover:bg-bg-hover'
                       }`}
                     >
-                      <td className="px-4 py-2">
+                      <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           {item.imageUrl ? (
-                            // eslint-disable-next-line @next/next/no-img-element
-                            <img src={item.imageUrl} alt="" className="w-8 h-8 rounded object-contain bg-white shrink-0" />
+                            <button
+                              type="button"
+                              onClick={() => item.imageUrl && setLightbox({ src: item.imageUrl, title: item.productName || item.asin, asin: item.asin, sku: item.sku })}
+                              className="shrink-0 rounded-lg overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-accent/40 transition-shadow"
+                              title="View larger"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img src={item.imageUrl} alt="" className="w-14 h-14 object-contain block p-1" />
+                            </button>
                           ) : (
-                            <div className="w-8 h-8 rounded bg-bg-hover shrink-0 flex items-center justify-center">
-                              <Package size={14} className="text-text-tertiary" />
+                            <div className="w-14 h-14 rounded-lg bg-bg-hover shrink-0 flex items-center justify-center">
+                              <Package size={18} className="text-text-tertiary" />
                             </div>
                           )}
                           <div className="min-w-0 flex-1">
@@ -2221,7 +2244,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                               href={`https://www.amazon.com/dp/${item.asin}`}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="text-sm text-text-primary hover:text-accent hover:underline truncate max-w-[400px] block"
+                              className="text-base text-text-primary hover:text-accent hover:underline truncate max-w-[400px] block"
                               title={item.productName || ''}
                             >
                               {item.productName || item.asin}
@@ -2515,6 +2538,42 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                   ? (batch.channel === 'FBA' ? 'Sending…' : 'Publishing…')
                   : (batch.channel === 'FBA' ? 'Yes, send to Amazon' : 'Yes, publish to Amazon')}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Photo lightbox — image-dominant, full-res (Prep Ship Hub style) */}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative bg-white rounded-xl shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white/90"
+              title="Close (Esc)"
+            >
+              <XIcon size={18} />
+            </button>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={lightbox.src.replace(/\._[A-Z0-9,]+_\.(jpg|jpeg|png)/i, '.$1')}
+              alt={lightbox.title}
+              className="block h-[85vh] w-auto max-w-[92vw] object-contain"
+            />
+            <div className="absolute bottom-0 inset-x-0 px-4 py-2.5 bg-gradient-to-t from-black/70 to-transparent">
+              <div className="text-sm font-medium text-white leading-snug line-clamp-2" title={lightbox.title}>
+                {lightbox.title}
+              </div>
+              <div className="flex items-center gap-2 mt-0.5 text-[10px] font-mono text-white/70">
+                {lightbox.asin && <AsinLink asin={lightbox.asin} className="text-blue-300 hover:text-blue-200 hover:underline" />}
+                {lightbox.sku && <MskuLink sku={lightbox.sku} className="truncate hover:text-blue-200 hover:underline" />}
+              </div>
             </div>
           </div>
         </div>
