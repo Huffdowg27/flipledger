@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download, Send, Loader2 } from 'lucide-react';
+import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download, Send, Loader2, Package } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -84,6 +84,24 @@ function getReceiveStatus(row: MerchantRow): ReceiveStatus | null {
 function realFnsku(value: string | null | undefined): string | null {
   const f = String(value || '').trim().toUpperCase();
   return /^X00[A-Z0-9]+$/.test(f) ? f : null;
+}
+
+// Labeled identifier with copy button — Prep Ship Hub-style product info block.
+function IdentifierChip({ label, value }: { label: string; value: string | null | undefined }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-center gap-1 min-w-0">
+      <span className="text-text-tertiary/60 uppercase tracking-wide shrink-0">{label}</span>
+      <span className="text-text-secondary truncate" title={value}>{value}</span>
+      <button
+        onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(value); }}
+        title={`Copy ${label}: ${value}`}
+        className="shrink-0 text-text-tertiary/40 hover:text-text-tertiary transition-colors"
+      >
+        <Copy size={10} />
+      </button>
+    </div>
+  );
 }
 
 function openPrintWindow(specs: LabelSpec[]) {
@@ -1187,7 +1205,7 @@ export default function MerchantInventoryPage() {
                     className="accent-accent cursor-pointer"
                   />
                 </th>
-                <th className="px-3 py-2.5 w-10" />
+                <th className="px-3 py-2.5 w-20" />
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary">Product</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-24">Amazon</th>
                 <th className="px-4 py-2.5 text-left text-[11px] font-medium tracking-widest uppercase text-text-tertiary w-28">Receive</th>
@@ -1247,42 +1265,26 @@ export default function MerchantInventoryPage() {
                           className="accent-accent cursor-pointer"
                         />
                       </td>
-                      <td className="px-3 py-2">
+                      <td className="px-3 py-3">
                         {row.image_url
-                          ? <img src={row.image_url} alt="" className="w-8 h-8 object-contain rounded" />
-                          : <div className="w-8 h-8 bg-bg-elevated rounded" />}
+                          ? <img src={row.image_url} alt="" className="w-16 h-16 object-contain rounded-lg bg-white border border-border-subtle p-1" />
+                          : <div className="w-16 h-16 bg-bg-elevated rounded-lg border border-border-subtle flex items-center justify-center"><Package size={20} className="text-text-tertiary/40" /></div>}
                       </td>
-                      <td className="px-4 py-2 max-w-[220px]">
-                        <div className="text-sm text-text-primary font-medium truncate" title={row.product_name || row.asin}>
+                      <td className="px-4 py-3 max-w-[360px]">
+                        <a
+                          href={`https://www.amazon.com/dp/${row.asin}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={e => e.stopPropagation()}
+                          className="text-sm text-accent font-medium leading-snug line-clamp-2 hover:underline"
+                          title={row.product_name || row.asin}
+                        >
                           {row.product_name || row.asin}
-                        </div>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <a
-                            href={`https://www.amazon.com/dp/${row.asin}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={e => e.stopPropagation()}
-                            className="text-[10px] font-mono text-accent hover:underline shrink-0"
-                          >
-                            {row.asin}
-                          </a>
-                          {row.sku && (
-                            <span
-                              className="text-[10px] font-mono text-text-tertiary truncate max-w-[110px]"
-                              title={row.sku}
-                            >
-                              {row.sku}
-                            </span>
-                          )}
-                          {row.sku && (
-                            <button
-                              onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(row.sku); }}
-                              title={`Copy MSKU: ${row.sku}`}
-                              className="shrink-0 text-text-tertiary/40 hover:text-text-tertiary transition-colors"
-                            >
-                              <Copy size={9} />
-                            </button>
-                          )}
+                        </a>
+                        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono">
+                          <IdentifierChip label="ASIN" value={row.asin} />
+                          <IdentifierChip label="MSKU" value={row.sku} />
+                          {realFnsku(row.fnsku) && <IdentifierChip label="FNSKU" value={realFnsku(row.fnsku)} />}
                         </div>
                       </td>
                       <td className="px-4 py-2">
