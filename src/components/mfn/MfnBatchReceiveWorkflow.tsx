@@ -2186,16 +2186,16 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
           </div>
           {/* KPI line — right */}
           <div className="shrink-0 text-right">
-            <div className="flex items-center gap-x-3 text-[11px] text-text-secondary flex-wrap justify-end">
-              <span className="text-text-tertiary">Qty <span className="text-text-primary font-mono">{summary.totalQty}</span></span>
-              <span className="text-text-tertiary">Rev <span className="text-text-primary font-mono">{formatCurrency(summary.totalListCents)}</span></span>
-              <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono">{formatCurrency(summary.totalCostCents)}</span></span>
-              <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono">{formatCurrency(summary.totalShipCents)}</span></span>
+            <div className="flex items-center gap-x-4 text-xs text-text-secondary flex-wrap justify-end">
+              <span className="text-text-tertiary">Qty <span className="text-text-primary font-mono text-base">{summary.totalQty}</span></span>
+              <span className="text-text-tertiary">Rev <span className="text-text-primary font-mono text-base">{formatCurrency(summary.totalListCents)}</span></span>
+              <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono text-base">{formatCurrency(summary.totalCostCents)}</span></span>
+              <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono text-base">{formatCurrency(summary.totalShipCents)}</span></span>
               <span className="text-text-tertiary">
-                Fees <span className="font-mono text-text-primary">{formatCurrency(summary.totalFeeCents)}</span>
+                Fees <span className="font-mono text-text-primary text-base">{formatCurrency(summary.totalFeeCents)}</span>
               </span>
               <span className="text-text-tertiary">
-                Net <span className={`font-mono font-semibold ${
+                Net <span className={`font-mono font-semibold text-base ${
                   summary.profitIncomplete
                     ? 'text-text-secondary'
                     : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
