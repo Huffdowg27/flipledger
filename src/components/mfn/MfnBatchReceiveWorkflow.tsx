@@ -446,32 +446,6 @@ function BatchItemChips({ chips }: { chips: Chip[] }) {
   return <>{chips.map(c => <WarningChip key={c.label} chip={c} />)}</>;
 }
 
-// Compact chip strip for saved-row Zone 7.
-// Shows all blockers (e.g. No price) first, then up to 1 warn chip
-// (e.g. Not inspected, Stale status), then a "+N" overflow badge.
-// Full chips are still shown in expanded cards and the detail drawer.
-function RowChips({ chips }: { chips: Chip[] }) {
-  if (chips.length === 0) return null;
-  const blockers = chips.filter(c => c.tone === 'blocker');
-  const warns    = chips.filter(c => c.tone === 'warn');
-  // info chips are estimate caveats — omit from compact row view
-  const shown    = [...blockers, ...warns.slice(0, 1)];
-  const hidden   = warns.slice(1);
-  return (
-    <>
-      {shown.map(c => <WarningChip key={c.label} chip={c} />)}
-      {hidden.length > 0 && (
-        <span
-          className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-slate-900/60 border-border-subtle text-text-tertiary"
-          title={hidden.map(c => c.label).join(', ')}
-        >
-          +{hidden.length}
-        </span>
-      )}
-    </>
-  );
-}
-
 // Channel badge — DEFAULT = MFN, AMAZON_NA = FBA. Sourced from
 // merchant_listings.fulfillment_channel. Display only.
 function ChannelBadge({ channel }: { channel: string | null | undefined }) {
@@ -1010,6 +984,8 @@ function getSavedDisplay(item: BatchItem) {
     savedQty:      item.quantity_received ?? (parseInt(item.draft_qty, 10) || null),
     savedPrice:    item.il_list_price_cents
       ?? (item.draft_list_price ? Math.round(parseFloat(item.draft_list_price) * 100) : null),
+    savedCogs:     item.buy_price
+      ?? (item.draft_buy_price ? Math.round(parseFloat(item.draft_buy_price) * 100) : null),
     savedBin:      item.bin_location || item.draft_bin.trim() || null,
     savedCond:     item.condition    || item.draft_condition.trim() || null,
     savedTemplate: item.merchant_shipping_group_name || item.draft_shipping_template.trim() || null,
@@ -1034,11 +1010,9 @@ interface BatchItemRowProps {
   amazonTemplates: ShippingTemplate[] | null;
 }
 
-function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused, amazonTemplates }: BatchItemRowProps) {
-  const { savedQty, savedPrice, savedBin, savedCond, savedTemplate } = getSavedDisplay(item);
+function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
+  const { savedQty, savedPrice, savedCogs } = getSavedDisplay(item);
   const receiveProgress = getReceiveProgress(item);
-  const chips = chipsForBatchItem(item);
-  const showMarkInspected = item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at;
 
   return (
     <div className="flex items-center gap-3 px-4 py-3 rounded-lg border border-border-subtle border-l-2 border-l-green-500/40">
@@ -1079,44 +1053,21 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
         {receiveProgress && <ReceiveProgressBar progress={receiveProgress} variant="compact" />}
       </div>
 
-      {/* Zone 5 — Bin/Cond/Template (w-24 fixed, always rendered): dash when all empty */}
-      <div className="w-24 shrink-0 text-xs leading-tight">
-        {savedBin && <div className="text-text-tertiary">Bin <span className="font-mono text-text-secondary">{savedBin}</span></div>}
-        {savedCond && <div className="text-text-secondary truncate">{savedCond}</div>}
-        {savedTemplate && (() => {
-          const resolved = resolveShippingTemplate(savedTemplate, amazonTemplates);
-          return resolved
-            ? <div className="text-[9px] text-text-tertiary/70 truncate">Template: {resolved.name}</div>
-            : <div className="text-[9px] text-text-tertiary/50 truncate">{savedTemplate} <span className="opacity-70">(not synced)</span></div>;
-        })()}
-        {!savedBin && !savedCond && !savedTemplate && <span className="text-text-tertiary/30">—</span>}
-      </div>
-
-      {/* Zone 6 — Price (w-16 fixed, always rendered): dash when missing */}
-      <div className="w-16 shrink-0 text-right">
-        {savedPrice != null
-          ? <span className="font-mono text-base text-text-secondary">{formatCurrency(savedPrice)}</span>
+      {/* Zone 5 — COGS (w-20 right): buy price per unit, to verify the import */}
+      <div className="w-20 shrink-0 text-right">
+        {savedCogs != null
+          ? <span className="font-mono text-base text-text-secondary">{formatCurrency(savedCogs)}</span>
           : <span className="text-text-tertiary/30">—</span>}
       </div>
 
-      {/* Zone 7 — Status (w-32 fixed, always rendered): UPC + chips + mark-inspected; empty when clean */}
-      <div className="w-32 shrink-0 flex items-center gap-1 overflow-hidden">
-        {item.upc && <UpcChip upc={item.upc} />}
-        <RowChips chips={chips} />
-        {showMarkInspected && (
-          <button type="button" onClick={onMarkInspected} disabled={item.marking_inspected}
-            className="inline-flex items-center gap-0.5 px-1.5 h-4 rounded text-[9px] font-medium border border-blue-500/40 text-blue-400 hover:bg-blue-500/10 transition-colors disabled:opacity-50"
-            title="Marks this item inspected. Does not update Amazon.">
-            {item.marking_inspected && <Loader2 size={8} className="animate-spin" />}
-            Mark inspected
-          </button>
-        )}
-        {item.mark_inspect_error && (
-          <span className="text-[9px] text-red-400" title={item.mark_inspect_error}>!</span>
-        )}
+      {/* Zone 6 — List price (w-20 right) */}
+      <div className="w-20 shrink-0 text-right">
+        {savedPrice != null
+          ? <span className="font-mono text-base text-text-primary">{formatCurrency(savedPrice)}</span>
+          : <span className="text-text-tertiary/30">—</span>}
       </div>
 
-      {/* Zone 8 — Actions (w-24 fixed, right-aligned) */}
+      {/* Zone 7 — Actions (w-24 fixed, right-aligned) */}
       <div className="w-24 shrink-0 flex items-center justify-end">
         <button onClick={onShowDetail} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="View details"><Info size={13} /></button>
         <button onClick={onPrintLabel} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
@@ -2316,9 +2267,8 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
               <div className="min-w-0 flex-1">Item</div>
               <div className="w-44 shrink-0">MSKU</div>
               <div className="w-32 shrink-0">Qty</div>
-              <div className="w-24 shrink-0">Bin / Meta</div>
-              <div className="w-16 shrink-0 text-right">Price</div>
-              <div className="w-32 shrink-0">Status</div>
+              <div className="w-20 shrink-0 text-right">COGS</div>
+              <div className="w-20 shrink-0 text-right">List</div>
               <div className="w-24 shrink-0 text-right">Actions</div>
             </div>
             <div className="flex-1 overflow-y-auto space-y-1 min-h-0 pr-1">
