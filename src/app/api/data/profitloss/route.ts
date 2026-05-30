@@ -37,6 +37,7 @@ export async function GET(request: NextRequest) {
   const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
   const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
   const dateBasis = searchParams.get('dateBasis') || 'posted';
+  const summaryOnly = searchParams.get('summaryOnly') === '1';
   // 'reconciled' uses posted_date basis but requires real fee rows (financial_event_id != 0),
   // excluding estimated fees written by estimateAndBackfillFees() for unreconciled orders.
   const DATE_SUB = dateBasis === 'purchase' ? ORDER_PURCHASE_DATE : ORDER_POSTED_DATE;
@@ -226,8 +227,31 @@ export async function GET(request: NextRequest) {
     const totalAllExpenses = cogsTotal.total + totalFees + shippingCosts.total + totalExpenses.total;
     const netProfit = totalIncome - totalAllExpenses - refundTotal.total + refundTotal.clawback + reimbTotal.total;
 
+    const unitSummary = summaryOnly ? db.prepare(`
+      SELECT
+        COALESCE(SUM(oi.quantity), 0) as units,
+        COUNT(DISTINCT oi.order_id) as orders
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.order_id
+      JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+    `).get(startDate, endDateNext) as any : null;
+
+    const dailySummary = summaryOnly ? db.prepare(`
+      SELECT
+        substr(fe.posted_date, 1, 10) as day,
+        COALESCE(SUM(oi.total_price), 0) as revenue,
+        0 as profit
+      FROM order_items oi
+      JOIN orders o ON oi.order_id = o.order_id
+      JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      GROUP BY substr(fe.posted_date, 1, 10)
+      ORDER BY day
+    `).all(startDate, endDateNext) as any[] : [];
+
     // Sales detail — individual products sold in the period, with per-order fees
-    const salesDetail = db.prepare(`
+    const salesDetail = summaryOnly ? [] : db.prepare(`
       SELECT
         oi.order_id,
         o.marketplace,
@@ -268,7 +292,7 @@ export async function GET(request: NextRequest) {
     // fallbacks (r.asin → products.asin, r.sku → products.asin or sku) to
     // handle marketplaces where refunds.asin is actually populated (Walmart,
     // eBay historical).
-    const refundDetail = db.prepare(`
+    const refundDetail = summaryOnly ? [] : db.prepare(`
       SELECT
         r.order_id,
         r.marketplace,
@@ -348,6 +372,8 @@ export async function GET(request: NextRequest) {
       netProfit,
       margin: totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0,
       dateBasis,
+      unitSummary,
+      dailySummary,
       salesDetail,
       refundDetail,
     });

@@ -159,18 +159,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         now
       );
 
-      // Upsert products so the name/image get reused next time
-      if (productName) {
-        db.prepare(`
-          INSERT INTO products (asin, sku, name, image_url, marketplace, created_at, updated_at)
-          VALUES (?, ?, ?, ?, 'amazon', ?, ?)
-          ON CONFLICT(asin) DO UPDATE SET
-            name = COALESCE(excluded.name, name),
-            image_url = COALESCE(excluded.image_url, image_url),
-            updated_at = excluded.updated_at
-        `).run(asin, sku, productName, imageUrl || null, now, now);
-      }
-
       db.prepare('UPDATE listing_batches SET updated_at = ? WHERE id = ?').run(now, batchId);
 
       return { itemId: result.lastInsertRowid, inventoryLedgerId };
@@ -192,6 +180,31 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         );
       }
       return NextResponse.json({ error: msg }, { status: 500 });
+    }
+
+    // Product cache is helpful for future lookups, but it must never decide
+    // whether the batch item itself saved. Keep it outside the transaction so a
+    // products-table schema/cache issue cannot roll back listing_batch_items.
+    if (productName) {
+      try {
+        const updated = db.prepare(`
+          UPDATE products SET
+            sku = COALESCE(?, sku),
+            name = COALESCE(?, name),
+            image_url = COALESCE(?, image_url),
+            updated_at = ?
+          WHERE asin = ?
+        `).run(sku, productName, imageUrl || null, now, asin);
+
+        if (updated.changes === 0) {
+          db.prepare(`
+            INSERT INTO products (asin, sku, name, image_url, marketplace, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'amazon', ?, ?)
+          `).run(asin, sku, productName, imageUrl || null, now, now);
+        }
+      } catch (cacheErr) {
+        console.warn('[batch items] product cache update skipped:', cacheErr);
+      }
     }
 
     db.close();

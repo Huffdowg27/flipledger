@@ -29,6 +29,17 @@ export function initializeDatabase() {
       records_fetched INTEGER DEFAULT 0
     );
 
+    CREATE TABLE IF NOT EXISTS sales_traffic_daily (
+      day TEXT NOT NULL,
+      marketplace TEXT NOT NULL DEFAULT 'amazon',
+      ordered_product_sales INTEGER NOT NULL DEFAULT 0,
+      units_ordered INTEGER NOT NULL DEFAULT 0,
+      order_items INTEGER NOT NULL DEFAULT 0,
+      report_id TEXT,
+      synced_at TEXT NOT NULL,
+      PRIMARY KEY (day, marketplace)
+    );
+
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       asin TEXT NOT NULL,
@@ -57,6 +68,8 @@ export function initializeDatabase() {
       marketplace TEXT DEFAULT 'amazon',
       fulfillment_channel TEXT NOT NULL,
       is_estimated INTEGER DEFAULT 1,
+      order_total INTEGER DEFAULT 0,
+      order_total_currency TEXT,
       shipped_at TEXT,
       created_at TEXT NOT NULL
     );
@@ -664,6 +677,9 @@ export function initializeDatabase() {
     // column is only populated by /api/data/inventory-lots/create-mfn-local-lot.
     `ALTER TABLE inventory_ledger ADD COLUMN batch_id INTEGER`,
     `CREATE INDEX IF NOT EXISTS idx_inventory_ledger_batch ON inventory_ledger(batch_id)`,
+    `ALTER TABLE orders ADD COLUMN order_total INTEGER DEFAULT 0`,
+    `ALTER TABLE orders ADD COLUMN order_total_currency TEXT`,
+    `ALTER TABLE products ADD COLUMN catalog_last_enriched TEXT`,
     // merchant_listings new columns — populated by GET_MERCHANT_LISTINGS_ALL_DATA
     `ALTER TABLE merchant_listings ADD COLUMN listing_id TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN item_name TEXT`,
@@ -671,10 +687,6 @@ export function initializeDatabase() {
     `ALTER TABLE merchant_listings ADD COLUMN open_date TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN item_condition TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN source_report_type TEXT`,
-    // Catalog enrichment cooldown — populated by enrichProductCatalog on every
-    // attempt (success or failure) so we don't re-hammer the same failed ASINs
-    // on the next hourly sync. Retry window is 7 days, enforced in catalog.ts.
-    `ALTER TABLE products ADD COLUMN catalog_last_enriched TEXT`,
     // sales_tax had no unique constraint, so INSERT OR IGNORE never deduped and
     // every sync re-inserted all rows (observed 255x). Collapse to one row per
     // (order_id, amount, facilitator_tax, posted_date), preferring a real state

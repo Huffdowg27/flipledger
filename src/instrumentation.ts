@@ -2,9 +2,9 @@
 //
 // Responsibilities:
 //   1. Apply DB table + column migrations via initializeDatabase().
-//   2. Start the auto-sync scheduler so syncs run without waiting on the UI to
-//      first hit /api/sync/auto. Idempotent — startAutoSync() guards against
-//      double-start internally.
+//   2. Optionally start the auto-sync scheduler. Keep this opt-in until the
+//      web/sync PM2 split lands; starting a long sync inside the web process
+//      during boot can make the app unavailable right after deploy.
 //   3. Register SIGTERM/SIGINT handlers that run a WAL checkpoint before the
 //      process exits, so PM2 restarts don't risk losing in-flight WAL writes.
 export async function register() {
@@ -13,21 +13,32 @@ export async function register() {
   const { initializeDatabase } = await import('./lib/db');
   initializeDatabase();
 
-  try {
-    const { startAutoSync } = await import('./lib/sp-api/auto-sync');
-    startAutoSync();
-  } catch (err) {
-    console.error('[instrumentation] startAutoSync failed:', err);
+  if (process.env.FLIPLEDGER_START_AUTOSYNC_ON_BOOT === 'true') {
+    try {
+      const globalState = globalThis as typeof globalThis & {
+        __flipledgerAutoSyncStarted?: boolean;
+      };
+
+      if (!globalState.__flipledgerAutoSyncStarted) {
+        globalState.__flipledgerAutoSyncStarted = true;
+        const { startAutoSync } = await import('./lib/sp-api/auto-sync');
+        startAutoSync();
+      }
+    } catch (err) {
+      console.error('[instrumentation] startAutoSync failed:', err);
+    }
   }
 
   registerShutdownHandlers();
 }
 
-let shutdownRegistered = false;
-
 function registerShutdownHandlers() {
-  if (shutdownRegistered) return;
-  shutdownRegistered = true;
+  const globalState = globalThis as typeof globalThis & {
+    __flipledgerShutdownRegistered?: boolean;
+  };
+
+  if (globalState.__flipledgerShutdownRegistered) return;
+  globalState.__flipledgerShutdownRegistered = true;
 
   const shutdown = (signal: NodeJS.Signals) => {
     try {

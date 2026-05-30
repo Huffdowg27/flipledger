@@ -25,22 +25,28 @@ export async function GET(request: NextRequest) {
     endDate = new Date().toISOString().split('T')[0];
   }
   const marketplace = searchParams.get('marketplace');
+  const openOnly = searchParams.get('openOnly') === '1';
   const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
   const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
 
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
   try {
+    const openOrderFilter = openOnly
+      ? `AND o.status IN ('Unshipped', 'PartiallyShipped')`
+      : `AND o.purchase_date >= ? AND o.purchase_date < ?`;
+
     // Merchant Sales — date range filtered by purchase_date (sold date), with
     // ShipmentEvent left-joined so recent MFN/Seller orders can appear as
     // Estimated before Amazon posts final financial events. Reconciled row math
     // keeps the existing fee/COGS lookups intact; this route does not affect
     // P&L/accounting calculations.
-    const rows = db.prepare(`
+    const query = db.prepare(`
       SELECT
         o.purchase_date as soldDate,
         fe.posted_date as postedDate,
         o.order_id as orderId,
+        o.status as orderStatus,
         oi.asin,
         oi.sku,
         COALESCE(p.name, p2.name, oi.asin) as productName,
@@ -69,9 +75,13 @@ export async function GET(request: NextRequest) {
       ) ot ON o.order_id = ot.order_id
       WHERE o.fulfillment_channel IN ('MFN', 'Seller')
         AND o.marketplace != 'ebay'
-        AND o.purchase_date >= ? AND o.purchase_date < ? ${MF}
+        ${openOrderFilter} ${MF}
       ORDER BY o.purchase_date DESC
-    `).all(startDate, endDateNext) as any[];
+    `);
+
+    const rows = (openOnly
+      ? query.all()
+      : query.all(startDate, endDateNext)) as any[];
 
     const items = rows.map((row) => {
       const buyCost = row.buyCostPerUnit * row.quantity;
@@ -85,6 +95,7 @@ export async function GET(request: NextRequest) {
         date: row.soldDate,
         postedDate: row.postedDate,
         status: row.status as 'reconciled' | 'estimated',
+        orderStatus: row.orderStatus,
         orderId: row.orderId,
         asin: row.asin,
         sku: row.sku,

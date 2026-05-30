@@ -10,6 +10,7 @@ import { syncFBAInventory } from './inventory';
 import { enrichProductCatalog } from './catalog';
 import { syncSettlementReports } from './reports';
 import { syncMerchantListings } from './merchantListings';
+import { syncSalesTrafficDaily } from './salesTraffic';
 import { estimateAndBackfillFees, overrideEstimatedFees } from './fee-estimator';
 import { generateRecurringExpenses } from '../recurring-expenses';
 import type { SPAPICredentials, SyncResult, SyncStatus } from './types';
@@ -81,6 +82,28 @@ export async function runFullSync(
     currentSync.results.push(ordSyncResult);
     totalRecords += ordResult.ordersProcessed;
     console.log(`[Sync] Orders: ${ordResult.ordersProcessed} orders, ${ordResult.errors.length} errors`);
+
+    // 1b. Sales & Traffic — Seller Central-style ordered sales pulse for today.
+    // This fills the same-day dashboard gap where pending orders hide item detail.
+    const pulseStart = Date.now();
+    const pulseSyncResult: SyncResult = {
+      syncType: 'sales_traffic',
+      recordsFetched: 0,
+      errors: [],
+      duration: 0,
+    };
+    try {
+      console.log('[Sync] Starting sales traffic pulse sync...');
+      const pulse = await syncSalesTrafficDaily(credentials);
+      pulseSyncResult.recordsFetched = pulse.orderItems;
+      console.log(`[Sync] Sales Traffic: ${pulse.orderItems} order items, $${(pulse.orderedProductSales / 100).toFixed(2)} ordered sales`);
+    } catch (err) {
+      const msg = `sales_traffic: ${String(err)}`;
+      pulseSyncResult.errors.push(msg);
+      console.error('[Sync] Sales traffic error:', err);
+    }
+    pulseSyncResult.duration = Date.now() - pulseStart;
+    currentSync.results.push(pulseSyncResult);
 
     // 2. Financial Events — fees, refunds, reimbursements (overlays on orders)
     resetServiceFeeTracker(); // Reset dedup tracker for this sync run
@@ -226,9 +249,6 @@ export async function runFullSync(
     currentSync.totalErrors.push(String(error));
     console.error('[Sync] Fatal error:', error);
   } finally {
-    // Always release the in-process sync lock so the next 15-min tick can run.
-    // Without this, an uncaught error in any sync stage would wedge
-    // currentSync.running = true forever, blocking auto-sync until restart.
     if (currentSync) {
       currentSync.running = false;
       currentSync.completedAt = new Date().toISOString();

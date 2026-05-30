@@ -47,6 +47,8 @@ export const orders = sqliteTable('orders', {
   marketplace: text('marketplace').default('amazon'),
   fulfillmentChannel: text('fulfillment_channel').notNull(), // 'FBA' or 'MFN'
   isEstimated: integer('is_estimated', { mode: 'boolean' }).default(true),
+  orderTotal: integer('order_total').default(0), // cents from Amazon OrderTotal
+  orderTotalCurrency: text('order_total_currency'),
   createdAt: text('created_at').notNull(),
 });
 

@@ -45,29 +45,65 @@ export async function GET(request: NextRequest) {
   try {
     // ─── Revenue & units ──────────────────────────────────────────────
     const salesData = db.prepare(`
+      WITH item_rollup AS (
+        SELECT
+          order_id,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN total_price ELSE 0 END), 0) as itemRevenue,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN shipping_charged ELSE 0 END), 0) as shippingCharged,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN quantity ELSE 0 END), 0) as itemUnits,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN ABS(COALESCE(promotional_rebate, 0)) ELSE 0 END), 0) as totalPromos,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN COALESCE(shipping_cost, 0) ELSE 0 END), 0) as totalShippingCost
+        FROM order_items
+        GROUP BY order_id
+      )
       SELECT
-        COALESCE(SUM(oi.total_price + CASE WHEN o.fulfillment_channel IN ('MFN', 'Seller') THEN COALESCE(oi.shipping_charged, 0) ELSE 0 END), 0) as totalRevenue,
-        COUNT(DISTINCT oi.order_id) as totalOrders,
-        COALESCE(SUM(oi.quantity), 0) as totalUnits,
-        COALESCE(SUM(ABS(COALESCE(oi.promotional_rebate, 0))), 0) as totalPromos,
-        COALESCE(SUM(COALESCE(oi.shipping_cost, 0)), 0) as totalShippingCost
-      FROM order_items oi
-      JOIN ${FE} fe ON oi.order_id = fe.order_id
-      JOIN orders o ON oi.order_id = o.order_id
+        COALESCE(SUM(
+          CASE
+            WHEN COALESCE(ir.itemRevenue, 0) > 0
+              THEN ir.itemRevenue + CASE WHEN o.fulfillment_channel IN ('MFN', 'Seller') THEN COALESCE(ir.shippingCharged, 0) ELSE 0 END
+            ELSE COALESCE(o.order_total, 0)
+          END
+        ), 0) as totalRevenue,
+        COUNT(DISTINCT CASE WHEN COALESCE(ir.itemRevenue, 0) > 0 OR COALESCE(o.order_total, 0) > 0 THEN o.order_id END) as totalOrders,
+        COALESCE(SUM(CASE WHEN COALESCE(ir.itemUnits, 0) > 0 THEN ir.itemUnits WHEN COALESCE(o.order_total, 0) > 0 THEN 1 ELSE 0 END), 0) as totalUnits,
+        COALESCE(SUM(COALESCE(ir.totalPromos, 0)), 0) as totalPromos,
+        COALESCE(SUM(COALESCE(ir.totalShippingCost, 0)), 0) as totalShippingCost
+      FROM orders o
+      JOIN ${FE} fe ON o.order_id = fe.order_id
+      LEFT JOIN item_rollup ir ON o.order_id = ir.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND o.status NOT IN ('Canceled', 'Cancelled')
     `).get(startDate, endDateNext) as any;
 
     const prevSalesData = db.prepare(`
+      WITH item_rollup AS (
+        SELECT
+          order_id,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN total_price ELSE 0 END), 0) as itemRevenue,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN shipping_charged ELSE 0 END), 0) as shippingCharged,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN quantity ELSE 0 END), 0) as itemUnits,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN ABS(COALESCE(promotional_rebate, 0)) ELSE 0 END), 0) as totalPromos,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN COALESCE(shipping_cost, 0) ELSE 0 END), 0) as totalShippingCost
+        FROM order_items
+        GROUP BY order_id
+      )
       SELECT
-        COALESCE(SUM(oi.total_price + CASE WHEN o.fulfillment_channel IN ('MFN', 'Seller') THEN COALESCE(oi.shipping_charged, 0) ELSE 0 END), 0) as totalRevenue,
-        COUNT(DISTINCT oi.order_id) as totalOrders,
-        COALESCE(SUM(oi.quantity), 0) as totalUnits,
-        COALESCE(SUM(ABS(COALESCE(oi.promotional_rebate, 0))), 0) as totalPromos,
-        COALESCE(SUM(COALESCE(oi.shipping_cost, 0)), 0) as totalShippingCost
-      FROM order_items oi
-      JOIN ${FE} fe ON oi.order_id = fe.order_id
-      JOIN orders o ON oi.order_id = o.order_id
+        COALESCE(SUM(
+          CASE
+            WHEN COALESCE(ir.itemRevenue, 0) > 0
+              THEN ir.itemRevenue + CASE WHEN o.fulfillment_channel IN ('MFN', 'Seller') THEN COALESCE(ir.shippingCharged, 0) ELSE 0 END
+            ELSE COALESCE(o.order_total, 0)
+          END
+        ), 0) as totalRevenue,
+        COUNT(DISTINCT CASE WHEN COALESCE(ir.itemRevenue, 0) > 0 OR COALESCE(o.order_total, 0) > 0 THEN o.order_id END) as totalOrders,
+        COALESCE(SUM(CASE WHEN COALESCE(ir.itemUnits, 0) > 0 THEN ir.itemUnits WHEN COALESCE(o.order_total, 0) > 0 THEN 1 ELSE 0 END), 0) as totalUnits,
+        COALESCE(SUM(COALESCE(ir.totalPromos, 0)), 0) as totalPromos,
+        COALESCE(SUM(COALESCE(ir.totalShippingCost, 0)), 0) as totalShippingCost
+      FROM orders o
+      JOIN ${FE} fe ON o.order_id = fe.order_id
+      LEFT JOIN item_rollup ir ON o.order_id = ir.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND o.status NOT IN ('Canceled', 'Cancelled')
     `).get(prevStart, startDate) as any;
 
     // ─── Order fees ───────────────────────────────────────────────────
@@ -203,12 +239,22 @@ export async function GET(request: NextRequest) {
       : "strftime('%Y-%m-01', fe.posted_date)";
 
     const dailyRevenue = db.prepare(`
-      SELECT ${chartGroupExpr} as day, SUM(oi.total_price) as revenue,
-        COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0) as cogs
-      FROM order_items oi
-      JOIN ${FE} fe ON oi.order_id = fe.order_id
-      JOIN orders o ON oi.order_id = o.order_id
+      WITH item_rollup AS (
+        SELECT
+          order_id,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN total_price ELSE 0 END), 0) as itemRevenue,
+          COALESCE(SUM(CASE WHEN asin != 'PENDING' THEN cogs_per_unit * quantity ELSE 0 END), 0) as cogs
+        FROM order_items
+        GROUP BY order_id
+      )
+      SELECT ${chartGroupExpr} as day,
+        COALESCE(SUM(CASE WHEN COALESCE(ir.itemRevenue, 0) > 0 THEN ir.itemRevenue ELSE COALESCE(o.order_total, 0) END), 0) as revenue,
+        COALESCE(SUM(COALESCE(ir.cogs, 0)), 0) as cogs
+      FROM orders o
+      JOIN ${FE} fe ON o.order_id = fe.order_id
+      LEFT JOIN item_rollup ir ON o.order_id = ir.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND o.status NOT IN ('Canceled', 'Cancelled')
       GROUP BY ${chartGroupExpr} ORDER BY day
     `).all(startDate, endDateNext) as any[];
 
@@ -242,6 +288,7 @@ export async function GET(request: NextRequest) {
       LEFT JOIN products p ON oi.asin = p.asin
       LEFT JOIN products p2 ON oi.sku = p2.asin
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND oi.asin != 'PENDING'
       GROUP BY oi.asin
       ORDER BY (SUM(oi.total_price) - COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0)) DESC
       LIMIT 5
@@ -257,6 +304,7 @@ export async function GET(request: NextRequest) {
       LEFT JOIN products p ON oi.asin = p.asin
       LEFT JOIN products p2 ON oi.sku = p2.asin
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND oi.asin != 'PENDING'
         AND oi.cogs_per_unit > 0
       GROUP BY oi.asin
       ORDER BY (SUM(oi.total_price) - COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0)) ASC
@@ -317,6 +365,17 @@ export async function GET(request: NextRequest) {
         WHERE id IN (SELECT MAX(id) FROM inventory_ledger GROUP BY sku)
       ) il ON li.sku = il.sku
     `).get() as any;
+
+    const salesPulse = db.prepare(`
+      SELECT
+        ordered_product_sales as orderedProductSales,
+        units_ordered as unitsOrdered,
+        order_items as orderItems,
+        report_id as reportId,
+        synced_at as syncedAt
+      FROM sales_traffic_daily
+      WHERE day = ? AND marketplace = 'amazon'
+    `).get(startDate) as any;
 
     // ─── Calculate totals ─────────────────────────────────────────────
     const totalRevenue = salesData.totalRevenue;
@@ -395,6 +454,39 @@ export async function GET(request: NextRequest) {
     const avgOrderValueCents = aovData.orders > 0 ? Math.round(aovData.revenue / aovData.orders) : 0;
     const pendingEstimateCents = pendingData.orders * avgOrderValueCents;
 
+    // ─── Range-scoped unitemized breakdown (today-scoped for Daily Pulse) ──
+    // Amazon exposes OrderTotal before it reliably exposes item detail. Treat
+    // order_total as reported revenue for unitemized orders, but keep it split
+    // out so the UI can be honest about which dollars are itemized vs. order-level.
+    const placeholderData = db.prepare(`
+      SELECT
+        COUNT(DISTINCT o.order_id)        AS placeholderOrders,
+        COALESCE(SUM(o.order_total), 0)   AS placeholderRevenue
+      FROM orders o
+      WHERE o.purchase_date >= ? AND o.purchase_date < ?
+        AND COALESCE(o.order_total, 0) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM order_items oi
+          WHERE oi.order_id = o.order_id AND oi.asin != 'PENDING'
+        )
+        ${pendingMF}
+    `).get(startDate, endDateNext) as any;
+
+    const unknownPendingData = db.prepare(`
+      SELECT COUNT(*) AS unknownOrders
+      FROM orders o
+      WHERE o.status IN ('Pending', 'Unshipped')
+        AND o.purchase_date >= ? AND o.purchase_date < ?
+        AND COALESCE(o.order_total, 0) <= 0
+        AND NOT EXISTS (
+          SELECT 1 FROM order_items oi
+          WHERE oi.order_id = o.order_id AND oi.asin != 'PENDING'
+        )
+        ${pendingMF}
+    `).get(startDate, endDateNext) as any;
+
+    const unknownEstimateCents = unknownPendingData.unknownOrders * avgOrderValueCents;
+
     // Projected profit on the shipped-not-posted cohort: revenue - cogs - estimated fees @ 13% - estimated MFN ship
     // Historical Amazon all-in fee rate is ~12.6%, round to 13% for forecast conservatism.
     const shippedNotPostedFees = Math.round(shippedNotPostedData.revenue * 0.13);
@@ -425,7 +517,18 @@ export async function GET(request: NextRequest) {
           earliestRelease,
           latestRelease,
         },
+        // Today-scoped (or whatever range the caller passed) Amazon pending split.
+        // The UI must NOT add placeholderRevenue on top of stats.totalRevenue —
+        // it's already inside that number. Only unknownEstimate is additive.
+        pendingInRange: {
+          placeholderOrders: placeholderData.placeholderOrders,
+          placeholderRevenue: placeholderData.placeholderRevenue,
+          unknownOrders: unknownPendingData.unknownOrders,
+          unknownEstimate: unknownEstimateCents,
+          avgOrderValue: avgOrderValueCents,
+        },
       },
+      salesPulse: salesPulse || null,
       dailyRevenue: chartData,
       topProducts, worstProducts,
       expenseBreakdown,
