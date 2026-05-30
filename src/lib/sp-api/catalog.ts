@@ -270,6 +270,85 @@ export async function backfillMerchantListingImages(
   }
 }
 
+/**
+ * Backfill product images for the ASINs in one listing batch.
+ *
+ * Buy-list import upserts a `products` row (name/sku) but never fetches the
+ * catalog image, so freshly imported batches show placeholder boxes. This
+ * fills `products.image_url` (keyed by ASIN) for the batch's inventory_ledger
+ * lots that still lack one. Chunked: returns `remaining` so the caller loops.
+ */
+export async function backfillBatchImages(
+  credentials: SPAPICredentials,
+  batchId: number,
+  limit = 100
+): Promise<{ processed: number; updated: number; remaining: number; errors: string[] }> {
+  const db = getDb();
+  const errors: string[] = [];
+  let processed = 0;
+  let updated = 0;
+
+  try {
+    // Ensure every batch ASIN has a products row so it becomes enrichable.
+    const now = new Date().toISOString();
+    db.prepare(`
+      INSERT OR IGNORE INTO products (asin, created_at, updated_at)
+      SELECT DISTINCT il.asin, ?, ?
+      FROM inventory_ledger il
+      WHERE il.batch_id = ? AND TRIM(il.asin) <> '' AND il.asin IS NOT NULL
+    `).run(now, now, batchId);
+
+    const targets = db.prepare(`
+      SELECT DISTINCT il.asin AS asin
+      FROM inventory_ledger il
+      JOIN products p ON p.asin = il.asin
+      WHERE il.batch_id = ?
+        AND (p.image_url IS NULL OR TRIM(p.image_url) = '')
+        AND TRIM(il.asin) <> '' AND il.asin IS NOT NULL
+      ORDER BY il.asin
+      LIMIT ?
+    `).all(batchId, limit) as { asin: string }[];
+
+    for (const { asin } of targets) {
+      processed++;
+      try {
+        const item = await fetchCatalogByAsin(credentials, asin);
+        const enrichedAt = new Date().toISOString();
+        db.prepare(`
+          UPDATE products SET
+            name = COALESCE(?, name),
+            category = COALESCE(?, category),
+            image_url = COALESCE(?, image_url),
+            catalog_last_enriched = ?,
+            updated_at = ?
+          WHERE asin = ?
+        `).run(item?.name ?? null, item?.category ?? null, item?.imageUrl ?? null, enrichedAt, enrichedAt, asin);
+        if (item?.imageUrl) updated++;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      } catch (err) {
+        db.prepare(`UPDATE products SET catalog_last_enriched = ? WHERE asin = ?`)
+          .run(new Date().toISOString(), asin);
+        errors.push(`Catalog ${asin}: ${err}`);
+      }
+    }
+
+    const rem = db.prepare(`
+      SELECT COUNT(*) AS n FROM (
+        SELECT DISTINCT il.asin
+        FROM inventory_ledger il
+        JOIN products p ON p.asin = il.asin
+        WHERE il.batch_id = ?
+          AND (p.image_url IS NULL OR TRIM(p.image_url) = '')
+          AND TRIM(il.asin) <> '' AND il.asin IS NOT NULL
+      )
+    `).get(batchId) as { n: number };
+
+    return { processed, updated, remaining: rem.n, errors };
+  } finally {
+    db.close();
+  }
+}
+
 export async function enrichProductCatalog(
   credentials: SPAPICredentials
 ): Promise<{ enriched: number; errors: string[] }> {

@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency, formatRelativeTime } from '@/lib/formatters';
-import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info } from 'lucide-react';
+import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info, Image as ImageIcon } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
@@ -1068,9 +1068,9 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onMarkI
         </div>
       </div>
 
-      {/* Zone 3 — MSKU (112px, truncates) */}
-      <div className="w-28 shrink-0">
-        <MskuLink sku={item.sku} className="font-mono text-[11px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
+      {/* Zone 3 — MSKU (176px, wraps to 2 lines) */}
+      <div className="w-44 shrink-0">
+        <MskuLink sku={item.sku} className="font-mono text-[11px] text-text-tertiary/50 leading-tight break-all line-clamp-2 block hover:text-blue-300 hover:underline" />
       </div>
 
       {/* Zone 4 — Qty (w-32 fixed): InlineQtyEdit + optional receive progress */}
@@ -1539,6 +1539,52 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
   const [previewTemplate, setPreviewTemplate] = useState('');
   const [previewError, setPreviewError]     = useState<string | null>(null);
   const [amazonTemplates, setAmazonTemplates] = useState<ShippingTemplate[] | null>(null);
+  const [backfillingImages, setBackfillingImages] = useState(false);
+  const [backfillProgress, setBackfillProgress]   = useState<{ done: number; remaining: number } | null>(null);
+
+  // Fetch missing product images for this batch's ASINs from the catalog, then
+  // merge the fresh image_url onto the items already in the tray.
+  async function handleBackfillImages() {
+    if (batchId == null || batchId <= 0) return;
+    setBackfillingImages(true);
+    setBackfillProgress(null);
+    let done = 0;
+    try {
+      for (let i = 0; i < 200; i++) {
+        const res = await fetch('/api/data/mfn-batch-items/backfill-images', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ batchId, limit: 100 }),
+        });
+        const data = await res.json();
+        if (!res.ok) break;
+        done += data.updated ?? 0;
+        setBackfillProgress({ done, remaining: data.remaining ?? 0 });
+        if ((data.remaining ?? 0) <= 0 || (data.processed ?? 0) === 0) break;
+      }
+      // Re-pull items and merge the new images onto existing tray rows.
+      const refetch = await fetch(`/api/data/mfn-batch-items?batchId=${batchId}`);
+      if (refetch.ok) {
+        const d = await refetch.json();
+        const rows: SearchResult[] = Array.isArray(d.items) ? d.items : [];
+        const bySku = new Map(rows.map(r => [r.sku, r]));
+        setBatch(prev => {
+          const next = new Map(prev);
+          for (const [sku, item] of next) {
+            const fresh = bySku.get(sku);
+            if (fresh?.image_url && fresh.image_url !== item.image_url) {
+              next.set(sku, { ...item, image_url: fresh.image_url });
+            }
+          }
+          return next;
+        });
+      }
+    } catch {
+      /* network error — stop the loop */
+    } finally {
+      setBackfillingImages(false);
+    }
+  }
 
   // Auto-focus search on mount
   useEffect(() => { searchInputRef.current?.focus(); }, []);
@@ -2034,6 +2080,14 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
                 {savingAll ? 'Saving…' : `Save All (${saveable.length})`}
               </button>
             )}
+            {batchId != null && batchId > 0 && [...batch.values()].some(i => !i.image_url) && (
+              <button onClick={handleBackfillImages} disabled={backfillingImages} className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors disabled:opacity-50" title="Fetch missing product images from Amazon's catalog">
+                {backfillingImages ? <Loader2 size={13} className="animate-spin" /> : <ImageIcon size={13} />}
+                {backfillingImages
+                  ? `Fetching… ${backfillProgress ? `${backfillProgress.done}/${backfillProgress.remaining + backfillProgress.done}` : ''}`
+                  : 'Get Photos'}
+              </button>
+            )}
             <button onClick={() => { setBatch(new Map()); setReceiveFilter('all'); }} className="h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover transition-colors">
               Clear
             </button>
@@ -2260,7 +2314,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
             <div className="flex items-center gap-2 px-3 pr-1 pb-1 mb-0.5 text-[10px] font-semibold text-text-tertiary/50 uppercase tracking-wider select-none border-b border-border-subtle/50">
               <div className="w-8 shrink-0" />
               <div className="min-w-0 flex-1">Item</div>
-              <div className="w-28 shrink-0">MSKU</div>
+              <div className="w-44 shrink-0">MSKU</div>
               <div className="w-32 shrink-0">Qty</div>
               <div className="w-24 shrink-0">Bin / Meta</div>
               <div className="w-16 shrink-0 text-right">Price</div>
