@@ -24,6 +24,28 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { parseBuyListCsv, type ColumnMapping } from '@/lib/imports/airtable-buylist';
 import { recalculateFIFO } from '@/lib/fifo';
+import { backfillBatchImages } from '@/lib/sp-api/catalog';
+import type { SPAPICredentials } from '@/lib/sp-api/types';
+
+function getAmazonCredentials(): SPAPICredentials | null {
+  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
+  const db = new Database(dbPath, { readonly: true });
+  db.pragma('journal_mode = WAL');
+  try {
+    const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
+    const settings: Record<string, string> = {};
+    for (const r of rows) settings[r.key] = r.value;
+    if (!settings.clientId || !settings.clientSecret || !settings.refreshToken) return null;
+    return {
+      clientId: settings.clientId,
+      clientSecret: settings.clientSecret,
+      refreshToken: settings.refreshToken,
+      marketplaceId: settings.marketplaceId || 'ATVPDKIKX0DER',
+    };
+  } finally {
+    db.close();
+  }
+}
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -233,6 +255,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     // FIFO recalculation per affected SKU (lots changed).
     for (const sku of affectedSkus) {
       try { recalculateFIFO({ sku }); } catch (e) { console.warn('[buylist import] FIFO recalc skipped for', sku, e); }
+    }
+
+    // Auto-fetch product photos for the imported ASINs (MFN lots are tagged
+    // with batch_id, so this is a no-op for FBA). SP-API self-throttles catalog
+    // calls to ~1.8/sec, so a typical 15-20 item import adds ~10s. Best-effort:
+    // never fail the import over a missing image.
+    if (isMfn) {
+      const creds = getAmazonCredentials();
+      if (creds) {
+        try { await backfillBatchImages(creds, batchId, rowsImported || 100); }
+        catch (e) { console.warn('[buylist import] image backfill skipped', e); }
+      }
     }
 
     return NextResponse.json({
