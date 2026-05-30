@@ -931,7 +931,7 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
   const displayPrice = result.amazon_list_price_cents ?? result.parsed_list_price_cents ?? result.il_list_price_cents;
 
   return (
-    <div className={`flex items-start gap-3 p-3 rounded-lg border transition-colors ${
+    <div className={`flex items-start gap-4 p-4 rounded-xl border transition-colors ${
       inBatch ? 'border-blue-500/30 bg-blue-500/5' : 'border-border-subtle bg-slate-800 hover:bg-bg-hover'
     }`}>
       {result.image_url
@@ -939,56 +939,62 @@ function SearchResultCard({ result, inBatch, onAdd, onImageClick, onShowDetail }
             <button
               type="button"
               onClick={onImageClick}
-              className="shrink-0 rounded overflow-hidden bg-slate-800 hover:ring-2 hover:ring-blue-500/40 transition-shadow"
+              className="shrink-0 rounded-lg overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-blue-500/40 transition-shadow"
               title="View larger"
             >
-              <img src={result.image_url} alt="" className="w-14 h-14 object-contain block" />
+              <img src={result.image_url} alt="" className="w-24 h-24 object-contain block p-1.5" />
             </button>
           )
-        : <div className="w-14 h-14 bg-slate-700/40 rounded shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+        : <div className="w-24 h-24 bg-slate-700/40 rounded-lg shrink-0 flex items-center justify-center"><Package size={26} className="text-text-tertiary/40" /></div>}
 
       <div className="min-w-0 flex-1">
-        <div className="text-sm text-text-primary font-medium leading-tight truncate" title={result.product_name ?? result.asin}>
+        <div className="text-base text-text-primary font-medium leading-snug line-clamp-2" title={result.product_name ?? result.asin}>
           {result.product_name || result.asin}
         </div>
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <AsinLink asin={result.asin} className="text-[10px] font-mono text-blue-400 hover:text-blue-300 hover:underline" />
+        <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+          <AsinLink asin={result.asin} className="text-xs font-mono text-blue-400 hover:text-blue-300 hover:underline" />
           {liveStateBadge(result.amazon_status, result.amazon_qty)}
           {result.upc && <UpcChip upc={result.upc} />}
         </div>
-        <div className="mt-0.5">
-          <MskuLink sku={result.sku} className="font-mono text-[9px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
+        <div className="mt-1">
+          <MskuLink sku={result.sku} className="font-mono text-[10px] text-text-tertiary/50 truncate block hover:text-blue-300 hover:underline" />
         </div>
         {(displayCost != null || displayPrice != null) && (
-          <div className="flex items-center gap-2 mt-0.5">
+          <div className="flex items-center gap-4 mt-2">
             {displayCost != null && (
-              <span className="text-[10px] text-text-tertiary">Cost: {formatCurrency(displayCost)}</span>
+              <span className="text-sm text-text-secondary tabular-nums">
+                <span className="text-[10px] text-text-tertiary uppercase tracking-wide mr-1">Cost</span>
+                {formatCurrency(displayCost)}
+              </span>
             )}
             {displayPrice != null && (
-              <span className="text-[10px] text-text-tertiary">List: {formatCurrency(displayPrice)}</span>
+              <span className="text-sm text-text-secondary tabular-nums">
+                <span className="text-[10px] text-text-tertiary uppercase tracking-wide mr-1">List</span>
+                {formatCurrency(displayPrice)}
+              </span>
             )}
           </div>
         )}
       </div>
 
-      <div className="flex items-center gap-1 shrink-0">
+      <div className="flex items-center gap-1.5 shrink-0">
         <button
           onClick={onShowDetail}
-          className="p-1.5 rounded-md text-text-tertiary/60 hover:text-blue-400 hover:bg-slate-800 transition-colors"
+          className="p-2 rounded-md text-text-tertiary/60 hover:text-blue-400 hover:bg-slate-800 transition-colors"
           title="View details"
         >
-          <Info size={13} />
+          <Info size={15} />
         </button>
         <button
           onClick={onAdd}
           disabled={inBatch}
-          className={`h-8 px-2.5 rounded-md text-xs font-medium border transition-colors flex items-center gap-1 ${
+          className={`h-9 px-3.5 rounded-md text-sm font-medium border transition-colors flex items-center gap-1.5 ${
             inBatch
               ? 'border-blue-500/30 text-blue-400/60 cursor-default'
               : 'border-blue-500/50 text-blue-400 hover:bg-blue-500/10'
           }`}
         >
-          {inBatch ? <CheckCircle2 size={12} /> : <Plus size={12} />}
+          {inBatch ? <CheckCircle2 size={14} /> : <Plus size={14} />}
           {inBatch ? 'Added' : 'Add'}
         </button>
       </div>
@@ -1190,29 +1196,29 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       : 'border-border-subtle bg-slate-800';
 
   return (
-    <div className={`rounded-lg border p-3 transition-colors ${borderClass}`}>
+    <div className={`rounded-xl border p-4 transition-colors ${borderClass}`}>
 
       {/* Header */}
-      <div className="flex items-start gap-3 mb-2">
+      <div className="flex items-start gap-4 mb-3">
         {item.image_url
           ? (
               <button
                 type="button"
                 onClick={onImageClick}
-                className="shrink-0 rounded-md overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-blue-500/40 transition-shadow"
+                className="shrink-0 rounded-lg overflow-hidden bg-white border border-border-subtle hover:ring-2 hover:ring-blue-500/40 transition-shadow"
                 title="View larger"
               >
-                <img src={item.image_url} alt="" className="w-20 h-20 object-contain block p-1" />
+                <img src={item.image_url} alt="" className="w-28 h-28 object-contain block p-1.5" />
               </button>
             )
-          : <div className="w-20 h-20 bg-slate-700/40 rounded-md shrink-0 flex items-center justify-center"><Package size={18} className="text-text-tertiary/40" /></div>}
+          : <div className="w-28 h-28 bg-slate-700/40 rounded-lg shrink-0 flex items-center justify-center"><Package size={28} className="text-text-tertiary/40" /></div>}
 
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
+          <div className="text-base font-medium text-text-primary leading-snug line-clamp-2" title={item.product_name ?? item.asin}>
             {item.product_name || item.asin}
           </div>
-          <div className="flex items-center gap-1.5 mt-1 flex-wrap">
-            <AsinLink asin={item.asin} className="text-[10px] font-mono text-blue-400 hover:text-blue-300 hover:underline" />
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            <AsinLink asin={item.asin} className="text-xs font-mono text-blue-400 hover:text-blue-300 hover:underline" />
             {liveStateBadge(item.amazon_status, item.amazon_qty)}
             <ChannelBadge channel={item.fulfillment_channel} />
             {item.amazon_qty != null && (
@@ -1353,20 +1359,20 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           Row 1: Qty | List Price | Condition
           Row 2: Buy Cost | Bin | Est. Shipping
           Below: Shipping Template (full width) */}
-      <div className="grid grid-cols-3 gap-2 mb-2">
+      <div className="grid grid-cols-3 gap-3 mb-3">
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Qty Received</label>
+          <label className="block text-[11px] text-text-tertiary mb-1.5 uppercase tracking-wide">Qty Received</label>
           <input
             ref={qtyRef}
             type="number" min="0" step="1"
             value={item.draft_qty}
             onChange={e => onChange({ draft_qty: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); listPriceRef.current?.focus(); } }}
-            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-blue-500 focus:outline-none"
+            className="w-full h-9 px-3 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">List Price ($)</label>
+          <label className="block text-[11px] text-text-tertiary mb-1.5 uppercase tracking-wide">List Price ($)</label>
           <input
             ref={listPriceRef}
             type="number" min="0" step="0.01"
@@ -1374,24 +1380,24 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_list_price: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); conditionRef.current?.focus(); } }}
             placeholder="0.00"
-            className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
+            className="w-full h-9 px-3 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary mb-1 uppercase tracking-wide">Condition</label>
+          <label className="block text-[11px] text-text-tertiary mb-1.5 uppercase tracking-wide">Condition</label>
           <select
             ref={conditionRef}
             value={item.draft_condition}
             onChange={e => onChange({ draft_condition: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); noLot ? buyCostRef.current?.focus() : binRef.current?.focus(); } }}
-            className="w-full h-8 px-2 bg-slate-800 border border-border-default rounded-md text-xs text-text-primary focus:border-blue-500 focus:outline-none"
+            className="w-full h-9 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm text-text-primary focus:border-blue-500 focus:outline-none"
           >
             <option value="">— select —</option>
             {CONDITIONS.map(c => <option key={c} value={c}>{c}</option>)}
           </select>
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">
+          <label className="block text-[11px] text-text-tertiary/50 mb-1.5 uppercase tracking-wide">
             {noLot ? 'Buy Cost ($)' : 'Buy Cost (locked)'}
           </label>
           <input
@@ -1403,7 +1409,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             readOnly={!noLot}
             tabIndex={noLot ? 0 : -1}
             placeholder="0.00"
-            className={`w-full h-8 px-2.5 rounded-md text-sm font-mono placeholder:text-text-tertiary focus:outline-none ${
+            className={`w-full h-9 px-3 rounded-md text-sm font-mono placeholder:text-text-tertiary focus:outline-none ${
               noLot
                 ? 'bg-slate-800 border border-border-default text-text-primary focus:border-blue-500'
                 : 'bg-slate-800/40 border border-border-subtle text-text-tertiary cursor-default'
@@ -1411,7 +1417,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
+          <label className="block text-[11px] text-text-tertiary/50 mb-1.5 uppercase tracking-wide">Bin <span className="normal-case font-normal opacity-60">(optional)</span></label>
           <input
             ref={binRef}
             type="text"
@@ -1419,11 +1425,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_bin: e.target.value, save_state: 'idle' })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingEstRef.current?.focus(); } }}
             placeholder="e.g. S1-B3"
-            className="w-full h-7 px-2 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
+            className="w-full h-9 px-3 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
         <div>
-          <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">Est. Shipping ($)</label>
+          <label className="block text-[11px] text-text-tertiary/50 mb-1.5 uppercase tracking-wide">Est. Shipping ($)</label>
           <input
             ref={shippingEstRef}
             type="number" min="0" step="0.01"
@@ -1431,7 +1437,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
             onChange={e => onChange({ draft_shipping_est: e.target.value })}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); shippingTemplateRef.current?.focus(); } }}
             placeholder="8.00"
-            className="w-full h-7 px-2 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
+            className="w-full h-9 px-3 bg-slate-800 border border-border-default rounded-md text-sm font-mono text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
           />
         </div>
       </div>
