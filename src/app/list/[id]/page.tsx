@@ -4,7 +4,7 @@ import { useEffect, useState, useRef, useCallback, use, useMemo } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
 import { generateMSKU } from '@/lib/listing-msku';
-import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown, Copy } from 'lucide-react';
+import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown, Copy, FileUp } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import type { MapShipmentMeta } from '@/components/PlacementMap';
 import MfnBatchReceiveWorkflow from '@/components/mfn/MfnBatchReceiveWorkflow';
@@ -1401,6 +1401,15 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
               <p className="text-xs text-text-tertiary mt-0.5">Merchant Fulfilled batch · receive · label · push</p>
             </div>
           </div>
+          {batch.status === 'draft' && (
+            <Link
+              href={`/list/${batch.id}/import`}
+              className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+            >
+              <FileUp size={14} />
+              Import Buy List
+            </Link>
+          )}
         </div>
         <MfnBatchReceiveWorkflow batchId={batch.id} />
       </div>
@@ -1427,6 +1436,15 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
         {/* Right-side actions */}
         <div className="flex items-center gap-2">
+          {batch.status === 'draft' && (
+            <Link
+              href={`/list/${batch.id}/import`}
+              className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+            >
+              <FileUp size={14} />
+              Import Buy List
+            </Link>
+          )}
           {batch.status === 'draft' && items.length > 0 && (
             <button
               onClick={() => setShowSendModal(true)}
