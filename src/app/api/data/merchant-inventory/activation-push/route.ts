@@ -59,7 +59,8 @@ export interface PushResult {
 // Seller Central directly.
 //
 // Eligibility mirrors activation-preview's can_push: merchant listing row
-// exists + quantity_received > 0 + inspected_at set + price > 0.
+// exists + ledger quantity > 0 + price > 0. Receiving/inspection are tracked
+// in Airtable and are NOT gated here.
 // Local merchant_listings.status is informational only — stale status
 // does NOT block the push (Seller Central may be ahead of our last
 // synced row). After an ACCEPTED response, this route mirrors
@@ -157,12 +158,12 @@ export async function POST(request: NextRequest) {
       const proposedPriceCents = ilPriceCents ?? mlPriceCents;
       if (proposedPriceCents == null || proposedPriceCents <= 0) reasons.push('No list price set');
 
+      // Qty comes from ledger remaining; receiving/inspection are tracked in
+      // Airtable and intentionally not gated here (mirrors activation-preview).
       const qtyReceived  = il ? (Number(il.quantity_received)  || 0) : 0;
       const qtyRemaining = il ? (Number(il.quantity_remaining) || 0) : 0;
-      if (qtyReceived <= 0) reasons.push('Not explicitly received (quantity_received = 0)');
-
-      const inspectedAt = il?.inspected_at != null ? String(il.inspected_at).trim() : '';
-      if (il && !inspectedAt) reasons.push('Item not inspected');
+      const proposedQty = qtyReceived > 0 ? qtyReceived : qtyRemaining;
+      if (proposedQty <= 0) reasons.push('Quantity is 0');
 
       // Shipping template is stored locally only — not pushed to Amazon.
       // Captured here for the audit log and UI display, but never blocks
@@ -173,7 +174,6 @@ export async function POST(request: NextRequest) {
         : '';
       const proposedShippingTemplate = lotTemplate || DEFAULT_MFN_SHIPPING_TEMPLATE;
 
-      const proposedQty = qtyReceived > 0 ? qtyReceived : qtyRemaining;
       const asin = ml ? String(ml.asin ?? '') : il ? String(il.asin ?? '') : null;
 
       return {

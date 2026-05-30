@@ -20,18 +20,17 @@ function getDb() {
 // Push eligibility (can_push) requires ALL of:
 //   - sku is non-empty
 //   - merchant_listings row exists for the SKU
-//   - quantity_received > 0 (explicitly received, not ledger fallback)
-//   - inspected_at is set
+//   - proposed qty > 0 (ledger remaining; received count not required)
 //   - proposed price > 0
 //
 // Soft warnings (do NOT block push):
+//   - Not explicitly received / not inspected in FlipLedger. Receiving and
+//     inspection are tracked in Airtable, so these are informational only.
 //   - Local Amazon status is stale/inactive. The SP-API PATCH sends qty +
 //     price regardless; activation-push mirrors status back to Active on
 //     ACCEPTED.
 //   - Shipping template is stored locally only and is NOT pushed to Amazon —
 //     it must be set in Seller Central directly.
-//
-// Fallback rows (qty_source=remaining) are shown in preview but can_push=false.
 //
 // Input:  { skus: string[], shippingTemplate?: string }
 // Output: { dryRun: true, amazonWriteMade: false, rows: ActivationPreviewRow[], shippingTemplate, timestamp }
@@ -146,21 +145,22 @@ export async function POST(request: NextRequest) {
         warnings.push('No list price set — not eligible to push');
       }
 
-      // Qty: physical received count is required for push eligibility
+      // Qty: ledger remaining drives the push. Receiving/inspection are
+      // tracked in Airtable, not gated here (see can_push below).
       const qtyReceived  = il ? (Number(il.quantity_received) || 0) : 0;
       const qtyRemaining = il ? (Number(il.quantity_remaining) || 0) : 0;
       const proposedQty  = qtyReceived > 0 ? qtyReceived : qtyRemaining;
 
-      if (qtyReceived === 0 && qtyRemaining > 0) {
-        warnings.push('Preview only — not push eligible until explicitly received.');
-      } else if (proposedQty <= 0) {
+      if (proposedQty <= 0) {
         warnings.push('Quantity is 0 — not eligible to push');
+      } else if (qtyReceived === 0) {
+        warnings.push('Using ledger remaining quantity (not explicitly received in FlipLedger).');
       }
 
-      // Inspection: required before any push
+      // Inspection: informational only — done in Airtable, not gated here.
       const inspectedAt = il?.inspected_at != null ? String(il.inspected_at).trim() : '';
       if (il && !inspectedAt) {
-        warnings.push('Item not inspected — not eligible to push');
+        warnings.push('Not inspected in FlipLedger (inspection tracked in Airtable).');
       }
 
       // Shipping template: per-lot value takes priority over the batch default.
@@ -176,18 +176,20 @@ export async function POST(request: NextRequest) {
       const qty_source: 'received' | 'remaining' | 'none' =
         qtyReceived > 0 ? 'received' : qtyRemaining > 0 ? 'remaining' : 'none';
 
-      // can_push: real blockers only. Stale local merchant_listings.status
-      // is downgraded to a warning — Seller Central may show the SKU as
-      // Active while the local row hasn't synced yet. The SP-API PATCH
-      // sends qty + price regardless of local status; activation-push
-      // mirrors merchant_listings to Active after an ACCEPTED response.
-      // Shipping template is intentionally excluded — it's not pushed to
-      // Amazon (see mfnActivation.ts).
+      // can_push: real blockers only — a matched Amazon listing, a positive
+      // ledger quantity, and a price. Receiving/inspection are NOT gated here;
+      // those are tracked in Airtable and would otherwise block every row
+      // since FlipLedger's quantity_received/inspected_at stay NULL. Stale
+      // local merchant_listings.status is downgraded to a warning — Seller
+      // Central may show the SKU as Active while the local row hasn't synced
+      // yet. The SP-API PATCH sends qty + price regardless of local status;
+      // activation-push mirrors merchant_listings to Active after an ACCEPTED
+      // response. Shipping template is intentionally excluded — it's not
+      // pushed to Amazon (see mfnActivation.ts).
       const can_push =
         !!sku &&
         !!ml &&
-        qtyReceived > 0 &&
-        !!inspectedAt &&
+        proposedQty > 0 &&
         proposedPriceCents != null &&
         proposedPriceCents > 0;
 
