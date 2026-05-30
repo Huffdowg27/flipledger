@@ -86,13 +86,33 @@ function realFnsku(value: string | null | undefined): string | null {
   return /^X00[A-Z0-9]+$/.test(f) ? f : null;
 }
 
+// Deep-link an MSKU to its listing in Seller Central inventory.
+function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
+  const value = (sku ?? '').trim();
+  return value
+    ? `https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${encodeURIComponent(value)}`
+    : null;
+}
+
 // Labeled identifier with copy button — Prep Ship Hub-style product info block.
-function IdentifierChip({ label, value }: { label: string; value: string | null | undefined }) {
+// When `href` is set, the value becomes a link (opens in a new tab).
+function IdentifierChip({ label, value, href }: { label: string; value: string | null | undefined; href?: string | null }) {
   if (!value) return null;
   return (
     <div className="flex items-center gap-1 min-w-0">
       <span className="text-text-tertiary/60 uppercase tracking-wide shrink-0">{label}</span>
-      <span className="text-text-secondary truncate" title={value}>{value}</span>
+      {href
+        ? <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="text-accent truncate hover:underline"
+            title={`Open ${label} in Seller Central: ${value}`}
+          >
+            {value}
+          </a>
+        : <span className="text-text-secondary truncate" title={value}>{value}</span>}
       <button
         onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(value); }}
         title={`Copy ${label}: ${value}`}
@@ -399,7 +419,18 @@ function ReceiveModal({ row, title = 'Update Stock', onClose, onSaved }: Receive
               : <div className="w-10 h-10 bg-bg-surface rounded shrink-0" />}
             <div className="min-w-0 flex-1 space-y-0.5">
               <div className="text-[11px] font-mono text-text-tertiary">{row.asin}</div>
-              <div className="text-[11px] font-mono text-text-tertiary truncate">{row.sku}</div>
+              {sellerCentralSkuUrl(row.sku)
+                ? <a
+                    href={sellerCentralSkuUrl(row.sku)!}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    onClick={e => e.stopPropagation()}
+                    className="block text-[11px] font-mono text-accent truncate hover:underline"
+                    title={`Open MSKU in Seller Central: ${row.sku}`}
+                  >
+                    {row.sku}
+                  </a>
+                : <div className="text-[11px] font-mono text-text-tertiary truncate">{row.sku}</div>}
               {row.quantity != null && row.buy_price != null && (
                 <div className="text-[11px] text-text-secondary">
                   {row.quantity} purchased · {formatCurrency(row.buy_price)}/unit
@@ -1335,7 +1366,7 @@ export default function MerchantInventoryPage() {
                         </a>
                         <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono">
                           <IdentifierChip label="ASIN" value={row.asin} />
-                          <IdentifierChip label="MSKU" value={row.sku} />
+                          <IdentifierChip label="MSKU" value={row.sku} href={sellerCentralSkuUrl(row.sku)} />
                           {realFnsku(row.fnsku) && <IdentifierChip label="FNSKU" value={realFnsku(row.fnsku)} />}
                         </div>
                       </td>
@@ -1452,7 +1483,11 @@ export default function MerchantInventoryPage() {
                 <div className="text-text-primary text-base font-semibold leading-snug line-clamp-2">{lightbox.title}</div>
                 <div className="mt-1 flex gap-4 text-[11px] font-mono text-text-tertiary">
                   {lightbox.asin && <span>ASIN {lightbox.asin}</span>}
-                  {lightbox.sku && <span>MSKU {lightbox.sku}</span>}
+                  {lightbox.sku && (
+                    sellerCentralSkuUrl(lightbox.sku)
+                      ? <a href={sellerCentralSkuUrl(lightbox.sku)!} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" title={`Open MSKU in Seller Central: ${lightbox.sku}`}>MSKU {lightbox.sku}</a>
+                      : <span>MSKU {lightbox.sku}</span>
+                  )}
                 </div>
               </div>
               <button
