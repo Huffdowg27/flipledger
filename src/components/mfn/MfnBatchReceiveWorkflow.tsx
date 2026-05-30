@@ -2360,33 +2360,29 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
           onClick={() => setLightbox(null)}
         >
           <div
-            className="bg-slate-800 border border-border-subtle rounded-xl shadow-2xl max-w-[840px] w-full overflow-hidden"
+            className="relative bg-white rounded-xl shadow-2xl overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
-            <div className="flex items-start justify-between px-4 py-3 border-b border-border-subtle gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium text-text-primary leading-snug line-clamp-2" title={lightbox.title}>
-                  {lightbox.title}
-                </div>
-                <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-text-tertiary">
-                  {lightbox.asin && <AsinLink asin={lightbox.asin} className="text-blue-400/80 hover:text-blue-300 hover:underline" />}
-                  <MskuLink sku={lightbox.sku} className="truncate hover:text-blue-300 hover:underline" />
-                </div>
+            <button
+              onClick={() => setLightbox(null)}
+              className="absolute top-2 right-2 z-10 p-1.5 rounded-full bg-black/40 hover:bg-black/60 text-white/90"
+              title="Close (Esc)"
+            >
+              <X size={18} />
+            </button>
+            <img
+              src={lightbox.src}
+              alt={lightbox.title}
+              className="block max-w-[92vw] max-h-[88vh] object-contain"
+            />
+            <div className="absolute bottom-0 inset-x-0 px-4 py-2.5 bg-gradient-to-t from-black/70 to-transparent">
+              <div className="text-sm font-medium text-white leading-snug line-clamp-2" title={lightbox.title}>
+                {lightbox.title}
               </div>
-              <button
-                onClick={() => setLightbox(null)}
-                className="shrink-0 p-1.5 rounded hover:bg-bg-hover text-text-tertiary"
-                title="Close (Esc)"
-              >
-                <X size={16} />
-              </button>
-            </div>
-            <div className="bg-slate-800 flex items-center justify-center p-4">
-              <img
-                src={lightbox.src}
-                alt={lightbox.title}
-                className="max-w-full max-h-[85vh] object-contain"
-              />
+              <div className="flex items-center gap-2 mt-0.5 text-[10px] font-mono text-white/70">
+                {lightbox.asin && <AsinLink asin={lightbox.asin} className="text-blue-300 hover:text-blue-200 hover:underline" />}
+                <MskuLink sku={lightbox.sku} className="truncate hover:text-blue-200 hover:underline" />
+              </div>
             </div>
           </div>
         </div>
