@@ -2360,7 +2360,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
           onClick={() => setLightbox(null)}
         >
           <div
-            className="bg-slate-800 border border-border-subtle rounded-xl shadow-2xl max-w-[560px] w-full overflow-hidden"
+            className="bg-slate-800 border border-border-subtle rounded-xl shadow-2xl max-w-[840px] w-full overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
             <div className="flex items-start justify-between px-4 py-3 border-b border-border-subtle gap-3">
@@ -2385,7 +2385,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
               <img
                 src={lightbox.src}
                 alt={lightbox.title}
-                className="max-w-full max-h-[60vh] object-contain"
+                className="max-w-full max-h-[85vh] object-contain"
               />
             </div>
           </div>
