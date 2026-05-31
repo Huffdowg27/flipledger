@@ -5,7 +5,7 @@
 
 import { syncFinancialEvents, resetServiceFeeTracker } from './finances';
 import { dedupAmazonReimbursements } from './dedupReimbursements';
-import { syncOrders } from './orders';
+import { syncOrders, reconcileOpenOrders } from './orders';
 import { syncFBAInventory } from './inventory';
 import { enrichProductCatalog } from './catalog';
 import { syncSettlementReports } from './reports';
@@ -82,6 +82,19 @@ export async function runFullSync(
     currentSync.results.push(ordSyncResult);
     totalRecords += ordResult.ordersProcessed;
     console.log(`[Sync] Orders: ${ordResult.ordersProcessed} orders, ${ordResult.errors.length} errors`);
+
+    // 1a. Reconcile open orders — catch cancellations the incremental window misses.
+    // The CreatedAfter sync only returns Pending/Unshipped/PartiallyShipped/Shipped,
+    // so an older order canceled later would otherwise stay "open" forever locally.
+    const recStart = Date.now();
+    const recResult = await reconcileOpenOrders(credentials);
+    currentSync.results.push({
+      syncType: 'reconcile_open_orders',
+      recordsFetched: recResult.updated,
+      errors: recResult.errors,
+      duration: Date.now() - recStart,
+    });
+    console.log(`[Sync] Reconcile: checked ${recResult.checked} open orders, ${recResult.updated} updated (${recResult.canceled} canceled), ${recResult.errors.length} errors`);
 
     // 1b. Sales & Traffic — Seller Central-style ordered sales pulse for today.
     // This fills the same-day dashboard gap where pending orders hide item detail.

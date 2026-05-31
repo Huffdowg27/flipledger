@@ -7,6 +7,7 @@
 import { spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
 import { extractCogsFromSku, isCogsEncodedSku } from '../sku-cogs';
+import { recalculateFIFO } from '../fifo';
 import Database from 'better-sqlite3';
 import path from 'path';
 
@@ -213,6 +214,100 @@ export async function syncOrders(
   }
 
   return { ordersProcessed, errors };
+}
+
+/**
+ * Reconcile locally-open orders against Amazon's current status.
+ *
+ * The incremental order sync queries by CreatedAfter and only requests
+ * Pending/Unshipped/PartiallyShipped/Shipped — so an order that was created
+ * earlier and later *canceled* drops out of the result set and its local row
+ * freezes forever at its last-seen status. This pass closes that gap: it takes
+ * every order we still believe is open, asks Amazon for its real status via
+ * AmazonOrderIds (which returns Canceled too), and updates any that drifted.
+ *
+ * Canceled orders never shipped, so their PENDING revenue placeholders are
+ * removed and FIFO is recalculated for any real SKUs they touched (FIFO now
+ * excludes canceled orders, releasing the wrongly-consumed inventory).
+ */
+export async function reconcileOpenOrders(
+  credentials: SPAPICredentials,
+  maxOrders: number = 250
+): Promise<{ checked: number; updated: number; canceled: number; errors: string[] }> {
+  const db = getDb();
+  const errors: string[] = [];
+  let checked = 0;
+  let updated = 0;
+  let canceled = 0;
+  const affectedSkus = new Set<string>();
+
+  try {
+    const openOrders = db.prepare(`
+      SELECT order_id FROM orders
+      WHERE status IN ('Pending', 'Unshipped', 'PartiallyShipped')
+      ORDER BY purchase_date ASC
+      LIMIT ?
+    `).all(maxOrders) as { order_id: string }[];
+
+    if (openOrders.length === 0) {
+      return { checked, updated, canceled, errors };
+    }
+
+    // Amazon getOrders accepts up to 50 AmazonOrderIds per call.
+    const BATCH = 50;
+    for (let i = 0; i < openOrders.length; i += BATCH) {
+      const batch = openOrders.slice(i, i + BATCH);
+      try {
+        const response = await spApiRequest(credentials, '/orders/v0/orders', {
+          MarketplaceIds: credentials.marketplaceId,
+          AmazonOrderIds: batch.map(o => o.order_id).join(','),
+        }, 8);
+
+        const returned = response?.payload?.Orders || [];
+        for (const order of returned) {
+          checked++;
+          const orderId = order.AmazonOrderId;
+          const newStatus = order.OrderStatus;
+          const local = db.prepare('SELECT status FROM orders WHERE order_id = ?').get(orderId) as { status: string } | undefined;
+          if (!local || local.status === newStatus) continue;
+
+          const isEstimated = (newStatus === 'Pending' || newStatus === 'Unshipped') ? 1 : 0;
+          const shippedAt = (newStatus === 'Shipped' || newStatus === 'PartiallyShipped') ? (order.LastUpdateDate || null) : null;
+
+          db.prepare(`
+            UPDATE orders SET status = ?, is_estimated = ?, shipped_at = COALESCE(shipped_at, ?) WHERE order_id = ?
+          `).run(newStatus, isEstimated, shippedAt, orderId);
+          updated++;
+
+          if (newStatus === 'Canceled' || newStatus === 'Cancelled') {
+            canceled++;
+            // Collect real SKUs to recalc, then drop placeholder PENDING revenue rows.
+            const skus = db.prepare(`
+              SELECT DISTINCT sku FROM order_items
+              WHERE order_id = ? AND sku IS NOT NULL AND sku != '' AND sku != 'PENDING'
+            `).all(orderId) as { sku: string }[];
+            for (const s of skus) affectedSkus.add(s.sku);
+            db.prepare(`DELETE FROM order_items WHERE order_id = ? AND asin = 'PENDING'`).run(orderId);
+          }
+        }
+      } catch (err) {
+        errors.push(`reconcile batch ${i}: ${err}`);
+      }
+    }
+  } finally {
+    db.close();
+  }
+
+  // Release inventory that canceled orders had wrongly consumed.
+  for (const sku of affectedSkus) {
+    try {
+      recalculateFIFO({ sku });
+    } catch (err) {
+      errors.push(`fifo recalc ${sku}: ${err}`);
+    }
+  }
+
+  return { checked, updated, canceled, errors };
 }
 
 /**

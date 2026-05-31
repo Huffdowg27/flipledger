@@ -119,12 +119,13 @@ export function recalculateFIFO(options: {
       ORDER BY date_purchased ASC, id ASC
     `);
 
-    // Get sales for a SKU — match by sku first (primary), then by asin (fallback)
+    // Get sales for a SKU — match by sku first (primary), then by asin (fallback).
+    // Canceled orders never shipped, so they must not consume inventory or carry COGS.
     const getSalesBySku = db.prepare(`
       SELECT oi.id, oi.order_id as orderId, oi.sku, oi.asin, oi.quantity, o.purchase_date as purchaseDate, oi.cogs_per_unit as currentCogs
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE oi.sku = ?
+      WHERE oi.sku = ? AND o.status NOT IN ('Canceled', 'Cancelled')
       ORDER BY o.purchase_date ASC, oi.id ASC
     `);
 
@@ -132,7 +133,7 @@ export function recalculateFIFO(options: {
       SELECT oi.id, oi.order_id as orderId, oi.sku, oi.asin, oi.quantity, o.purchase_date as purchaseDate, oi.cogs_per_unit as currentCogs
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE oi.asin = ? AND (oi.sku IS NULL OR oi.sku = '' OR oi.sku NOT IN (SELECT DISTINCT sku FROM inventory_ledger WHERE buy_price > 0))
+      WHERE oi.asin = ? AND o.status NOT IN ('Canceled', 'Cancelled') AND (oi.sku IS NULL OR oi.sku = '' OR oi.sku NOT IN (SELECT DISTINCT sku FROM inventory_ledger WHERE buy_price > 0))
       ORDER BY o.purchase_date ASC, oi.id ASC
     `);
 
