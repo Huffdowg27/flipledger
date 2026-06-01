@@ -9,6 +9,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { recalculateFIFO } from '@/lib/fifo';
+import { pushBatchCostToInformed } from '@/lib/informed';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -61,6 +62,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         confirmed_shipments as confirmedShipments,
         confirmed_shipment_ids as confirmedShipmentIds,
         notes,
+        closed_at as closedAt,
         created_at as createdAt,
         updated_at as updatedAt
       FROM listing_batches WHERE id = ?
@@ -182,12 +184,40 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       return NextResponse.json({ error: 'No fields to update' }, { status: 400 });
     }
 
+    const now = new Date().toISOString();
+
+    // Lifecycle: stamp closed_at the first time a batch transitions to 'closed'
+    // (idempotent — re-closing keeps the original timestamp); clear it if the
+    // batch is reopened to any non-closed status.
+    let justClosed = false;
+    if (body.status === 'closed') {
+      const existing = db.prepare('SELECT closed_at FROM listing_batches WHERE id = ?').get(batchId) as { closed_at: string | null } | undefined;
+      if (existing && !existing.closed_at) {
+        sets.push('closed_at = ?');
+        values.push(now);
+        justClosed = true;
+      }
+    } else if (body.status !== undefined) {
+      sets.push('closed_at = NULL');
+    }
+
     sets.push('updated_at = ?');
-    values.push(new Date().toISOString());
+    values.push(now);
     values.push(batchId);
 
     db.prepare(`UPDATE listing_batches SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-    return NextResponse.json({ success: true });
+
+    // On the first close (auto or manual), push this batch's per-unit buy cost
+    // to Informed Repricer. Best-effort — never blocks the close.
+    let informed: Awaited<ReturnType<typeof pushBatchCostToInformed>> | undefined;
+    if (justClosed) {
+      informed = await pushBatchCostToInformed(db, batchId);
+      if (!informed.ok && !informed.skipped) {
+        console.error(`[informed] batch ${batchId} cost push failed:`, informed.error);
+      }
+    }
+
+    return NextResponse.json({ success: true, informed });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   } finally {

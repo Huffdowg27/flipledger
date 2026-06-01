@@ -33,6 +33,7 @@ export async function GET() {
         b.channel,
         b.marketplace,
         b.inbound_plan_id as inboundPlanId,
+        b.closed_at as closedAt,
         b.created_at as createdAt,
         b.updated_at as updatedAt,
         COALESCE(fba.totalUnits, mfn.totalUnits, 0) as totalUnits,

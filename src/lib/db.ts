@@ -525,6 +525,7 @@ export function initializeDatabase() {
       placement_confirmed_at TEXT,
       placement_error TEXT,
       notes TEXT,
+      closed_at TEXT,                 -- set when a batch is closed (pushed/finalized) → History
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -676,6 +677,9 @@ export function initializeDatabase() {
     // for Merchant Fulfilled batches. FBA batches use listing_batch_items instead; this
     // column is only populated by /api/data/inventory-lots/create-mfn-local-lot.
     `ALTER TABLE inventory_ledger ADD COLUMN batch_id INTEGER`,
+    // Batch lifecycle: closed_at stamps when a batch is finalized (all eligible
+    // SKUs pushed/accepted, or manually closed) so it surfaces in History.
+    `ALTER TABLE listing_batches ADD COLUMN closed_at TEXT`,
     `CREATE INDEX IF NOT EXISTS idx_inventory_ledger_batch ON inventory_ledger(batch_id)`,
     `ALTER TABLE orders ADD COLUMN order_total INTEGER DEFAULT 0`,
     `ALTER TABLE orders ADD COLUMN order_total_currency TEXT`,

@@ -49,6 +49,12 @@ export interface PreviewModalProps {
   shippingTemplate: string;
   onClose: () => void;
   onPushComplete?: () => void;
+  /**
+   * Fires once a push run finishes with EVERY eligible row returning
+   * ACCEPTED/VALID. Used by the batch flow to auto-close the batch → History.
+   * Does not fire on partial pushes (skips/errors leave the batch open).
+   */
+  onAllEligibleAccepted?: (results: PushResult[]) => void;
 }
 
 function spStatusBadge(status: PushResult['sp_status']) {
@@ -67,7 +73,7 @@ function spStatusBadge(status: PushResult['sp_status']) {
   );
 }
 
-export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }: PreviewModalProps) {
+export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete, onAllEligibleAccepted }: PreviewModalProps) {
   const [pushPhase, setPushPhase]     = useState<PushPhase>('preview');
   const [testResult, setTestResult]   = useState<PushResult | null>(null);
   const [bulkResults, setBulkResults] = useState<PushResult[]>([]);
@@ -95,6 +101,25 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
     return data.results as PushResult[];
   }
 
+  // True when every push-eligible row came back ACCEPTED/VALID. Drives the
+  // batch auto-close: partial pushes (any skip/error) deliberately return false
+  // so the batch stays open with just the stragglers.
+  function allEligibleAccepted(results: PushResult[]): boolean {
+    if (pushableRows.length === 0) return false;
+    const bySku = new Map(results.map(r => [r.sku, r]));
+    return pushableRows.every(r => {
+      const res = bySku.get(r.sku);
+      return !!res && (res.sp_status === 'ACCEPTED' || res.sp_status === 'VALID');
+    });
+  }
+
+  // Single completion point: fire onPushComplete, and onAllEligibleAccepted when
+  // the whole eligible set was accepted.
+  function finishPush(allResults: PushResult[]) {
+    onPushComplete?.();
+    if (allEligibleAccepted(allResults)) onAllEligibleAccepted?.(allResults);
+  }
+
   async function handleTestPush() {
     const testSku = pushableRows[0];
     if (!testSku) return;
@@ -113,7 +138,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
   async function handleBulkPush() {
     const remaining = pushableRows.slice(testResult ? 1 : 0).map(r => r.sku);
     if (remaining.length === 0) {
-      onPushComplete?.();
+      finishPush([testResult].filter(Boolean) as PushResult[]);
       setPushPhase('done');
       return;
     }
@@ -122,7 +147,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
     try {
       const results = await runPush(remaining);
       setBulkResults(results);
-      onPushComplete?.();
+      finishPush([testResult, ...results].filter(Boolean) as PushResult[]);
       setPushPhase('done');
     } catch (e) {
       setPushError(String(e));
@@ -369,7 +394,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete }
                   </button>
                 )}
                 {remainingCount === 0 && (
-                  <button onClick={() => { onPushComplete?.(); onClose(); }} className="h-8 px-4 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90">
+                  <button onClick={() => { finishPush([testResult].filter(Boolean) as PushResult[]); onClose(); }} className="h-8 px-4 rounded-md bg-accent text-white text-xs font-medium hover:bg-accent/90">
                     Done
                   </button>
                 )}
