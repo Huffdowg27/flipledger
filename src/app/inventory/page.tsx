@@ -23,11 +23,22 @@ interface Stats {
   totalUnits: number;
 }
 
-type Channel = 'amazon' | 'walmart';
+interface MerchantRow {
+  sku: string | null;
+  asin: string | null;
+  productName: string | null;
+  imageUrl: string | null;
+  qty: number;
+  costCents: number | null;
+  status: string | null;
+}
+
+type Channel = 'amazon' | 'walmart' | 'merchant';
 
 const TABS: { value: Channel; label: string }[] = [
   { value: 'amazon', label: 'FBA' },
   { value: 'walmart', label: 'WFS' },
+  { value: 'merchant', label: 'Merchant' },
 ];
 
 function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
@@ -63,18 +74,43 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
 export default function InventoryHubPage() {
   const [channel, setChannel] = useState<Channel>('amazon');
   const [rows, setRows] = useState<InvRow[]>([]);
+  const [merchantRows, setMerchantRows] = useState<MerchantRow[]>([]);
   const [stats, setStats] = useState<Stats>({ fba: { skus: 0, units: 0, inbound: 0 }, wfs: { skus: 0, units: 0, inbound: 0 }, totalUnits: 0 });
+  const [merchantCount, setMerchantCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
 
+  const isMerchant = channel === 'merchant';
+
   async function load() {
     setLoading(true);
     try {
-      const res = await fetch(`/api/data/fba-inventory?channel=${channel}&q=${encodeURIComponent(search)}`);
-      const data = await res.json();
-      setRows(data.rows || []);
-      if (data.stats) setStats(data.stats);
+      if (channel === 'merchant') {
+        const res = await fetch('/api/data/merchant-inventory');
+        const d = await res.json();
+        const all = [...(d.listed || []), ...(d.localOnly || [])];
+        const q = search.trim().toLowerCase();
+        const mapped: MerchantRow[] = all.map((r: any) => ({
+          sku: r.sku ?? null,
+          asin: r.asin ?? null,
+          productName: r.product_name ?? null,
+          imageUrl: r.image_url ?? null,
+          qty: r.quantity_remaining ?? r.amazon_qty ?? 0,
+          costCents: r.parsed_cost_cents ?? r.cost_cents ?? null,
+          status: r.live_state ?? r.amazon_status ?? null,
+        }));
+        const filtered = q
+          ? mapped.filter((m) => `${m.sku ?? ''} ${m.asin ?? ''} ${m.productName ?? ''}`.toLowerCase().includes(q))
+          : mapped;
+        setMerchantRows(filtered);
+        setMerchantCount(mapped.length);
+      } else {
+        const res = await fetch(`/api/data/fba-inventory?channel=${channel}&q=${encodeURIComponent(search)}`);
+        const data = await res.json();
+        setRows(data.rows || []);
+        if (data.stats) setStats(data.stats);
+      }
     } finally {
       setLoading(false);
     }
@@ -110,9 +146,9 @@ export default function InventoryHubPage() {
         <StatCard label="FBA" value={stats.fba.units.toLocaleString()} sub={`${stats.fba.skus.toLocaleString()} SKUs · ${stats.fba.inbound} inbound`} />
         <StatCard label="WFS" value={stats.wfs.units.toLocaleString()} sub={`${stats.wfs.skus.toLocaleString()} SKUs · ${stats.wfs.inbound} inbound`} />
         <div className="flex flex-col gap-2">
-          <Link href="/analyze/merchant-inventory" className="flex items-center justify-between rounded-lg border border-border-default bg-bg-surface px-4 py-2.5 text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary">
-            Merchant Inventory <ArrowRight size={14} />
-          </Link>
+          <button onClick={() => setChannel('merchant')} className="flex items-center justify-between rounded-lg border border-border-default bg-bg-surface px-4 py-2.5 text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary">
+            <span>Merchant{merchantCount != null ? ` · ${merchantCount}` : ''}</span> <ArrowRight size={14} />
+          </button>
           <Link href="/analyze/inventory-valuation" className="flex items-center justify-between rounded-lg border border-border-default bg-bg-surface px-4 py-2.5 text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary">
             Inventory Valuation <ArrowRight size={14} />
           </Link>
@@ -135,18 +171,64 @@ export default function InventoryHubPage() {
       </div>
 
       {/* Column header */}
-      <div className="grid grid-cols-[1fr_repeat(4,84px)] gap-3 border-b border-border-default px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-        <div>Product</div>
-        <div className="text-right">Fulfillable</div>
-        <div className="text-right">Inbound</div>
-        <div className="text-right">Reserved</div>
-        <div className="text-right">Unfulfillable</div>
-      </div>
+      {isMerchant ? (
+        <div className="grid grid-cols-[1fr_84px_100px_110px] gap-3 border-b border-border-default px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+          <div>Product</div>
+          <div className="text-right">Qty</div>
+          <div className="text-right">Cost</div>
+          <div className="text-right">Status</div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-[1fr_repeat(4,84px)] gap-3 border-b border-border-default px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+          <div>Product</div>
+          <div className="text-right">Fulfillable</div>
+          <div className="text-right">Inbound</div>
+          <div className="text-right">Reserved</div>
+          <div className="text-right">Unfulfillable</div>
+        </div>
+      )}
 
       {/* Rows */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {loading ? (
           <div className="py-16 text-center text-sm text-text-tertiary">Loading inventory…</div>
+        ) : isMerchant ? (
+          merchantRows.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
+              <Boxes size={28} className="mb-2 opacity-50" />
+              <div className="text-sm">No merchant inventory matches this view.</div>
+            </div>
+          ) : (
+            merchantRows.map((r, i) => {
+              const statusTone = r.status === 'active' ? 'text-positive' : r.status === 'oos' ? 'text-warning' : 'text-text-tertiary';
+              return (
+                <div key={`m-${r.sku}-${i}`} className="grid grid-cols-[1fr_84px_100px_110px] items-center gap-3 border-b border-border-subtle px-3 py-2.5 hover:bg-bg-elevated/50">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <button
+                      type="button"
+                      onClick={() => r.imageUrl && setLightbox({ src: r.imageUrl, title: r.productName || r.sku || '', asin: r.asin, sku: r.sku })}
+                      disabled={!r.imageUrl}
+                      className={`grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md border border-border-subtle bg-bg-elevated ${r.imageUrl ? 'cursor-zoom-in hover:border-accent/60' : ''}`}
+                    >
+                      {r.imageUrl
+                        // eslint-disable-next-line @next/next/no-img-element
+                        ? <img src={r.imageUrl} alt="" className="h-full w-full object-contain" />
+                        : <ImageOff size={15} className="text-text-tertiary" />}
+                    </button>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm text-text-primary" title={r.productName || ''}>{r.productName || '—'}</div>
+                      <div className="mt-0.5 flex items-center gap-3 text-xs font-mono text-text-tertiary">
+                        <IdentifierChip label="MSKU" value={r.sku} href={sellerCentralSkuUrl(r.sku)} />
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right font-mono text-sm text-text-primary">{r.qty}</div>
+                  <div className="text-right font-mono text-sm text-text-secondary">{r.costCents != null ? `$${(r.costCents / 100).toFixed(2)}` : '—'}</div>
+                  <div className={`text-right text-sm capitalize ${statusTone}`}>{r.status || '—'}</div>
+                </div>
+              );
+            })
+          )
         ) : rows.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
             <Boxes size={28} className="mb-2 opacity-50" />
