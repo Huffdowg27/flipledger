@@ -4,7 +4,6 @@ import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import {
   LayoutDashboard,
-  ShoppingBag,
   Warehouse,
   Truck,
   Undo2,
@@ -36,10 +35,10 @@ interface NavSection {
 // pages (Phase 1). Phase 2 will replace flyouts with PSH-style landing hubs.
 const NAV: NavSection[] = [
   { key: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={21} />, href: '/' },
-  { key: 'products', label: 'Products', icon: <ShoppingBag size={21} />, href: '/products' },
   {
     key: 'inventory', label: 'Inventory', icon: <Warehouse size={21} />,
     items: [
+      { label: 'Products & COGS', href: '/products' },
       { label: 'Merchant Inventory', href: '/analyze/merchant-inventory' },
       { label: 'Inventory Valuation', href: '/analyze/inventory-valuation' },
       { label: 'MFN Quick Tray', href: '/mfn/batch' },
