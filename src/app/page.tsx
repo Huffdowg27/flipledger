@@ -353,7 +353,7 @@ export default function Dashboard() {
           ]} color="bg-negative" />
         </Link>
 
-        <Link href="/bookkeep/merchant-sales" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-amazon/60 transition-colors">
+        <Link href="/mfn/orders" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-amazon/60 transition-colors">
           <div className="flex items-start justify-between">
             <div>
               <div className="text-sm font-semibold text-amazon">Open MFN Orders</div>
