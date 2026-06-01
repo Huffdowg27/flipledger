@@ -63,7 +63,6 @@ const navSections: NavSection[] = [
     title: 'LISTING',
     items: [
       { label: 'Batches', href: '/list', icon: <ScanBarcode size={18} /> },
-      { label: 'MFN Orders', href: '/mfn/orders', icon: <Package size={18} /> },
       { label: 'MFN Upload List', href: '/mfn/upload-list', icon: <FileText size={18} /> },
       { label: 'MFN Quick Tray', href: '/mfn/batch', icon: <PackageCheck size={18} /> },
       { label: 'Labels', href: '/labels', icon: <Printer size={18} /> },
@@ -72,6 +71,7 @@ const navSections: NavSection[] = [
   {
     title: 'ANALYZE',
     items: [
+      { label: 'MFN Orders', href: '/mfn/orders', icon: <ShoppingCart size={18} /> },
       { label: 'Merchant Inventory', href: '/analyze/merchant-inventory', icon: <Warehouse size={18} /> },
       { label: 'Profit & Loss', href: '/analyze/profitloss', icon: <TrendingUp size={18} /> },
       { label: 'Sales Tax', href: '/analyze/salestax', icon: <Receipt size={18} /> },
