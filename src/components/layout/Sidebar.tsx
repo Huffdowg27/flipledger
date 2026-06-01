@@ -36,7 +36,7 @@ interface NavSection {
 const NAV: NavSection[] = [
   { key: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={21} />, href: '/' },
   {
-    key: 'inventory', label: 'Inventory', icon: <Warehouse size={21} />,
+    key: 'inventory', label: 'Inventory', icon: <Warehouse size={21} />, href: '/inventory',
     items: [
       { label: 'Products & COGS', href: '/products' },
       { label: 'Merchant Inventory', href: '/analyze/merchant-inventory' },
@@ -238,7 +238,21 @@ export default function Sidebar() {
                 }}
                 onMouseLeave={() => setOpen((k) => (k === section.key ? null : k))}
               >
-                {hasItems ? (
+                {section.href ? (
+                  // Sections with a landing page navigate on click; the flyout
+                  // (if any) still opens on hover for quick sub-page jumps.
+                  <Link
+                    href={section.href}
+                    onClick={() => { setMobileOpen(false); setOpen(null); setSearchOpen(false); }}
+                    className={tileClass}
+                  >
+                    {section.icon}
+                    <span className="leading-none">{section.label}</span>
+                    {section.attention && (
+                      <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-bg-surface" title="Items need attention" />
+                    )}
+                  </Link>
+                ) : (
                   <button
                     type="button"
                     onClick={() => {
@@ -253,15 +267,6 @@ export default function Sidebar() {
                       <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-bg-surface" title="Items need attention" />
                     )}
                   </button>
-                ) : (
-                  <Link
-                    href={section.href!}
-                    onClick={() => { setMobileOpen(false); setOpen(null); setSearchOpen(false); }}
-                    className={tileClass}
-                  >
-                    {section.icon}
-                    <span className="leading-none">{section.label}</span>
-                  </Link>
                 )}
 
                 {/* Flyout */}
