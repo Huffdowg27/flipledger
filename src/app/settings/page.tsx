@@ -354,6 +354,9 @@ export default function SettingsPage() {
       {/* eBay Credentials */}
       <EbaySettings />
 
+      {/* Informed Repricer */}
+      <InformedSettings />
+
       {/* Transaction Report Import */}
       <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
         <h2 className="text-md font-medium text-text-primary mb-2">Import Transaction Report</h2>
@@ -520,6 +523,71 @@ function ShipFromSettings() {
             <CheckCircle size={14} /> Saved
           </span>
         )}
+      </div>
+    </div>
+  );
+}
+
+function InformedSettings() {
+  const [apiKey, setApiKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [hasSaved, setHasSaved] = useState(false);
+
+  useEffect(() => {
+    fetch('/api/data/settings')
+      .then(r => r.json())
+      .then(data => {
+        if (data.settings?.informed_api_key) {
+          setApiKey(data.settings.informed_api_key);
+          setHasSaved(true);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  async function handleSave() {
+    setSaving(true);
+    await fetch('/api/data/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ informed_api_key: apiKey.trim() }),
+    });
+    setSaving(false);
+    setSaved(true);
+    setHasSaved(!!apiKey.trim());
+    setTimeout(() => setSaved(false), 3000);
+  }
+
+  return (
+    <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+      <h2 className="text-md font-medium text-text-primary mb-2">Informed Repricer</h2>
+      <p className="text-xs text-text-tertiary mb-4">
+        API key from your Informed account (Integrations → API). Used to push per-unit buy cost when a batch closes, so the repricer respects your true cost floor.
+      </p>
+      <div className="space-y-4">
+        <div>
+          <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">
+            API Key
+          </label>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={e => setApiKey(e.target.value)}
+            placeholder="Paste your Informed API key"
+            className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-5">
+        <button onClick={handleSave} disabled={saving}
+          className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50">
+          <Save size={14} />
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        {saved && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Saved</span>}
+        {!saved && hasSaved && <span className="flex items-center gap-1 text-sm text-text-tertiary"><CheckCircle size={14} /> Key stored</span>}
       </div>
     </div>
   );

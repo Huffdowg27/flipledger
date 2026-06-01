@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
-import { Plus, Package, Trash2 } from 'lucide-react';
+import { Plus, Package, Trash2, Archive } from 'lucide-react';
 
 interface BatchRow {
   id: number;
@@ -12,6 +12,7 @@ interface BatchRow {
   channel: string;
   marketplace: string;
   inboundPlanId: string | null;
+  closedAt: string | null;
   createdAt: string;
   updatedAt: string;
   totalUnits: number;
@@ -99,6 +100,11 @@ export default function BatchesPage() {
     return `${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} Batch`;
   }
 
+  // Active batches live here; closed batches move to /list/history so the
+  // working list stays focused on what's in flight.
+  const activeBatches = batches.filter((b) => b.status !== 'closed');
+  const closedCount = batches.length - activeBatches.length;
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -106,13 +112,22 @@ export default function BatchesPage() {
           <h1 className="text-xl font-semibold tracking-tight">Batches</h1>
           <p className="text-sm text-text-tertiary mt-0.5">FBA shipments and Merchant Fulfilled inventory · receive, label, and push from inside a batch</p>
         </div>
-        <button
-          onClick={() => { setName(defaultName()); setShowNew(true); }}
-          className="flex items-center gap-2 h-9 px-3 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent/90 transition-colors"
-        >
-          <Plus size={16} />
-          New Batch
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/list/history"
+            className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-secondary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+          >
+            <Archive size={16} />
+            History{closedCount > 0 ? ` (${closedCount})` : ''}
+          </Link>
+          <button
+            onClick={() => { setName(defaultName()); setShowNew(true); }}
+            className="flex items-center gap-2 h-9 px-3 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent/90 transition-colors"
+          >
+            <Plus size={16} />
+            New Batch
+          </button>
+        </div>
       </div>
 
       {/* Batch list */}
@@ -120,11 +135,15 @@ export default function BatchesPage() {
         <div className="bg-bg-surface border border-border-subtle rounded-lg p-8 text-center text-text-tertiary">
           Loading batches…
         </div>
-      ) : batches.length === 0 ? (
+      ) : activeBatches.length === 0 ? (
         <div className="bg-bg-surface border border-border-subtle rounded-lg p-12 text-center">
           <Package size={48} className="mx-auto text-text-tertiary mb-3" />
-          <h3 className="text-base font-medium text-text-primary mb-1">No batches yet</h3>
-          <p className="text-sm text-text-tertiary mb-4">Create your first batch to start listing inventory.</p>
+          <h3 className="text-base font-medium text-text-primary mb-1">No active batches</h3>
+          <p className="text-sm text-text-tertiary mb-4">
+            {closedCount > 0
+              ? <>Create a new batch to start listing inventory, or view your <Link href="/list/history" className="text-accent hover:underline">{closedCount} closed batch{closedCount === 1 ? '' : 'es'}</Link>.</>
+              : 'Create your first batch to start listing inventory.'}
+          </p>
           <button
             onClick={() => { setName(defaultName()); setShowNew(true); }}
             className="inline-flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent/90 transition-colors"
@@ -150,7 +169,7 @@ export default function BatchesPage() {
               </tr>
             </thead>
             <tbody>
-              {batches.map((b) => (
+              {activeBatches.map((b) => (
                 <tr key={b.id} className="border-b border-border-subtle/50 hover:bg-bg-hover transition-colors">
                   <td className="px-4 py-2">
                     <Link href={`/list/${b.id}`} className="text-sm text-text-primary font-medium hover:text-accent">

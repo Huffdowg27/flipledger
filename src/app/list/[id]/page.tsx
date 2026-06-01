@@ -1410,17 +1410,76 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
               <p className="text-xs text-text-tertiary mt-0.5">Merchant Fulfilled batch · receive · label · push</p>
             </div>
           </div>
-          {batch.status === 'draft' && (
-            <Link
-              href={`/list/${batch.id}/import`}
-              className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
-            >
-              <FileUp size={14} />
-              Import Buy List
-            </Link>
-          )}
+          <div className="flex items-center gap-2">
+            {batch.status === 'closed' ? (
+              <>
+                <StatusBadge status="closed" />
+                <button
+                  onClick={async () => {
+                    if (!confirm('Restore this batch to draft? It leaves History and becomes editable again so you can make changes or re-push.')) return;
+                    try {
+                      const res = await fetch(`/api/list/batches/${batch.id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: 'draft' }),
+                      });
+                      const data = await res.json();
+                      if (data.error) { alert(`Restore failed: ${data.error}`); return; }
+                      await fetchBatch();
+                    } catch (err) {
+                      alert(String(err));
+                    }
+                  }}
+                  className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+                >
+                  <ArrowLeft size={14} />
+                  Restore
+                </button>
+                <Link
+                  href="/list/history"
+                  className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+                >
+                  <Archive size={14} />
+                  History
+                </Link>
+              </>
+            ) : (
+              <>
+                {batch.status === 'draft' && (
+                  <Link
+                    href={`/list/${batch.id}/import`}
+                    className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+                  >
+                    <FileUp size={14} />
+                    Import Buy List
+                  </Link>
+                )}
+                <button
+                  onClick={async () => {
+                    if (!confirm('Close this batch and move it to History?\n\nUse this once everything you intend to push has been pushed. Permanently-ineligible SKUs (e.g. amzn.gr. listings that can never match) are fine to leave behind — they stay in the audit record. All data stays in FlipLedger.')) return;
+                    try {
+                      const res = await fetch(`/api/list/batches/${batch.id}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: 'closed' }),
+                      });
+                      const data = await res.json();
+                      if (data.error) { alert(`Close failed: ${data.error}`); return; }
+                      window.location.href = '/list/history';
+                    } catch (err) {
+                      alert(String(err));
+                    }
+                  }}
+                  className="flex items-center gap-2 h-9 px-4 bg-bg-elevated border border-border-subtle text-text-secondary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+                >
+                  <Archive size={14} />
+                  Close Batch
+                </button>
+              </>
+            )}
+          </div>
         </div>
-        <MfnBatchReceiveWorkflow batchId={batch.id} />
+        <MfnBatchReceiveWorkflow batchId={batch.id} locked={batch.status === 'closed'} />
       </div>
     );
   }

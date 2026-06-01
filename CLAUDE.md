@@ -6,6 +6,16 @@ to get wrong without context.
 
 For setup and what FlipLedger does, see [`README.md`](README.md).
 
+## Agent-control workflow
+
+When this repo contains `docs/agent-control/NEXT_CLAUDE_TASK.md`, read it
+before starting work. Also read `docs/agent-control/PRODUCT_GUARDRAILS.md`
+for current project-specific constraints.
+
+After each task, update `docs/agent-control/CLAUDE_REPORT.md` with the files
+changed, behavior changed, verification run, risk notes, and commit hash or
+uncommitted diff status. Do not broaden scope beyond the next-task file.
+
 ---
 
 ## The mission

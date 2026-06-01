@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency, formatRelativeTime } from '@/lib/formatters';
-import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info, Image as ImageIcon } from 'lucide-react';
+import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info, Image as ImageIcon, Lock } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
 
 // ---------------------------------------------------------------------------
@@ -1008,9 +1008,10 @@ interface BatchItemRowProps {
   focusQty: boolean;
   onQtyFocused: () => void;
   amazonTemplates: ShippingTemplate[] | null;
+  locked?: boolean;
 }
 
-function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused }: BatchItemRowProps) {
+function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImageClick, onShowDetail, focusQty, onQtyFocused, locked = false }: BatchItemRowProps) {
   const { savedQty, savedPrice, savedCogs } = getSavedDisplay(item);
   const receiveProgress = getReceiveProgress(item);
 
@@ -1028,7 +1029,7 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
           )
         : <div className="w-20 h-20 bg-slate-700/40 rounded-lg shrink-0 flex items-center justify-center"><Package size={22} className="text-text-tertiary/40" /></div>}
 
-      {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + channel */}
+      {/* Zone 2 — product identity (flex-1, truncates): name + ASIN + MSKU + channel */}
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <CheckCircle2 size={15} className="text-green-400 shrink-0" />
@@ -1040,16 +1041,14 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
           <AsinLink asin={item.asin} className="font-mono text-sm text-blue-400/80 shrink-0 hover:text-blue-300 hover:underline" />
           <ChannelBadge channel={item.fulfillment_channel} />
         </div>
-      </div>
-
-      {/* Zone 3 — MSKU (176px, wraps to 2 lines) */}
-      <div className="w-44 shrink-0">
-        <MskuLink sku={item.sku} className="font-mono text-[11px] text-text-tertiary/50 leading-tight break-all line-clamp-2 block hover:text-blue-300 hover:underline" />
+        <MskuLink sku={item.sku} className="font-mono text-xs text-blue-400/80 truncate block mt-0.5 hover:text-blue-300 hover:underline" />
       </div>
 
       {/* Zone 4 — Qty (w-32 fixed): InlineQtyEdit + optional receive progress */}
       <div className="w-32 shrink-0 flex flex-col items-start gap-0.5 overflow-hidden">
-        <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />
+        {locked
+          ? <span className="font-mono text-base text-text-primary px-1">{savedQty}</span>
+          : <InlineQtyEdit value={savedQty} onSave={onSaveQty} forceOpen={focusQty} onOpened={onQtyFocused} />}
         {receiveProgress && <ReceiveProgressBar progress={receiveProgress} variant="compact" />}
       </div>
 
@@ -1071,8 +1070,8 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
       <div className="w-24 shrink-0 flex items-center justify-end">
         <button onClick={onShowDetail} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="View details"><Info size={13} /></button>
         <button onClick={onPrintLabel} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="Print ASIN label"><Printer size={13} /></button>
-        <button onClick={onEdit} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>
-        <button onClick={onRemove} className="p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove"><X size={13} /></button>
+        {!locked && <button onClick={onEdit} className="p-1 text-text-tertiary/60 hover:text-blue-400 rounded transition-colors" title="Edit (reopens this card)"><Pencil size={13} /></button>}
+        {!locked && <button onClick={onRemove} className="p-1 text-text-tertiary/40 hover:text-text-tertiary rounded" title="Remove"><X size={13} /></button>}
       </div>
     </div>
   );
@@ -1097,9 +1096,10 @@ interface BatchItemCardProps {
   focusQty: boolean;
   onQtyFocused: () => void;
   amazonTemplates: ShippingTemplate[] | null;
+  locked?: boolean;
 }
 
-function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused, amazonTemplates }: BatchItemCardProps) {
+function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused, amazonTemplates, locked = false }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
 
@@ -1136,6 +1136,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         focusQty={focusQty}
         onQtyFocused={onQtyFocused}
         amazonTemplates={amazonTemplates}
+        locked={locked}
       />
     );
   }
@@ -1462,9 +1463,11 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
  */
 export interface MfnBatchReceiveWorkflowProps {
   batchId?: number | null;
+  /** When true the batch is closed/in History: read-only, no add/edit/push. */
+  locked?: boolean;
 }
 
-export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchReceiveWorkflowProps = {}) {
+export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false }: MfnBatchReceiveWorkflowProps = {}) {
   const searchInputRef     = useRef<HTMLInputElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const multiMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2019,19 +2022,19 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
                 <Printer size={13} />Print All ({savedCount})
               </button>
             )}
-            {savedCount > 0 && (
+            {!locked && savedCount > 0 && (
               <button onClick={previewAndPush} disabled={previewLoading} className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-blue-500/50 text-blue-400 text-xs font-medium hover:bg-blue-500/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                 {previewLoading ? <Loader2 size={13} className="animate-spin" /> : <Send size={13} />}
                 {previewLoading ? 'Loading…' : `Preview & Push (${savedCount})`}
               </button>
             )}
-            {hasUnsaved && (
+            {!locked && hasUnsaved && (
               <button onClick={saveAll} disabled={savingAll} className="flex items-center gap-1.5 h-8 px-3 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 transition-colors disabled:opacity-50">
                 {savingAll ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
                 {savingAll ? 'Saving…' : `Save All (${saveable.length})`}
               </button>
             )}
-            {batchId != null && batchId > 0 && [...batch.values()].some(i => !i.image_url) && (
+            {!locked && batchId != null && batchId > 0 && [...batch.values()].some(i => !i.image_url) && (
               <button onClick={handleBackfillImages} disabled={backfillingImages} className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors disabled:opacity-50" title="Fetch missing product images from Amazon's catalog">
                 {backfillingImages ? <Loader2 size={13} className="animate-spin" /> : <ImageIcon size={13} />}
                 {backfillingImages
@@ -2039,14 +2042,24 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
                   : 'Get Photos'}
               </button>
             )}
-            <button onClick={() => { setBatch(new Map()); setReceiveFilter('all'); }} className="h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover transition-colors">
-              Clear
-            </button>
+            {!locked && (
+              <button onClick={() => { setBatch(new Map()); setReceiveFilter('all'); }} className="h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover transition-colors">
+                Clear
+              </button>
+            )}
           </div>
         )}
       </div>
 
+      {locked && (
+        <div className="flex items-center gap-2 px-4 py-2.5 mb-3 bg-slate-800 border-x border-b border-border-subtle rounded-b-lg text-xs text-text-tertiary">
+          <Lock size={13} className="text-text-tertiary shrink-0" />
+          This batch is closed and in History — locked for auditing. Restore it from the header to make changes or re-push.
+        </div>
+      )}
+
       {/* Search — lower half of unified header block */}
+      {!locked && (
       <div ref={searchContainerRef} className="relative bg-slate-800 border-x border-b border-border-subtle rounded-b-lg mb-3">
         <div className="relative px-3 py-2">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary pointer-events-none" />
@@ -2145,6 +2158,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
           </div>
         )}
       </div>
+      )}
 
       {/* Filter strip + KPI — flat tab-strip below the header */}
       {batchArray.length > 0 && (
@@ -2265,7 +2279,6 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
             <div className="flex items-center gap-2 px-3 pr-1 pb-1 mb-0.5 text-[10px] font-semibold text-text-tertiary/50 uppercase tracking-wider select-none border-b border-border-subtle/50">
               <div className="w-8 shrink-0" />
               <div className="min-w-0 flex-1">Item</div>
-              <div className="w-44 shrink-0">MSKU</div>
               <div className="w-32 shrink-0">Qty</div>
               <div className="w-20 shrink-0 text-right">COGS</div>
               <div className="w-20 shrink-0 text-right">List</div>
@@ -2306,6 +2319,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
                   focusQty={focusQtySku === item.sku}
                   onQtyFocused={() => setFocusQtySku(null)}
                   amazonTemplates={amazonTemplates}
+                  locked={locked}
                 />
               ))}
             </div>
@@ -2329,6 +2343,25 @@ export default function MfnBatchReceiveWorkflow({ batchId = null }: MfnBatchRece
           shippingTemplate={previewTemplate}
           onClose={() => setPreviewOpen(false)}
           onPushComplete={() => { setPreviewOpen(false); }}
+          onAllEligibleAccepted={
+            batchId != null && batchId > 0
+              ? async () => {
+                  // Every eligible SKU was accepted → finalize this batch and
+                  // send it to History. Partial pushes never reach here, so the
+                  // batch only closes when nothing is left to push.
+                  try {
+                    await fetch(`/api/list/batches/${batchId}`, {
+                      method: 'PATCH',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ status: 'closed' }),
+                    });
+                  } catch (err) {
+                    console.warn('batch auto-close failed:', err);
+                  }
+                  window.location.href = '/list/history';
+                }
+              : undefined
+          }
         />
       )}
 

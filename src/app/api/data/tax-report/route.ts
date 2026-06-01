@@ -107,20 +107,29 @@ export async function GET(request: NextRequest) {
       WHERE date_shipped >= ? AND date_shipped < ?
     `).get(startDate, endDate) as any;
 
-    // Beginning inventory (items purchased before the year that still had quantity)
-    // This is an approximation — sum of all inventory bought before year start
-    const beginningInventory = db.prepare(`
-      SELECT COALESCE(SUM(buy_price * quantity), 0) as total
-      FROM inventory_ledger
-      WHERE date_purchased < ?
-    `).get(startDate) as any;
+    // Beginning / ending inventory via an opening-balance cutoff.
+    //
+    // The ledger holds buy lots back to 2016, but the Amazon Orders API only
+    // serves ~2 years of history, so our earliest order is 2024-05-01. Any lot
+    // purchased before that floor whose sale predates it was never depleted by
+    // FIFO (no matching order exists), so it lingers with quantity_remaining > 0
+    // and falsely inflates on-hand value (~$2.5M pre-2024, plus ~$131K in the
+    // Jan–Apr 2024 gap before sales tracking began).
+    //
+    // We therefore set the cutoff to the sales-data floor and treat everything
+    // purchased before it as a closed opening balance (excluded here), valuing
+    // only the post-cutoff pool at its current remaining quantity, year-bounded
+    // by purchase date. Beginning(Y) == Ending(Y-1), so the years chain. Real
+    // pre-cutoff figures can be entered later from InventoryLab once available.
+    const INVENTORY_CUTOFF = '2024-05-01';
 
-    // Ending inventory (current remaining for current year, or all purchased up to year end)
-    const endingInventory = db.prepare(`
+    const onHandValue = db.prepare(`
       SELECT COALESCE(SUM(buy_price * quantity_remaining), 0) as total
       FROM inventory_ledger
-      WHERE quantity_remaining > 0
-    `).get() as any;
+      WHERE date_purchased >= ? AND date_purchased < ? AND quantity_remaining > 0
+    `);
+    const beginningInventory = onHandValue.get(INVENTORY_CUTOFF, startDate) as any;
+    const endingInventory = onHandValue.get(INVENTORY_CUTOFF, endDate) as any;
 
     // ═══ AMAZON FEES ═════════════════════════════════════════════════
 

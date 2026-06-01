@@ -114,3 +114,48 @@ _Last updated: 2026-05-17. Covers commits 28f2efa through 09991e9._
 - `inventory_ledger.quantity`: **updated for 5 canary lots only** (ids 44704, 44733, 44633, 44827, 44585)
 - `order_items.cogs_per_unit`: **updated for 23 canary order_items only** (by scoped FIFO)
 - All other `inventory_ledger` and `order_items` rows: untouched
+
+---
+
+## 2026-05-29 — Buy-list CSV import into batches (InventoryLab-style)
+
+Feature: from a batch (MFN or FBA), upload a buy-list CSV and bulk-add items in
+one go, alongside (never replacing) the one-by-one add flow. Mirrors
+InventoryLab's import: upload → map columns → validate → resolve existing
+inventory → commit.
+
+### Files changed (UNCOMMITTED — working tree only)
+- `src/lib/imports/airtable-buylist.ts` (NEW) — column-mapped parser. Reads
+  explicit ASIN/MSKU/Qty/Cost/List/Supplier/Date/Condition/Template columns
+  (NOT SKU-encoded like the InventoryLab parser). Reuses `splitCsv()` and the
+  Airtable header aliases. Auto-detects headers; caller can override per field.
+- `src/app/api/list/batches/[id]/import/preview/route.ts` (NEW) — read-only
+  parse + per-row existing-inventory flags (existsBySku/existsByAsin via
+  merchant_listings + inventory_ledger) + duplicate-in-file detection.
+- `src/app/api/list/batches/[id]/import/route.ts` (NEW) — bulk commit in ONE
+  transaction, channel-aware: MFN → inventory_ledger lots tagged batch_id (like
+  import-inventorylab); FBA → lot (no batch_id) + listing_batch_items linked via
+  inventory_ledger_id (like items/route.ts). Always creates a fresh lot per row
+  (buy-list = new purchase); per-row replenish/create-new only sets listing_mode
+  for FBA. FIFO recalc scoped per affected SKU. Batch must be draft.
+- `src/app/list/[id]/import/page.tsx` (NEW) — wizard UI (upload, editable column
+  mapping, server-validated preview, per-row skip + FBA replenish/new select).
+- `src/app/list/[id]/page.tsx` (EDIT) — added `FileUp` import + an "Import Buy
+  List" link in both the MFN header and FBA actions, gated on status==='draft'.
+  No other logic touched.
+
+### Verification run
+- `npx tsc --noEmit`: clean (0 errors).
+- Live-DB schema check: every column written exists on inventory_ledger /
+  listing_batch_items; merchant_listings has asin+sku; suppliers.name is UNIQUE
+  (so INSERT OR IGNORE is safe).
+- Runtime endpoint/UI test: NOT YET RUN — the running server is a prod
+  `next-server` build without these new routes; needs pm2 stop → npm run build →
+  pm2 start (deploy rule) before it can be exercised.
+
+### Risk notes
+- No SP-API writes. No schema changes. No migrations. Orders/labels untouched.
+- Commit endpoint requires batch.status==='draft'; rejects rows with errors and
+  duplicate MSKUs within the file before any write. All-or-nothing transaction.
+- Divergence from items/route.ts REPLENISH semantics is intentional and
+  documented in the route header (buy-list always records a new lot).
