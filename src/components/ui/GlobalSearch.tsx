@@ -39,9 +39,10 @@ function formatCents(cents?: number): string {
 
 interface Props {
   collapsed?: boolean;
+  onNavigate?: () => void;
 }
 
-export default function GlobalSearch({ collapsed = false }: Props) {
+export default function GlobalSearch({ collapsed = false, onNavigate }: Props) {
   const router = useRouter();
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<LookupResult[]>([]);
@@ -108,6 +109,7 @@ export default function GlobalSearch({ collapsed = false }: Props) {
     setOpen(false);
     setQuery('');
     setResults([]);
+    onNavigate?.();
     router.push(r.href);
   }
 
