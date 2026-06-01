@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Search, RefreshCw, Package, ExternalLink, ImageOff } from 'lucide-react';
+import { Search, RefreshCw, Package, ExternalLink, ImageOff, Copy, X } from 'lucide-react';
 import StatusBadge from '@/components/ui/StatusBadge';
 
 interface MfnOrderRow {
@@ -40,6 +40,43 @@ function amazonOrderUrl(orderId: string): string {
   return `https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(orderId)}`;
 }
 
+// Deep-link an MSKU to its listing in Seller Central inventory. (matches /analyze/merchant-inventory)
+function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
+  const value = (sku ?? '').trim();
+  return value
+    ? `https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${encodeURIComponent(value)}`
+    : null;
+}
+
+// Labeled identifier with copy button. When `href` is set, the value links out (new tab).
+function IdentifierChip({ label, value, href }: { label: string; value: string | null | undefined; href?: string | null }) {
+  if (!value) return null;
+  return (
+    <div className="flex items-center gap-1 min-w-0">
+      <span className="text-text-tertiary/60 uppercase tracking-wide shrink-0">{label}</span>
+      {href
+        ? <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            className="text-accent truncate hover:underline"
+            title={`Open ${label} in Seller Central: ${value}`}
+          >
+            {value}
+          </a>
+        : <span className="text-text-secondary truncate" title={value}>{value}</span>}
+      <button
+        onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(value); }}
+        title={`Copy ${label}: ${value}`}
+        className="shrink-0 text-text-tertiary/40 hover:text-text-tertiary transition-colors"
+      >
+        <Copy size={10} />
+      </button>
+    </div>
+  );
+}
+
 /** Operator-friendly age: "Today", "1 day", "5 days". */
 function ageLabel(dateStr: string): string {
   const then = new Date(dateStr);
@@ -64,6 +101,13 @@ export default function MfnOrdersPage() {
   const [status, setStatus] = useState<StatusFilter>('awaiting');
   const [search, setSearch] = useState('');
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
+  const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -198,14 +242,20 @@ export default function MfnOrdersPage() {
               >
                 {/* Order Details */}
                 <div className="flex min-w-0 items-center gap-3">
-                  <div className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-md border border-border-subtle bg-bg-elevated">
+                  <button
+                    type="button"
+                    onClick={() => o.imageUrl && setLightbox({ src: o.imageUrl, title: o.productName || o.asin || o.orderId, asin: o.asin, sku: o.sku })}
+                    disabled={!o.imageUrl}
+                    title={o.imageUrl ? 'View photo' : undefined}
+                    className={`grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-md border border-border-subtle bg-bg-elevated ${o.imageUrl ? 'cursor-zoom-in hover:border-accent/60' : ''}`}
+                  >
                     {o.imageUrl ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={o.imageUrl} alt="" className="h-full w-full object-contain" />
                     ) : (
                       <ImageOff size={16} className="text-text-tertiary" />
                     )}
-                  </div>
+                  </button>
                   <div className="min-w-0">
                     <a
                       href={amazonOrderUrl(o.orderId)}
@@ -219,9 +269,9 @@ export default function MfnOrdersPage() {
                     <div className="truncate text-sm text-text-primary" title={o.productName || ''}>
                       {o.productName || '—'}
                     </div>
-                    <div className="mt-0.5 flex items-center gap-2 text-xs text-text-tertiary">
-                      <span className="rounded bg-bg-elevated px-1.5 py-0.5 font-mono">{o.sku || o.asin || '—'}</span>
-                      {o.itemCount > 1 && <span>· {o.itemCount} items</span>}
+                    <div className="mt-0.5 flex items-center gap-2 text-xs font-mono text-text-tertiary">
+                      <IdentifierChip label="MSKU" value={o.sku || o.asin} href={sellerCentralSkuUrl(o.sku || o.asin)} />
+                      {o.itemCount > 1 && <span className="shrink-0">· {o.itemCount} items</span>}
                     </div>
                   </div>
                 </div>
@@ -250,6 +300,45 @@ export default function MfnOrdersPage() {
           )}
         </div>
       </div>
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <div
+            className="relative flex flex-col bg-white rounded-xl overflow-hidden shadow-2xl max-w-[92vw] max-h-[92vh]"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3 bg-bg-elevated border-b border-border-subtle px-5 py-3.5">
+              <div className="min-w-0">
+                <div className="text-text-primary text-base font-semibold leading-snug line-clamp-2">{lightbox.title}</div>
+                <div className="mt-1 flex gap-4 text-[11px] font-mono text-text-tertiary">
+                  {lightbox.asin && <span>ASIN {lightbox.asin}</span>}
+                  {lightbox.sku && (
+                    sellerCentralSkuUrl(lightbox.sku)
+                      ? <a href={sellerCentralSkuUrl(lightbox.sku)!} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" title={`Open MSKU in Seller Central: ${lightbox.sku}`}>MSKU {lightbox.sku}</a>
+                      : <span>MSKU {lightbox.sku}</span>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => setLightbox(null)}
+                className="ml-auto shrink-0 flex items-center justify-center w-9 h-9 rounded-full text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors"
+                title="Close (Esc)"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={lightbox.src.replace(/\._[A-Z0-9,]+_\.(jpg|jpeg|png)/i, '.$1')}
+              alt={lightbox.title}
+              className="h-[80vh] w-auto max-w-[92vw] object-contain bg-white"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
