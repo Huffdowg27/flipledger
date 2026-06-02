@@ -53,6 +53,8 @@ next-env.d.ts
 /PAGE_SPECS.md
 /AGENTS.md
 .claude/
+# reference screenshots — contain real order/cost data + 3rd-party (PSH) UI
+/docs/design-reference/
 
 # OS / editor
 *.swp
