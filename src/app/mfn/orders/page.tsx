@@ -16,6 +16,7 @@ interface MfnOrderRow {
   asin: string | null;
   productName: string | null;
   imageUrl: string | null;
+  bin: string | null;
 }
 
 interface Counts {
@@ -271,6 +272,7 @@ export default function MfnOrdersPage() {
                     </div>
                     <div className="mt-0.5 flex items-center gap-2 text-xs font-mono text-text-tertiary">
                       <IdentifierChip label="MSKU" value={o.sku || o.asin} href={sellerCentralSkuUrl(o.sku || o.asin)} />
+                      {o.bin && <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent">Bin {o.bin}</span>}
                       {o.itemCount > 1 && <span className="shrink-0">· {o.itemCount} items</span>}
                     </div>
                   </div>

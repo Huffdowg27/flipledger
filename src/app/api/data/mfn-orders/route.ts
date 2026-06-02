@@ -56,7 +56,11 @@ export async function GET(request: NextRequest) {
         pi.sku          AS sku,
         pi.asin         AS asin,
         pi.productName  AS productName,
-        pi.imageUrl     AS imageUrl
+        pi.imageUrl     AS imageUrl,
+        (SELECT il.bin_location FROM inventory_ledger il
+          WHERE il.sku = pi.sku AND il.bin_location IS NOT NULL AND il.bin_location != ''
+          ORDER BY il.quantity_remaining DESC
+          LIMIT 1) AS bin
       FROM orders o
       LEFT JOIN (
         SELECT
