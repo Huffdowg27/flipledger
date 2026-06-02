@@ -179,7 +179,7 @@ export default function Sidebar() {
       {/* Narrow rail */}
       <aside
         className={`
-          fixed top-0 left-0 z-50 h-screen w-20 bg-bg-surface border-r border-border-subtle
+          fixed top-0 left-0 z-50 h-screen w-20 bg-[#0b1220] border-r border-border-subtle
           flex flex-col items-center transition-transform duration-200 ease-in-out
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
           lg:translate-x-0 lg:relative lg:z-40
@@ -202,7 +202,7 @@ export default function Sidebar() {
             onClick={() => { setOpen(null); setSearchOpen((v) => !v); }}
             title="Search (⌘K)"
             className={`flex w-16 flex-col items-center gap-1.5 rounded-lg py-3 text-[11px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-surface ${
-              searchOpen ? 'bg-accent/15 text-accent' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+              searchOpen ? 'bg-accent/15 text-accent' : 'text-slate-300 hover:bg-bg-hover hover:text-white'
             }`}
           >
             <Search size={26} />
@@ -223,7 +223,7 @@ export default function Sidebar() {
             const tileClass = `relative flex w-16 flex-col items-center gap-1.5 rounded-lg py-3 text-[11px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-surface ${
               active
                 ? 'bg-accent/15 text-accent'
-                : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+                : 'text-slate-300 hover:bg-bg-hover hover:text-white'
             }`;
 
             return (
@@ -249,7 +249,7 @@ export default function Sidebar() {
                     {section.icon}
                     <span className="leading-none">{section.label}</span>
                     {section.attention && (
-                      <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-bg-surface" title="Items need attention" />
+                      <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-[#0b1220]" title="Items need attention" />
                     )}
                   </Link>
                 ) : (
@@ -264,7 +264,7 @@ export default function Sidebar() {
                     {section.icon}
                     <span className="leading-none">{section.label}</span>
                     {section.attention && (
-                      <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-bg-surface" title="Items need attention" />
+                      <span className="absolute right-2 top-1.5 h-2 w-2 rounded-full bg-warning ring-2 ring-[#0b1220]" title="Items need attention" />
                     )}
                   </button>
                 )}
