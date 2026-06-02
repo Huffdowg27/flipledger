@@ -115,7 +115,7 @@ function ProductCell({ row, onImage }: { row: { asin: string | null; sku: string
 
 interface Sub { label: string; value: string; tone: SubTone }
 function RichStatCard({ label, count, icon, tone, subs, onClick, active }: {
-  label: string; count: string; icon: React.ReactNode; tone: Tone; subs: [Sub, Sub]; onClick?: () => void; active?: boolean;
+  label: string; count: string; icon: React.ReactNode; tone: Tone; subs: Sub[]; onClick?: () => void; active?: boolean;
 }) {
   const t = CARD_TONE[tone];
   return (
@@ -129,7 +129,7 @@ function RichStatCard({ label, count, icon, tone, subs, onClick, active }: {
         <span className={`grid h-8 w-8 place-items-center rounded-full ${t.iconBg} ${t.value}`}>{icon}</span>
       </div>
       <div className="mt-1 font-mono text-2xl font-bold text-text-primary">{count}</div>
-      <div className="mt-3 grid grid-cols-2 gap-2">
+      <div className={`mt-3 grid gap-2 ${subs.length >= 3 ? 'grid-cols-3' : 'grid-cols-2'}`}>
         {subs.map((s) => (
           <div key={s.label} className={`rounded-md border px-2 py-1.5 ${SUB_TONE[s.tone]}`}>
             <div className="text-[10px] font-medium uppercase tracking-wide opacity-80">{s.label}</div>
@@ -146,8 +146,9 @@ export default function InventoryHubPage() {
   const [rows, setRows] = useState<InvRow[]>([]);
   const [merchantRows, setMerchantRows] = useState<MerchantRow[]>([]);
   const [stats, setStats] = useState<Stats>({ fba: EMPTY_CHANNEL, wfs: EMPTY_CHANNEL, totalUnits: 0, totalReserved: 0 });
-  const [merchantCount, setMerchantCount] = useState<number | null>(null);
-  const [merchantListed, setMerchantListed] = useState(0);
+  const [merchantActiveListings, setMerchantActiveListings] = useState(0);
+  const [merchantActiveUnits, setMerchantActiveUnits] = useState(0);
+  const [merchantOos, setMerchantOos] = useState(0);
   const [merchantLocal, setMerchantLocal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -197,9 +198,12 @@ export default function InventoryHubPage() {
     fetch('/api/data/merchant-inventory')
       .then((r) => r.json())
       .then((d) => {
-        const listed = (d.listed || []).length;
-        const local = (d.localOnly || []).length;
-        setMerchantListed(listed); setMerchantLocal(local); setMerchantCount(listed + local);
+        const listed = d.listed || [];
+        const active = listed.filter((r: any) => r.live_state === 'active');
+        setMerchantActiveListings(active.length);
+        setMerchantActiveUnits(active.reduce((s: number, r: any) => s + (Number(r.amazon_qty) || 0), 0));
+        setMerchantOos(listed.filter((r: any) => r.live_state === 'oos').length);
+        setMerchantLocal((d.localOnly || []).length);
       })
       .catch(() => {});
   }, []);
@@ -254,10 +258,11 @@ export default function InventoryHubPage() {
           ]}
         />
         <RichStatCard
-          label="Merchant" tone="positive" icon={<Truck size={16} />} count={merchantCount != null ? merchantCount.toLocaleString() : '—'}
+          label="Merchant · Active" tone="positive" icon={<Truck size={16} />} count={merchantActiveListings.toLocaleString()}
           onClick={() => setChannel('merchant')} active={channel === 'merchant'}
           subs={[
-            { label: 'Listed', value: merchantListed.toLocaleString(), tone: 'positive' },
+            { label: 'Units', value: merchantActiveUnits.toLocaleString(), tone: 'positive' },
+            { label: 'OOS', value: merchantOos.toLocaleString(), tone: 'warning' },
             { label: 'Local', value: merchantLocal.toLocaleString(), tone: 'neutral' },
           ]}
         />
