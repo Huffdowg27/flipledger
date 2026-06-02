@@ -267,7 +267,7 @@ export async function GET(request: NextRequest) {
   }
 
   const firstSize  = specs[0]?.size || '2x1';
-  const pageSize   = firstSize === '4x6' ? '6in 4in' : '2in 1in';
+  const is4x6      = firstSize === '4x6';
   const labelCount = specs.length;
 
   const labelsHtml = specs.map(spec => {
@@ -307,9 +307,11 @@ body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 .labels-wrap{padding:24px;display:flex;flex-wrap:wrap;gap:16px;}
 .label{background:white;overflow:hidden;border:1px dashed #9ca3af;display:flex;flex-direction:column;}
 .label-2x1{width:2in;height:1in;padding:5px 6px;}
-.label-4x6{width:6in;height:4in;padding:10px 12px;}
+.label-4x6{padding:10px 12px;}
+.btn-orient{padding:7px 12px;background:white;color:#374151;border:none;font-size:13px;cursor:pointer;}
+.btn-orient.active{background:#eff6ff;color:#1d4ed8;font-weight:600;}
 @media print{
-  @page{size:${pageSize};margin:0;}
+  ${is4x6 ? '' : '@page{size:2in 1in;margin:0;}'}
   body{background:white;}
   .toolbar{display:none;}
   .labels-wrap{padding:0;display:block;}
@@ -322,11 +324,21 @@ body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 <div class="toolbar">
   <button class="btn-print" onclick="window.print()">Print</button>
   <button class="btn-close" onclick="window.close()">Close</button>
+  ${is4x6 ? `<span style="display:inline-flex;border:1px solid #d1d5db;border-radius:6px;overflow:hidden;margin-left:4px;">
+    <button id="o-portrait" class="btn-orient" onclick="setOrient('portrait')">Portrait</button>
+    <button id="o-landscape" class="btn-orient" onclick="setOrient('landscape')">Landscape</button>
+  </span>` : ''}
   <span class="toolbar-info">${labelCount} label${labelCount !== 1 ? 's' : ''} &middot; ${firstSize}</span>
 </div>
 <div class="labels-wrap">
 ${labelsHtml}
 </div>
+${is4x6 ? `<style id="orient"></style>
+<script>
+  var ORIENT={portrait:'.label-4x6{width:4in;height:6in;} @media print{@page{size:4in 6in;margin:0;}}',landscape:'.label-4x6{width:6in;height:4in;} @media print{@page{size:6in 4in;margin:0;}}'};
+  function setOrient(m){document.getElementById('orient').textContent=ORIENT[m];var p=document.getElementById('o-portrait'),l=document.getElementById('o-landscape');p.classList.toggle('active',m==='portrait');l.classList.toggle('active',m==='landscape');}
+  setOrient('landscape');
+</script>` : ''}
 </body>
 </html>`;
 
