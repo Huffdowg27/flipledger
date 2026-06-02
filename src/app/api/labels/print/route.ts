@@ -267,7 +267,7 @@ export async function GET(request: NextRequest) {
   }
 
   const firstSize  = specs[0]?.size || '2x1';
-  const pageSize   = firstSize === '4x6' ? '4in 6in' : '2in 1in';
+  const pageSize   = firstSize === '4x6' ? '6in 4in' : '2in 1in';
   const labelCount = specs.length;
 
   const labelsHtml = specs.map(spec => {
@@ -307,7 +307,7 @@ body{margin:0;padding:0;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
 .labels-wrap{padding:24px;display:flex;flex-wrap:wrap;gap:16px;}
 .label{background:white;overflow:hidden;border:1px dashed #9ca3af;display:flex;flex-direction:column;}
 .label-2x1{width:2in;height:1in;padding:5px 6px;}
-.label-4x6{width:4in;height:6in;padding:10px 12px;}
+.label-4x6{width:6in;height:4in;padding:10px 12px;}
 @media print{
   @page{size:${pageSize};margin:0;}
   body{background:white;}
