@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Search, RefreshCw, Boxes, ImageOff, Copy, X, ArrowRight, Package } from 'lucide-react';
+import { Search, RefreshCw, Boxes, ImageOff, Copy, X, Package, Truck, Store, BarChart3 } from 'lucide-react';
 
 interface InvRow {
   asin: string | null;
@@ -27,19 +27,39 @@ interface MerchantRow {
   status: string | null;
 }
 
+interface ChannelStat { skus: number; units: number; inbound: number; reserved: number; unfulfillable: number }
 interface Stats {
-  fba: { skus: number; units: number; inbound: number };
-  wfs: { skus: number; units: number; inbound: number };
+  fba: ChannelStat;
+  wfs: ChannelStat;
   totalUnits: number;
+  totalReserved: number;
 }
+
+const EMPTY_CHANNEL: ChannelStat = { skus: 0, units: 0, inbound: 0, reserved: 0, unfulfillable: 0 };
 
 type Channel = 'amazon' | 'walmart' | 'merchant';
 
-const TABS: { value: Channel; label: string }[] = [
-  { value: 'amazon', label: 'FBA' },
-  { value: 'walmart', label: 'WFS' },
-  { value: 'merchant', label: 'Merchant' },
+const CHANNEL_TABS: { value: Channel; label: string; icon: React.ReactNode }[] = [
+  { value: 'amazon', label: 'FBA', icon: <Package size={16} /> },
+  { value: 'walmart', label: 'WFS', icon: <Store size={16} /> },
+  { value: 'merchant', label: 'Merchant', icon: <Truck size={16} /> },
 ];
+
+type Tone = 'accent' | 'amazon' | 'walmart' | 'positive';
+const CARD_TONE: Record<Tone, { card: string; value: string; iconBg: string }> = {
+  accent:   { card: 'border-accent/30 bg-accent/5',     value: 'text-accent',   iconBg: 'bg-accent/15' },
+  amazon:   { card: 'border-amazon/30 bg-amazon/5',     value: 'text-amazon',   iconBg: 'bg-amazon/15' },
+  walmart:  { card: 'border-walmart/30 bg-walmart/5',   value: 'text-walmart',  iconBg: 'bg-walmart/15' },
+  positive: { card: 'border-positive/30 bg-positive/5', value: 'text-positive', iconBg: 'bg-positive/15' },
+};
+
+type SubTone = 'positive' | 'warning' | 'accent' | 'neutral';
+const SUB_TONE: Record<SubTone, string> = {
+  positive: 'border-positive/25 bg-positive/10 text-positive',
+  warning:  'border-warning/25 bg-warning/10 text-warning',
+  accent:   'border-accent/25 bg-accent/10 text-accent',
+  neutral:  'border-border-subtle bg-bg-elevated text-text-secondary',
+};
 
 function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
   const v = (sku ?? '').trim();
@@ -61,30 +81,6 @@ function IdentifierChip({ label, value, href }: { label: string; value: string |
   );
 }
 
-type CardTone = 'neutral' | 'accent' | 'amazon' | 'walmart' | 'positive';
-const CARD_TONE: Record<CardTone, { card: string; value: string }> = {
-  neutral:  { card: 'border-border-default bg-bg-surface', value: 'text-text-primary' },
-  accent:   { card: 'border-accent/30 bg-accent/5',        value: 'text-accent' },
-  amazon:   { card: 'border-amazon/30 bg-amazon/5',        value: 'text-amazon' },
-  walmart:  { card: 'border-walmart/30 bg-walmart/5',      value: 'text-walmart' },
-  positive: { card: 'border-positive/30 bg-positive/5',    value: 'text-positive' },
-};
-
-function StatCard({ label, value, sub, tone = 'neutral', onClick }: { label: string; value: string; sub?: string; tone?: CardTone; onClick?: () => void }) {
-  const t = CARD_TONE[tone];
-  const inner = (
-    <>
-      <div className="text-xs font-medium uppercase tracking-wide text-text-tertiary">{label}</div>
-      <div className={`mt-1 font-mono text-2xl font-bold ${t.value}`}>{value}</div>
-      {sub && <div className="mt-0.5 text-xs text-text-tertiary">{sub}</div>}
-    </>
-  );
-  const cls = `rounded-lg border p-4 ${t.card}`;
-  return onClick
-    ? <button onClick={onClick} className={`${cls} w-full text-left transition hover:brightness-110`}>{inner}</button>
-    : <div className={cls}>{inner}</div>;
-}
-
 function MerchantStatusBadge({ status }: { status: string | null }) {
   if (!status) return <span className="text-text-tertiary text-xs">—</span>;
   const tone = status === 'active'
@@ -95,7 +91,6 @@ function MerchantStatusBadge({ status }: { status: string | null }) {
   return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize ${tone}`}>{status}</span>;
 }
 
-/** Product cell shared by all tabs: white image card (lightbox), title (Amazon link), ASIN/MSKU chips. */
 function ProductCell({ row, onImage }: { row: { asin: string | null; sku: string | null; productName: string | null; imageUrl: string | null }; onImage: () => void }) {
   return (
     <div className="flex items-start gap-3">
@@ -118,18 +113,47 @@ function ProductCell({ row, onImage }: { row: { asin: string | null; sku: string
   );
 }
 
+interface Sub { label: string; value: string; tone: SubTone }
+function RichStatCard({ label, count, icon, tone, subs, onClick, active }: {
+  label: string; count: string; icon: React.ReactNode; tone: Tone; subs: [Sub, Sub]; onClick?: () => void; active?: boolean;
+}) {
+  const t = CARD_TONE[tone];
+  return (
+    <button
+      onClick={onClick}
+      disabled={!onClick}
+      className={`rounded-lg border p-4 text-left ${t.card} ${onClick ? 'transition hover:brightness-110' : 'cursor-default'} ${active ? 'ring-1 ring-inset ring-accent' : ''}`}
+    >
+      <div className="flex items-start justify-between">
+        <div className={`text-xs font-semibold uppercase tracking-wide ${t.value}`}>{label}</div>
+        <span className={`grid h-8 w-8 place-items-center rounded-full ${t.iconBg} ${t.value}`}>{icon}</span>
+      </div>
+      <div className="mt-1 font-mono text-2xl font-bold text-text-primary">{count}</div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        {subs.map((s) => (
+          <div key={s.label} className={`rounded-md border px-2 py-1.5 ${SUB_TONE[s.tone]}`}>
+            <div className="text-[10px] font-medium uppercase tracking-wide opacity-80">{s.label}</div>
+            <div className="font-mono text-sm font-bold">{s.value}</div>
+          </div>
+        ))}
+      </div>
+    </button>
+  );
+}
+
 export default function InventoryHubPage() {
   const [channel, setChannel] = useState<Channel>('amazon');
   const [rows, setRows] = useState<InvRow[]>([]);
   const [merchantRows, setMerchantRows] = useState<MerchantRow[]>([]);
-  const [stats, setStats] = useState<Stats>({ fba: { skus: 0, units: 0, inbound: 0 }, wfs: { skus: 0, units: 0, inbound: 0 }, totalUnits: 0 });
+  const [stats, setStats] = useState<Stats>({ fba: EMPTY_CHANNEL, wfs: EMPTY_CHANNEL, totalUnits: 0, totalReserved: 0 });
   const [merchantCount, setMerchantCount] = useState<number | null>(null);
+  const [merchantListed, setMerchantListed] = useState(0);
+  const [merchantLocal, setMerchantLocal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
 
   const isMerchant = channel === 'merchant';
-  const colCount = 5;
 
   async function load() {
     setLoading(true);
@@ -150,7 +174,6 @@ export default function InventoryHubPage() {
         }));
         const filtered = q ? mapped.filter((m) => `${m.sku ?? ''} ${m.asin ?? ''} ${m.productName ?? ''}`.toLowerCase().includes(q)) : mapped;
         setMerchantRows(filtered);
-        setMerchantCount(mapped.length);
       } else {
         const res = await fetch(`/api/data/fba-inventory?channel=${channel}&q=${encodeURIComponent(search)}`);
         const data = await res.json();
@@ -169,52 +192,87 @@ export default function InventoryHubPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  // Merchant lot count for the stat strip — fetched once so the big card shows a number on any tab.
+  // Merchant counts for the stat strip — fetched once so the card shows on any tab.
   useEffect(() => {
     fetch('/api/data/merchant-inventory')
       .then((r) => r.json())
-      .then((d) => setMerchantCount(((d.listed || []).length) + ((d.localOnly || []).length)))
+      .then((d) => {
+        const listed = (d.listed || []).length;
+        const local = (d.localOnly || []).length;
+        setMerchantListed(listed); setMerchantLocal(local); setMerchantCount(listed + local);
+      })
       .catch(() => {});
   }, []);
 
   const empty = isMerchant ? merchantRows.length === 0 : rows.length === 0;
+  const totalOnHand = stats.totalUnits + stats.totalReserved;
 
   return (
     <div className="flex h-full flex-col">
-      <div className="mb-4 flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-text-primary">Inventory</h1>
-          <p className="text-sm text-text-tertiary">Live stock across fulfillment channels</p>
+      <div className="mb-3 flex items-center justify-between">
+        <h1 className="text-lg font-semibold text-text-primary">Inventory</h1>
+        <div className="flex items-center gap-2">
+          <Link href="/analyze/inventory-valuation" className="flex items-center gap-1.5 rounded-md border border-border-default bg-bg-surface px-3 py-1.5 text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary">
+            <BarChart3 size={14} /> Valuation
+          </Link>
+          <button onClick={load} className="flex items-center gap-2 rounded-md border border-border-default bg-bg-surface px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-elevated">
+            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
+          </button>
         </div>
-        <button onClick={load} className="flex items-center gap-2 rounded-md border border-border-default bg-bg-surface px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-elevated">
-          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Refresh
-        </button>
       </div>
 
-      {/* Stat strip */}
-      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Total Units" value={stats.totalUnits.toLocaleString()} sub="FBA + WFS fulfillable" tone="accent" />
-        <StatCard label="FBA" value={stats.fba.units.toLocaleString()} sub={`${stats.fba.skus.toLocaleString()} SKUs · ${stats.fba.inbound} inbound`} tone="amazon" />
-        <StatCard label="Merchant" value={merchantCount != null ? merchantCount.toLocaleString() : '—'} sub="lots" tone="positive" onClick={() => setChannel('merchant')} />
-        <div className="flex flex-col gap-2">
-          <button onClick={() => setChannel('walmart')} className="flex items-center justify-between rounded-lg border border-walmart/30 bg-walmart/5 px-4 py-2.5 text-sm font-medium text-walmart hover:border-walmart/50">
-            <span>WFS · {stats.wfs.units.toLocaleString()}</span> <ArrowRight size={14} />
+      {/* Channel tab bar */}
+      <div className="mb-4 flex gap-1 border-b border-border-subtle">
+        {CHANNEL_TABS.map((tab) => (
+          <button
+            key={tab.value}
+            onClick={() => setChannel(tab.value)}
+            className={`-mb-px flex items-center gap-2 border-b-2 px-4 py-2.5 text-sm font-medium transition-colors ${
+              channel === tab.value ? 'border-accent text-text-primary' : 'border-transparent text-text-tertiary hover:text-text-secondary'
+            }`}
+          >
+            {tab.icon} {tab.label}
           </button>
-          <Link href="/analyze/inventory-valuation" className="flex items-center justify-between rounded-lg border border-border-default bg-bg-surface px-4 py-2.5 text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary">
-            Inventory Valuation <ArrowRight size={14} />
-          </Link>
-        </div>
+        ))}
+      </div>
+
+      {/* Rich stat cards */}
+      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <RichStatCard
+          label="Total" tone="accent" icon={<Boxes size={16} />} count={totalOnHand.toLocaleString()}
+          subs={[
+            { label: 'Available', value: stats.totalUnits.toLocaleString(), tone: 'positive' },
+            { label: 'Reserved', value: stats.totalReserved.toLocaleString(), tone: 'warning' },
+          ]}
+        />
+        <RichStatCard
+          label="FBA" tone="amazon" icon={<Package size={16} />} count={stats.fba.units.toLocaleString()}
+          onClick={() => setChannel('amazon')} active={channel === 'amazon'}
+          subs={[
+            { label: 'Reserved', value: stats.fba.reserved.toLocaleString(), tone: 'warning' },
+            { label: 'Inbound', value: stats.fba.inbound.toLocaleString(), tone: 'accent' },
+          ]}
+        />
+        <RichStatCard
+          label="Merchant" tone="positive" icon={<Truck size={16} />} count={merchantCount != null ? merchantCount.toLocaleString() : '—'}
+          onClick={() => setChannel('merchant')} active={channel === 'merchant'}
+          subs={[
+            { label: 'Listed', value: merchantListed.toLocaleString(), tone: 'positive' },
+            { label: 'Local', value: merchantLocal.toLocaleString(), tone: 'neutral' },
+          ]}
+        />
+        <RichStatCard
+          label="WFS" tone="walmart" icon={<Store size={16} />} count={stats.wfs.units.toLocaleString()}
+          onClick={() => setChannel('walmart')} active={channel === 'walmart'}
+          subs={[
+            { label: 'Reserved', value: stats.wfs.reserved.toLocaleString(), tone: 'warning' },
+            { label: 'Inbound', value: stats.wfs.inbound.toLocaleString(), tone: 'accent' },
+          ]}
+        />
       </div>
 
       {/* Toolbar */}
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div className="flex rounded-md border border-border-default bg-bg-surface p-0.5">
-          {TABS.map((t) => (
-            <button key={t.value} onClick={() => setChannel(t.value)} className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${channel === t.value ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary'}`}>
-              {t.label}
-            </button>
-          ))}
-        </div>
         <div className="relative flex-1 min-w-[220px]">
           <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
           <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search product, SKU, or ASIN…" className="h-9 w-full rounded-md border border-border-default bg-bg-input pl-9 pr-3 text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25" />
@@ -245,9 +303,9 @@ export default function InventoryHubPage() {
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={colCount} className="py-16 text-center text-sm text-text-tertiary">Loading inventory…</td></tr>
+              <tr><td colSpan={5} className="py-16 text-center text-sm text-text-tertiary">Loading inventory…</td></tr>
             ) : empty ? (
-              <tr><td colSpan={colCount} className="py-16 text-center">
+              <tr><td colSpan={5} className="py-16 text-center">
                 <div className="flex flex-col items-center text-text-tertiary">
                   <Boxes size={28} className="mb-2 opacity-50" />
                   <span className="text-sm">{channel === 'walmart' ? 'No WFS inventory synced yet.' : isMerchant ? 'No merchant inventory matches this view.' : 'No inventory matches this view.'}</span>

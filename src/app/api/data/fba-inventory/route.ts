@@ -56,23 +56,26 @@ export async function GET(request: NextRequest) {
     const byChannel = db.prepare(`
       SELECT marketplace,
         COUNT(*) AS skus,
-        COALESCE(SUM(fulfillable_qty), 0) AS fulfillable,
-        COALESCE(SUM(inbound_qty), 0)     AS inbound
+        COALESCE(SUM(fulfillable_qty), 0)   AS fulfillable,
+        COALESCE(SUM(inbound_qty), 0)       AS inbound,
+        COALESCE(SUM(reserved_qty), 0)      AS reserved,
+        COALESCE(SUM(unfulfillable_qty), 0) AS unfulfillable
       FROM live_inventory
       WHERE ${HAS_STOCK}
       GROUP BY marketplace
-    `).all() as { marketplace: string; skus: number; fulfillable: number; inbound: number }[];
+    `).all() as { marketplace: string; skus: number; fulfillable: number; inbound: number; reserved: number; unfulfillable: number }[];
 
-    const pick = (mp: string) => byChannel.find((r) => r.marketplace === mp) || { skus: 0, fulfillable: 0, inbound: 0 };
+    const pick = (mp: string) => byChannel.find((r) => r.marketplace === mp) || { skus: 0, fulfillable: 0, inbound: 0, reserved: 0, unfulfillable: 0 };
     const fba = pick('amazon');
     const wfs = pick('walmart');
 
     return NextResponse.json({
       rows,
       stats: {
-        fba: { skus: fba.skus, units: fba.fulfillable, inbound: fba.inbound },
-        wfs: { skus: wfs.skus, units: wfs.fulfillable, inbound: wfs.inbound },
+        fba: { skus: fba.skus, units: fba.fulfillable, inbound: fba.inbound, reserved: fba.reserved, unfulfillable: fba.unfulfillable },
+        wfs: { skus: wfs.skus, units: wfs.fulfillable, inbound: wfs.inbound, reserved: wfs.reserved, unfulfillable: wfs.unfulfillable },
         totalUnits: fba.fulfillable + wfs.fulfillable,
+        totalReserved: fba.reserved + wfs.reserved,
       },
     });
   } catch (err) {
