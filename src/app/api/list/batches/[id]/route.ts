@@ -85,7 +85,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         created_at as createdAt
       FROM listing_batch_items
       WHERE batch_id = ?
-      ORDER BY created_at ASC
+      ORDER BY created_at DESC, id DESC
     `).all(batchId);
 
     // Phase 3: include boxes + box-item assignments if any exist
