@@ -70,15 +70,19 @@ const CARD_TONE: Record<CardTone, { card: string; value: string }> = {
   positive: { card: 'border-positive/30 bg-positive/5',    value: 'text-positive' },
 };
 
-function StatCard({ label, value, sub, tone = 'neutral' }: { label: string; value: string; sub?: string; tone?: CardTone }) {
+function StatCard({ label, value, sub, tone = 'neutral', onClick }: { label: string; value: string; sub?: string; tone?: CardTone; onClick?: () => void }) {
   const t = CARD_TONE[tone];
-  return (
-    <div className={`rounded-lg border p-4 ${t.card}`}>
+  const inner = (
+    <>
       <div className="text-xs font-medium uppercase tracking-wide text-text-tertiary">{label}</div>
       <div className={`mt-1 font-mono text-2xl font-bold ${t.value}`}>{value}</div>
       {sub && <div className="mt-0.5 text-xs text-text-tertiary">{sub}</div>}
-    </div>
+    </>
   );
+  const cls = `rounded-lg border p-4 ${t.card}`;
+  return onClick
+    ? <button onClick={onClick} className={`${cls} w-full text-left transition hover:brightness-110`}>{inner}</button>
+    : <div className={cls}>{inner}</div>;
 }
 
 function MerchantStatusBadge({ status }: { status: string | null }) {
@@ -165,6 +169,13 @@ export default function InventoryHubPage() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+  // Merchant lot count for the stat strip — fetched once so the big card shows a number on any tab.
+  useEffect(() => {
+    fetch('/api/data/merchant-inventory')
+      .then((r) => r.json())
+      .then((d) => setMerchantCount(((d.listed || []).length) + ((d.localOnly || []).length)))
+      .catch(() => {});
+  }, []);
 
   const empty = isMerchant ? merchantRows.length === 0 : rows.length === 0;
 
@@ -184,10 +195,10 @@ export default function InventoryHubPage() {
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Total Units" value={stats.totalUnits.toLocaleString()} sub="FBA + WFS fulfillable" tone="accent" />
         <StatCard label="FBA" value={stats.fba.units.toLocaleString()} sub={`${stats.fba.skus.toLocaleString()} SKUs · ${stats.fba.inbound} inbound`} tone="amazon" />
-        <StatCard label="WFS" value={stats.wfs.units.toLocaleString()} sub={`${stats.wfs.skus.toLocaleString()} SKUs · ${stats.wfs.inbound} inbound`} tone="walmart" />
+        <StatCard label="Merchant" value={merchantCount != null ? merchantCount.toLocaleString() : '—'} sub="lots" tone="positive" onClick={() => setChannel('merchant')} />
         <div className="flex flex-col gap-2">
-          <button onClick={() => setChannel('merchant')} className="flex items-center justify-between rounded-lg border border-positive/30 bg-positive/5 px-4 py-2.5 text-sm font-medium text-positive hover:border-positive/50">
-            <span>Merchant{merchantCount != null ? ` · ${merchantCount}` : ''}</span> <ArrowRight size={14} />
+          <button onClick={() => setChannel('walmart')} className="flex items-center justify-between rounded-lg border border-walmart/30 bg-walmart/5 px-4 py-2.5 text-sm font-medium text-walmart hover:border-walmart/50">
+            <span>WFS · {stats.wfs.units.toLocaleString()}</span> <ArrowRight size={14} />
           </button>
           <Link href="/analyze/inventory-valuation" className="flex items-center justify-between rounded-lg border border-border-default bg-bg-surface px-4 py-2.5 text-sm text-text-secondary hover:border-accent/50 hover:text-text-primary">
             Inventory Valuation <ArrowRight size={14} />
