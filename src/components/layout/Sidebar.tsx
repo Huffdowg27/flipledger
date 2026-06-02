@@ -34,9 +34,9 @@ interface NavSection {
 // Consolidated, workflow-oriented nav. Each top section opens a flyout of its
 // pages (Phase 1). Phase 2 will replace flyouts with PSH-style landing hubs.
 const NAV: NavSection[] = [
-  { key: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={21} />, href: '/' },
+  { key: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={26} />, href: '/' },
   {
-    key: 'inventory', label: 'Inventory', icon: <Warehouse size={21} />, href: '/inventory',
+    key: 'inventory', label: 'Inventory', icon: <Warehouse size={26} />, href: '/inventory',
     items: [
       { label: 'Products & COGS', href: '/products' },
       { label: 'Merchant Inventory', href: '/analyze/merchant-inventory' },
@@ -46,7 +46,7 @@ const NAV: NavSection[] = [
     ],
   },
   {
-    key: 'shipments', label: 'Shipments', icon: <Truck size={21} />,
+    key: 'shipments', label: 'Shipments', icon: <Truck size={26} />,
     items: [
       { label: 'Batches', href: '/list' },
       { label: 'MFN Orders', href: '/mfn/orders' },
@@ -55,14 +55,14 @@ const NAV: NavSection[] = [
     ],
   },
   {
-    key: 'returns', label: 'Returns', icon: <Undo2 size={21} />,
+    key: 'returns', label: 'Returns', icon: <Undo2 size={26} />,
     items: [
       { label: 'Refunds', href: '/bookkeep/refunds' },
       { label: 'Removals', href: '/analyze/removals' },
     ],
   },
   {
-    key: 'problems', label: 'Problems', icon: <CircleAlert size={21} />, attention: true,
+    key: 'problems', label: 'Problems', icon: <CircleAlert size={26} />, attention: true,
     items: [
       { label: 'Claims to File', href: '/bookkeep/claims-to-file' },
       { label: 'Reimbursements', href: '/bookkeep/reimbursements' },
@@ -72,7 +72,7 @@ const NAV: NavSection[] = [
     ],
   },
   {
-    key: 'reports', label: 'Reports', icon: <BarChart3 size={21} />,
+    key: 'reports', label: 'Reports', icon: <BarChart3 size={26} />,
     items: [
       { label: 'Profit & Loss', href: '/analyze/profitloss' },
       { label: 'FBA Sales', href: '/bookkeep/fba-sales' },
@@ -88,7 +88,7 @@ const NAV: NavSection[] = [
     ],
   },
   {
-    key: 'tools', label: 'Tools', icon: <Wrench size={21} />,
+    key: 'tools', label: 'Tools', icon: <Wrench size={26} />,
     items: [
       { label: 'Sync', href: '/sync' },
       { label: 'Settings', href: '/settings' },
@@ -182,7 +182,7 @@ export default function Sidebar() {
           fixed top-0 left-0 z-50 h-screen w-20 bg-bg-surface border-r border-border-subtle
           flex flex-col items-center transition-transform duration-200 ease-in-out
           ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}
-          lg:translate-x-0 lg:relative lg:z-auto
+          lg:translate-x-0 lg:relative lg:z-40
         `}
       >
         {/* Logo mark */}
@@ -201,11 +201,11 @@ export default function Sidebar() {
             type="button"
             onClick={() => { setOpen(null); setSearchOpen((v) => !v); }}
             title="Search (⌘K)"
-            className={`flex w-16 flex-col items-center gap-1 rounded-lg py-2.5 text-[10px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-surface ${
+            className={`flex w-16 flex-col items-center gap-1.5 rounded-lg py-3 text-[11px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-surface ${
               searchOpen ? 'bg-accent/15 text-accent' : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
             }`}
           >
-            <Search size={21} />
+            <Search size={26} />
             <span className="leading-none">Search</span>
           </button>
           {searchOpen && (
@@ -220,7 +220,7 @@ export default function Sidebar() {
           {NAV.map((section) => {
             const active = isSectionActive(section, pathname);
             const hasItems = !!section.items?.length;
-            const tileClass = `relative flex w-16 flex-col items-center gap-1 rounded-lg py-2.5 text-[10px] font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-surface ${
+            const tileClass = `relative flex w-16 flex-col items-center gap-1.5 rounded-lg py-3 text-[11px] font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-1 focus-visible:ring-offset-bg-surface ${
               active
                 ? 'bg-accent/15 text-accent'
                 : 'text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
