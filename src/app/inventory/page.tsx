@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Search, RefreshCw, Boxes, ImageOff, Copy, X, ArrowRight } from 'lucide-react';
+import { Search, RefreshCw, Boxes, ImageOff, Copy, X, ArrowRight, Package } from 'lucide-react';
 
 interface InvRow {
   asin: string | null;
@@ -17,12 +17,6 @@ interface InvRow {
   listPrice: number | null;
 }
 
-interface Stats {
-  fba: { skus: number; units: number; inbound: number };
-  wfs: { skus: number; units: number; inbound: number };
-  totalUnits: number;
-}
-
 interface MerchantRow {
   sku: string | null;
   asin: string | null;
@@ -31,6 +25,12 @@ interface MerchantRow {
   qty: number;
   costCents: number | null;
   status: string | null;
+}
+
+interface Stats {
+  fba: { skus: number; units: number; inbound: number };
+  wfs: { skus: number; units: number; inbound: number };
+  totalUnits: number;
 }
 
 type Channel = 'amazon' | 'walmart' | 'merchant';
@@ -71,6 +71,39 @@ function StatCard({ label, value, sub }: { label: string; value: string; sub?: s
   );
 }
 
+function MerchantStatusBadge({ status }: { status: string | null }) {
+  if (!status) return <span className="text-text-tertiary text-xs">—</span>;
+  const tone = status === 'active'
+    ? 'bg-positive/10 text-positive border-positive/30'
+    : status === 'oos'
+      ? 'bg-warning/10 text-warning border-warning/30'
+      : 'bg-bg-elevated text-text-tertiary border-border-subtle';
+  return <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium capitalize ${tone}`}>{status}</span>;
+}
+
+/** Product cell shared by all tabs: white image card (lightbox), title (Amazon link), ASIN/MSKU chips. */
+function ProductCell({ row, onImage }: { row: { asin: string | null; sku: string | null; productName: string | null; imageUrl: string | null }; onImage: () => void }) {
+  return (
+    <div className="flex items-start gap-3">
+      {row.imageUrl
+        ? <button onClick={(e) => { e.stopPropagation(); onImage(); }} className="block shrink-0 cursor-zoom-in" title="View larger image">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={row.imageUrl} alt="" className="h-16 w-16 rounded-lg border border-border-subtle bg-white object-contain p-1 transition-colors hover:border-accent" />
+          </button>
+        : <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-bg-elevated"><Package size={20} className="text-text-tertiary/40" /></div>}
+      <div className="min-w-0">
+        {row.asin
+          ? <a href={`https://www.amazon.com/dp/${row.asin}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="line-clamp-2 text-sm font-medium leading-snug text-accent hover:underline" title={row.productName || row.asin}>{row.productName || row.asin}</a>
+          : <span className="line-clamp-2 text-sm font-medium leading-snug text-text-primary" title={row.productName || ''}>{row.productName || '—'}</span>}
+        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono">
+          <IdentifierChip label="ASIN" value={row.asin} />
+          <IdentifierChip label="MSKU" value={row.sku} href={sellerCentralSkuUrl(row.sku)} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function InventoryHubPage() {
   const [channel, setChannel] = useState<Channel>('amazon');
   const [rows, setRows] = useState<InvRow[]>([]);
@@ -82,6 +115,7 @@ export default function InventoryHubPage() {
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
 
   const isMerchant = channel === 'merchant';
+  const colCount = 5;
 
   async function load() {
     setLoading(true);
@@ -100,9 +134,7 @@ export default function InventoryHubPage() {
           costCents: r.parsed_cost_cents ?? r.cost_cents ?? null,
           status: r.live_state ?? r.amazon_status ?? null,
         }));
-        const filtered = q
-          ? mapped.filter((m) => `${m.sku ?? ''} ${m.asin ?? ''} ${m.productName ?? ''}`.toLowerCase().includes(q))
-          : mapped;
+        const filtered = q ? mapped.filter((m) => `${m.sku ?? ''} ${m.asin ?? ''} ${m.productName ?? ''}`.toLowerCase().includes(q)) : mapped;
         setMerchantRows(filtered);
         setMerchantCount(mapped.length);
       } else {
@@ -117,16 +149,14 @@ export default function InventoryHubPage() {
   }
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [channel]);
-  useEffect(() => {
-    const t = setTimeout(load, 300);
-    return () => clearTimeout(t);
-    /* eslint-disable-next-line react-hooks/exhaustive-deps */
-  }, [search]);
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [search]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setLightbox(null); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  const empty = isMerchant ? merchantRows.length === 0 : rows.length === 0;
 
   return (
     <div className="flex h-full flex-col">
@@ -170,100 +200,60 @@ export default function InventoryHubPage() {
         </div>
       </div>
 
-      {/* Column header */}
-      {isMerchant ? (
-        <div className="grid grid-cols-[1fr_84px_100px_110px] gap-3 border-b border-border-default px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-          <div>Product</div>
-          <div className="text-right">Qty</div>
-          <div className="text-right">Cost</div>
-          <div className="text-right">Status</div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-[1fr_repeat(4,84px)] gap-3 border-b border-border-default px-3 pb-2 text-xs font-semibold uppercase tracking-wide text-text-tertiary">
-          <div>Product</div>
-          <div className="text-right">Fulfillable</div>
-          <div className="text-right">Inbound</div>
-          <div className="text-right">Reserved</div>
-          <div className="text-right">Unfulfillable</div>
-        </div>
-      )}
-
-      {/* Rows */}
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        {loading ? (
-          <div className="py-16 text-center text-sm text-text-tertiary">Loading inventory…</div>
-        ) : isMerchant ? (
-          merchantRows.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
-              <Boxes size={28} className="mb-2 opacity-50" />
-              <div className="text-sm">No merchant inventory matches this view.</div>
-            </div>
-          ) : (
-            merchantRows.map((r, i) => {
-              const statusTone = r.status === 'active' ? 'text-positive' : r.status === 'oos' ? 'text-warning' : 'text-text-tertiary';
-              return (
-                <div key={`m-${r.sku}-${i}`} className="grid grid-cols-[1fr_84px_100px_110px] items-center gap-3 border-b border-border-subtle px-3 py-2.5 hover:bg-bg-elevated/50">
-                  <div className="flex min-w-0 items-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => r.imageUrl && setLightbox({ src: r.imageUrl, title: r.productName || r.sku || '', asin: r.asin, sku: r.sku })}
-                      disabled={!r.imageUrl}
-                      className={`grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md border border-border-subtle bg-bg-elevated ${r.imageUrl ? 'cursor-zoom-in hover:border-accent/60' : ''}`}
-                    >
-                      {r.imageUrl
-                        // eslint-disable-next-line @next/next/no-img-element
-                        ? <img src={r.imageUrl} alt="" className="h-full w-full object-contain" />
-                        : <ImageOff size={15} className="text-text-tertiary" />}
-                    </button>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm text-text-primary" title={r.productName || ''}>{r.productName || '—'}</div>
-                      <div className="mt-0.5 flex items-center gap-3 text-xs font-mono text-text-tertiary">
-                        <IdentifierChip label="MSKU" value={r.sku} href={sellerCentralSkuUrl(r.sku)} />
-                      </div>
-                    </div>
-                  </div>
-                  <div className="text-right font-mono text-sm text-text-primary">{r.qty}</div>
-                  <div className="text-right font-mono text-sm text-text-secondary">{r.costCents != null ? `$${(r.costCents / 100).toFixed(2)}` : '—'}</div>
-                  <div className={`text-right text-sm capitalize ${statusTone}`}>{r.status || '—'}</div>
+      {/* Rich table (matches /analyze/merchant-inventory) */}
+      <div className="min-h-0 flex-1 overflow-y-auto rounded-lg border border-border-subtle">
+        <table className="w-full border-collapse">
+          <thead className="sticky top-0 z-10 bg-bg-surface">
+            <tr className="border-b border-border-default text-left text-xs font-semibold uppercase tracking-wide text-text-tertiary">
+              <th className="px-4 py-2.5">Product</th>
+              {isMerchant ? (
+                <>
+                  <th className="px-4 py-2.5 text-right w-24">Qty</th>
+                  <th className="px-4 py-2.5 text-right w-28">Cost</th>
+                  <th className="px-4 py-2.5 text-right w-28">Status</th>
+                </>
+              ) : (
+                <>
+                  <th className="px-4 py-2.5 text-right w-24">Fulfillable</th>
+                  <th className="px-4 py-2.5 text-right w-20">Inbound</th>
+                  <th className="px-4 py-2.5 text-right w-20">Reserved</th>
+                  <th className="px-4 py-2.5 text-right w-24">Unfulfillable</th>
+                </>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={colCount} className="py-16 text-center text-sm text-text-tertiary">Loading inventory…</td></tr>
+            ) : empty ? (
+              <tr><td colSpan={colCount} className="py-16 text-center">
+                <div className="flex flex-col items-center text-text-tertiary">
+                  <Boxes size={28} className="mb-2 opacity-50" />
+                  <span className="text-sm">{channel === 'walmart' ? 'No WFS inventory synced yet.' : isMerchant ? 'No merchant inventory matches this view.' : 'No inventory matches this view.'}</span>
                 </div>
-              );
-            })
-          )
-        ) : rows.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
-            <Boxes size={28} className="mb-2 opacity-50" />
-            <div className="text-sm">{channel === 'walmart' ? 'No WFS inventory synced yet.' : 'No inventory matches this view.'}</div>
-          </div>
-        ) : (
-          rows.map((r, i) => (
-            <div key={`${r.asin}-${r.sku}-${i}`} className="grid grid-cols-[1fr_repeat(4,84px)] items-center gap-3 border-b border-border-subtle px-3 py-2.5 hover:bg-bg-elevated/50">
-              <div className="flex min-w-0 items-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => r.imageUrl && setLightbox({ src: r.imageUrl, title: r.productName || r.asin || '', asin: r.asin, sku: r.sku })}
-                  disabled={!r.imageUrl}
-                  className={`grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-md border border-border-subtle bg-bg-elevated ${r.imageUrl ? 'cursor-zoom-in hover:border-accent/60' : ''}`}
-                >
-                  {r.imageUrl
-                    // eslint-disable-next-line @next/next/no-img-element
-                    ? <img src={r.imageUrl} alt="" className="h-full w-full object-contain" />
-                    : <ImageOff size={15} className="text-text-tertiary" />}
-                </button>
-                <div className="min-w-0">
-                  <div className="truncate text-sm text-text-primary" title={r.productName || ''}>{r.productName || '—'}</div>
-                  <div className="mt-0.5 flex items-center gap-3 text-xs font-mono text-text-tertiary">
-                    <IdentifierChip label="MSKU" value={r.sku} href={sellerCentralSkuUrl(r.sku)} />
-                    {r.asin && <span className="shrink-0">{r.asin}</span>}
-                  </div>
-                </div>
-              </div>
-              <div className="text-right font-mono text-sm text-text-primary">{r.fulfillable}</div>
-              <div className="text-right font-mono text-sm text-text-secondary">{r.inbound || '—'}</div>
-              <div className="text-right font-mono text-sm text-text-secondary">{r.reserved || '—'}</div>
-              <div className={`text-right font-mono text-sm ${r.unfulfillable > 0 ? 'text-warning' : 'text-text-secondary'}`}>{r.unfulfillable || '—'}</div>
-            </div>
-          ))
-        )}
+              </td></tr>
+            ) : isMerchant ? (
+              merchantRows.map((r, i) => (
+                <tr key={`m-${r.sku}-${i}`} className="border-b border-border-subtle/50 transition-colors hover:bg-bg-hover">
+                  <td className="px-4 py-3 max-w-[420px]"><ProductCell row={r} onImage={() => r.imageUrl && setLightbox({ src: r.imageUrl, title: r.productName || r.sku || '', asin: r.asin, sku: r.sku })} /></td>
+                  <td className="px-4 py-3 text-right font-mono text-sm text-text-primary">{r.qty}</td>
+                  <td className="px-4 py-3 text-right font-mono text-sm text-text-secondary">{r.costCents != null ? `$${(r.costCents / 100).toFixed(2)}` : '—'}</td>
+                  <td className="px-4 py-3 text-right"><MerchantStatusBadge status={r.status} /></td>
+                </tr>
+              ))
+            ) : (
+              rows.map((r, i) => (
+                <tr key={`${r.asin}-${r.sku}-${i}`} className="border-b border-border-subtle/50 transition-colors hover:bg-bg-hover">
+                  <td className="px-4 py-3 max-w-[420px]"><ProductCell row={r} onImage={() => r.imageUrl && setLightbox({ src: r.imageUrl, title: r.productName || r.asin || '', asin: r.asin, sku: r.sku })} /></td>
+                  <td className="px-4 py-3 text-right font-mono text-sm font-medium text-text-primary">{r.fulfillable}</td>
+                  <td className="px-4 py-3 text-right font-mono text-sm text-text-secondary">{r.inbound || '—'}</td>
+                  <td className="px-4 py-3 text-right font-mono text-sm text-text-secondary">{r.reserved || '—'}</td>
+                  <td className={`px-4 py-3 text-right font-mono text-sm ${r.unfulfillable > 0 ? 'text-warning' : 'text-text-secondary'}`}>{r.unfulfillable || '—'}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
       </div>
 
       {lightbox && (
