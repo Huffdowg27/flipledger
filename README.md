@@ -10,6 +10,24 @@ an accurate cash-basis P&L per marketplace and across your whole business.
 
 ---
 
+## Screenshots
+
+> Screenshots use anonymized demo data — fake products/SKUs and scaled figures, not real seller data.
+
+| Dashboard | Profit & Loss |
+|---|---|
+| ![Dashboard](docs/screenshots/dashboard.png) | ![Profit & Loss](docs/screenshots/profit-loss.png) |
+
+| Inventory | Products |
+|---|---|
+| ![Inventory](docs/screenshots/inventory.png) | ![Products](docs/screenshots/products.png) |
+
+| Tax Report | Merchant-Fulfilled Orders |
+|---|---|
+| ![Tax Report](docs/screenshots/tax-report.png) | ![MFN Orders](docs/screenshots/mfn-orders.png) |
+
+---
+
 ## What it does
 
 - **Amazon** — Orders, financial events (sales / fees / refunds / reimbursements),
