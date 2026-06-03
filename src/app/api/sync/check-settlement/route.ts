@@ -19,8 +19,11 @@ function getCredentials() {
   };
 }
 
-export async function GET() {
+export async function GET(request: Request) {
   const credentials = getCredentials();
+  // Order IDs to inspect come from ?orders=ID1,ID2,... (no hardcoded order data)
+  const ordersParam = new URL(request.url).searchParams.get('orders') || '';
+  const checkOrders = ordersParam.split(',').map(s => s.trim()).filter(Boolean);
 
   try {
     // Download all settlement reports and extract per-order net amounts
@@ -76,8 +79,7 @@ export async function GET() {
       } catch {}
     }
 
-    // Check specific orders
-    const checkOrders = ['REDACTED-ORDER', 'REDACTED-ORDER', 'REDACTED-ORDER'];
+    // Check specific orders (supplied via ?orders= query param)
     const results: any[] = [];
     for (const oid of checkOrders) {
       if (orderNetAmounts[oid]) {
@@ -87,7 +89,7 @@ export async function GET() {
 
     return NextResponse.json({
       totalOrders: Object.keys(orderNetAmounts).length,
-      rachioOrders: results,
+      orders: results,
     });
   } catch (err) {
     return NextResponse.json({ error: String(err) });
