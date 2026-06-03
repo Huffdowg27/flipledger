@@ -55,6 +55,8 @@ next-env.d.ts
 .claude/
 # reference screenshots — contain real order/cost data + 3rd-party (PSH) UI
 /docs/design-reference/
+# private data audits (real SKUs/order IDs/costs) — never ship publicly
+/docs/audits/
 
 # OS / editor
 *.swp
@@ -70,4 +72,6 @@ backup/
 /imports/
 
 # financial backup CSVs generated during ops (private row-level data)
+# match any depth under docs/ — the old /docs/*.csv missed subfolders like docs/audits/
+/docs/**/*.csv
 /docs/*.csv
