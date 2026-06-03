@@ -206,3 +206,6 @@ MIT — see [`LICENSE`](LICENSE).
 
 Built for resellers, by a reseller. The marketplace API quirks documented in
 this code base were earned the hard way (often at 2am during tax season).
+
+Based on the original [FlipLedger by moge111](https://github.com/moge111/flipledger),
+used with permission and carried forward here with additional features and fixes.
