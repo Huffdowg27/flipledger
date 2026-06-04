@@ -1,11 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { parseSupplier } from '@/lib/supplier';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
   db.pragma('journal_mode = WAL');
+  // Derive the sourcing supplier from a SKU in SQL (the suppliers table is unused;
+  // supplier is encoded in the SKU). Lets groupBy=supplier reuse all the existing math.
+  db.function('supplier_code', { deterministic: true }, (sku: unknown) =>
+    parseSupplier(typeof sku === 'string' ? sku : null) ?? 'Unknown');
   return db;
 }
 
@@ -54,12 +59,11 @@ export async function GET(request: NextRequest) {
         groupByClause = 'p.category';
         break;
       case 'supplier':
-        groupCol = 's.name';
-        selectCols = `COALESCE(s.name, 'Unknown') as groupKey, '' as productName, '' as asin, p.category`;
-        joinClause = `LEFT JOIN products p ON oi.asin = p.asin
-          LEFT JOIN (SELECT asin, MIN(supplier_id) as supplier_id FROM inventory_ledger GROUP BY asin) il_s ON oi.asin = il_s.asin
-          LEFT JOIN suppliers s ON il_s.supplier_id = s.id`;
-        groupByClause = 's.name';
+        // Supplier is encoded in the SKU; derive it with the supplier_code() helper.
+        groupCol = 'supplier_code(oi.sku)';
+        selectCols = `supplier_code(oi.sku) as groupKey, '' as productName, '' as asin, '' as category`;
+        joinClause = ``;
+        groupByClause = 'supplier_code(oi.sku)';
         break;
       default: // asin
         groupCol = 'oi.asin';
@@ -90,7 +94,7 @@ export async function GET(request: NextRequest) {
 
     // Get fees per order first, then distribute to SKUs/ASINs
     // This avoids cross-product multiplication from joining fee_details to order_items
-    const feeGroupKey = groupBy === 'sku' ? 'oi.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 's.name' : 'oi.asin';
+    const feeGroupKey = groupBy === 'sku' ? 'oi.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(oi.sku)' : 'oi.asin';
     const feesByGroup = db.prepare(`
       SELECT
         ${feeGroupKey} as groupKey,
@@ -108,7 +112,6 @@ export async function GET(request: NextRequest) {
         FROM order_items GROUP BY order_id
       ) order_totals ON oi.order_id = order_totals.order_id AND order_totals.order_revenue > 0
       ${groupBy === 'category' ? 'LEFT JOIN products p ON oi.asin = p.asin' : ''}
-      ${groupBy === 'supplier' ? `LEFT JOIN inventory_ledger il ON oi.asin = il.asin LEFT JOIN suppliers s ON il.supplier_id = s.id` : ''}
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
       GROUP BY ${feeGroupKey}
     `).all(cutoff, cutoffEnd) as any[];
@@ -134,7 +137,7 @@ export async function GET(request: NextRequest) {
     }
 
     // Get COGS per group — uses FIFO pre-calculated cogs_per_unit
-    const cogsGroupKey = groupBy === 'sku' ? 'oi.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 's.name' : 'oi.asin';
+    const cogsGroupKey = groupBy === 'sku' ? 'oi.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(oi.sku)' : 'oi.asin';
     const cogsByGroup = db.prepare(`
       SELECT
         ${cogsGroupKey} as groupKey,
@@ -143,7 +146,6 @@ export async function GET(request: NextRequest) {
       JOIN (SELECT order_id, MIN(posted_date) as posted_date FROM financial_events WHERE event_type = 'ShipmentEvent' AND order_id IS NOT NULL GROUP BY order_id) fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
       ${groupBy === 'category' ? 'LEFT JOIN products p ON oi.asin = p.asin' : ''}
-      ${groupBy === 'supplier' ? `LEFT JOIN (SELECT asin, MIN(supplier_id) as supplier_id FROM inventory_ledger GROUP BY asin) il_s ON oi.asin = il_s.asin LEFT JOIN suppliers s ON il_s.supplier_id = s.id` : ''}
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
       GROUP BY ${cogsGroupKey}
     `).all(cutoff, cutoffEnd) as any[];
@@ -152,19 +154,19 @@ export async function GET(request: NextRequest) {
 
     // Get refund counts per group
     const refundsByGroup = db.prepare(`
-      SELECT ${groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? "'Unknown'" : 'r.asin'} as groupKey,
+      SELECT ${groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(r.sku)' : 'r.asin'} as groupKey,
         COUNT(*) as refundCount,
         SUM(r.quantity) as refundUnits
       FROM refunds r
       ${groupBy === 'category' ? 'LEFT JOIN products p ON r.asin = p.asin' : ''}
       WHERE r.refund_date >= ? AND r.refund_date < ?
-      GROUP BY ${groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? '1' : 'r.asin'}
+      GROUP BY ${groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(r.sku)' : 'r.asin'}
     `).all(cutoff, cutoffEnd) as any[];
 
     const refundsMap = new Map(refundsByGroup.map((r: any) => [r.groupKey, { count: r.refundCount, units: r.refundUnits }]));
 
     // Get on-hand inventory per group
-    const onHandGroupKey = groupBy === 'sku' ? 'il.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 's.name' : 'il.asin';
+    const onHandGroupKey = groupBy === 'sku' ? 'il.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(il.sku)' : 'il.asin';
     const onHandByGroup = db.prepare(`
       SELECT
         ${onHandGroupKey} as groupKey,
@@ -172,7 +174,6 @@ export async function GET(request: NextRequest) {
         AVG(il.buy_price) as avgCostPerUnit
       FROM inventory_ledger il
       ${groupBy === 'category' ? 'LEFT JOIN products p ON il.asin = p.asin' : ''}
-      ${groupBy === 'supplier' ? 'LEFT JOIN suppliers s ON il.supplier_id = s.id' : ''}
       WHERE il.quantity_remaining > 0
       GROUP BY ${onHandGroupKey}
     `).all() as any[];
