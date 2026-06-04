@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { fetchCatalogByAsin, isBarcode, searchCatalog } from '@/lib/sp-api/catalog';
+import { getFeesEstimate } from '@/lib/sp-api/feesEstimate';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
 
 function getDb(readonly = true) {
@@ -102,6 +103,7 @@ const LISTING_SELECT = `
     ml.last_synced,
     COALESCE(p.name, ml.item_name)               AS product_name,
     p.image_url,
+    p.category,
     il.id                                        AS il_id,
     il.buy_price,
     il.list_price_cents                          AS il_list_price_cents,
@@ -251,6 +253,49 @@ async function addCatalogImageFallback(rows: DbRow[]): Promise<DbRow[]> {
   });
 }
 
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// How many uncached results to price live per search. A scan/barcode lookup is
+// usually 1 result; the cap keeps a broad title search from bursting the
+// Product Fees API rate limit. Successful fetches are cached, so repeats are free.
+const FEE_FETCH_LIMIT = 6;
+
+// Fill in fees on-demand for results that have no cached estimate yet, so newly
+// received items show realistic fee/margin immediately instead of $0. MFN →
+// referral only (isAmazonFulfilled=false). getFeesEstimate writes the cache, so
+// the next search of the same item is instant. Mutates rows in place.
+async function addFeeFallback(results: DbRow[]): Promise<DbRow[]> {
+  const creds = getCredentials();
+  if (!creds) return results;
+
+  let calls = 0;
+  for (const row of results) {
+    if (calls >= FEE_FETCH_LIMIT) break;
+    if (row.fee_cents != null) continue; // already cached/priced
+    // Accept any 10-char ASIN: B0-prefixed AND 10-digit ISBNs (books). The
+    // rowAsin() helper is image-lookup specific (B0-only) and too strict here.
+    const asin = String(row.asin ?? '').trim().toUpperCase();
+    if (!/^[A-Z0-9]{10}$/.test(asin)) continue;
+    const listCents =
+      Number(row.amazon_list_price_cents) ||
+      Number(row.parsed_list_price_cents) ||
+      Number(row.il_list_price_cents) || 0;
+    if (listCents <= 0) continue;
+    try {
+      if (calls > 0) await delay(300);
+      const est = await getFeesEstimate(creds, asin, listCents, (row.category as string | null) ?? null, false);
+      row.fee_cents = est.totalFeeCents;
+      row.referral_fee_cents = est.referralFeeCents;
+      row.fee_list_price_cents = listCents;
+      row.fee_source = est.source;
+      calls++;
+    } catch (error) {
+      console.warn(`[mfn-search] live fee fetch failed asin=${asin}:`, error);
+    }
+  }
+  return results;
+}
+
 // GET /api/data/mfn-search?q=<term>
 //
 // No Amazon writes. May cache Catalog image_url locally for exact ASINs
@@ -314,6 +359,7 @@ export async function GET(request: NextRequest) {
         ...parseSku(String(row.sku ?? '')),
       }));
 
+      await addFeeFallback(results);
       return NextResponse.json({ results, barcode: true });
     } catch (error) {
       console.error('[mfn-search] barcode path error:', error);
@@ -353,5 +399,6 @@ export async function GET(request: NextRequest) {
     ...parseSku(String(row.sku ?? '')),
   }));
 
+  await addFeeFallback(results);
   return NextResponse.json({ results });
 }
