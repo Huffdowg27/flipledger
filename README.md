@@ -75,7 +75,7 @@ for accuracy notes.
 ### Install + run
 
 ```bash
-git clone https://github.com/parkermorgan/flipledger.git
+git clone https://github.com/Huffdowg27/flipledger.git
 cd flipledger
 npm install
 
