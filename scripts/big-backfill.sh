@@ -2,10 +2,13 @@
 # Big historical backfill: 2021 → present
 # Step 1: Full orders + financial events sync from 2021-01-01 (covers everything including recent 90 days)
 # Step 2: Year-by-year financial events backfill 2021-2025 (catches anything the sync missed)
-# Logs to /Users/jamiehuff/flipledger/data/backfill.log
+# Logs to <repo>/data/backfill.log
 
-LOG=/Users/jamiehuff/flipledger/data/backfill.log
-BASE=http://localhost:3002
+# Resolve repo root from this script's location (scripts/ → repo root)
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOG="$REPO_DIR/data/backfill.log"
+DB="$REPO_DIR/data/flipledger.db"
+BASE="${FLIPLEDGER_URL:-http://localhost:3002}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG"; }
 
@@ -41,7 +44,7 @@ for i in $(seq 1 180); do
 done
 
 # Stamp lastSync so auto-sync stays idle during backfill
-sqlite3 /Users/jamiehuff/flipledger/data/flipledger.db \
+sqlite3 "$DB" \
   "INSERT OR REPLACE INTO settings (key,value) VALUES ('lastSync', datetime('now'));"
 log "Auto-sync timer stamped."
 
@@ -56,7 +59,7 @@ for YEAR in 2021 2022 2023 2024 2025; do
   echo "" >> "$LOG"
   EVENTS=$(echo "$RESULT" | grep -o '"totalEvents":[0-9]*' | grep -o '[0-9]*' || echo "?")
   log "$YEAR done: $EVENTS events"
-  sqlite3 /Users/jamiehuff/flipledger/data/flipledger.db \
+  sqlite3 "$DB" \
     "INSERT OR REPLACE INTO settings (key,value) VALUES ('lastSync', datetime('now'));"
 done
 
