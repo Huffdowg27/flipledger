@@ -18,6 +18,7 @@ import { syncAmazonDisputeCandidates } from './amazonDisputeCandidates';
 import { syncWalmartDisputeCandidates } from '../walmart-api/disputeCandidates';
 import { generateRecurringExpenses } from '../recurring-expenses';
 import { recalculateFIFO } from '../fifo';
+import { backfillMfnFees } from './backfillMfnFees';
 import type { SPAPICredentials } from './types';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -111,6 +112,10 @@ const CUSTOMER_RETURNS_LOOKBACK_DAYS = 90;
 // takes 1-3 minutes (rate-limited by Catalog API). BSR doesn't change
 // faster than daily for most products.
 const SALES_RANK_INTERVAL_HOURS = 24;
+
+// MFN fee backfill — daily safety net. On-demand pricing at receive time is the
+// primary path; this catches merchant listings that were never manually scanned.
+const MFN_FEES_BACKFILL_INTERVAL_HOURS = 24;
 
 // Reimbursement candidates — weekly. The FBA inventory adjustments report
 // is async (60-120s) and inventory adjustments don't accumulate fast.
@@ -345,6 +350,27 @@ async function autoSyncTick() {
           const result = await syncSalesRanks(amazonCreds);
           console.log(
             `[AutoSync] Sales rank: ${result.asinsChecked} ASINs checked, ${result.asinsUpdated} updated, ${result.errors} errors`
+          );
+        },
+      });
+    }
+  }
+
+  // MFN fee backfill (daily safety net) — pre-fills fee_estimates_cache for any
+  // merchant-fulfilled ASIN not yet priced, so listings never manually scanned
+  // still show fee/margin. On-demand pricing at receive time is the primary path.
+  {
+    const amazonCreds = getAmazonCredentials();
+    if (amazonCreds) {
+      await runGatedSync({
+        key: 'mfn_fees_backfill_last_sync',
+        intervalHours: MFN_FEES_BACKFILL_INTERVAL_HOURS,
+        label: 'MFN fee backfill',
+        run: async () => {
+          console.log('[AutoSync] Starting MFN fee backfill (catch-up sweep)');
+          const result = await backfillMfnFees(amazonCreds, { limit: 100, delayMs: 300, writeFallback: true });
+          console.log(
+            `[AutoSync] MFN fee backfill: ${result.eligible} eligible, ${result.attempted} attempted, ${result.estimated} priced (${result.spApiEstimated} sp-api, ${result.fallbackWritten} fallback), ${result.failed} failed`
           );
         },
       });
