@@ -55,6 +55,7 @@ export async function GET(request: NextRequest) {
         (SELECT SUM(x.quantity) FROM order_items x WHERE x.order_id = o.order_id) AS quantity,
         pi.sku          AS sku,
         pi.asin         AS asin,
+        pi.upc          AS upc,
         pi.productName  AS productName,
         pi.imageUrl     AS imageUrl,
         (SELECT il.bin_location FROM inventory_ledger il
@@ -67,6 +68,7 @@ export async function GET(request: NextRequest) {
           oi.order_id,
           oi.sku,
           oi.asin,
+          COALESCE(p.upc, p2.upc)                   AS upc,
           COALESCE(p.name, p2.name, oi.asin)        AS productName,
           COALESCE(p.image_url, p2.image_url)       AS imageUrl,
           ROW_NUMBER() OVER (

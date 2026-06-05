@@ -690,6 +690,7 @@ export function initializeDatabase() {
     `ALTER TABLE orders ADD COLUMN order_total INTEGER DEFAULT 0`,
     `ALTER TABLE orders ADD COLUMN order_total_currency TEXT`,
     `ALTER TABLE products ADD COLUMN catalog_last_enriched TEXT`,
+    `ALTER TABLE products ADD COLUMN upc TEXT`,
     // merchant_listings new columns — populated by GET_MERCHANT_LISTINGS_ALL_DATA
     `ALTER TABLE merchant_listings ADD COLUMN listing_id TEXT`,
     `ALTER TABLE merchant_listings ADD COLUMN item_name TEXT`,

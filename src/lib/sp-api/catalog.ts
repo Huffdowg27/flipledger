@@ -133,6 +133,33 @@ export async function fetchCatalogByAsin(
 }
 
 /**
+ * Fetch the UPC (or EAN fallback) for an ASIN from the Catalog Items API.
+ * Returns null if the catalog has no externally-assigned barcode for it.
+ */
+export async function fetchUpcByAsin(
+  credentials: SPAPICredentials,
+  asin: string
+): Promise<string | null> {
+  try {
+    const response = await spApiRequest(
+      credentials,
+      `/catalog/2022-04-01/items/${encodeURIComponent(asin)}`,
+      { marketplaceIds: credentials.marketplaceId, includedData: 'identifiers' }
+    );
+    const groups = (response?.identifiers ?? []) as Array<{ identifiers?: Array<{ identifierType?: string; identifier?: string }> }>;
+    for (const g of groups) {
+      const ids = g?.identifiers ?? [];
+      const upc = ids.find(i => i.identifierType === 'UPC')?.identifier
+        ?? ids.find(i => i.identifierType === 'EAN')?.identifier;
+      if (upc) return String(upc).trim();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Search Amazon's Catalog Items API by UPC/EAN/ISBN barcode or keywords.
  * GET /catalog/2022-04-01/items?identifiers={barcode}&identifiersType=UPC
  */
