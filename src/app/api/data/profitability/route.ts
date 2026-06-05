@@ -175,6 +175,8 @@ export async function GET(request: NextRequest) {
       SELECT
         ${onHandGroupKey} as groupKey,
         SUM(li.fulfillable_qty + li.inbound_qty) as onHand,
+        SUM(li.fulfillable_qty) as warehouse,
+        SUM(li.inbound_qty) as inbound,
         SUM((li.fulfillable_qty + li.inbound_qty) * COALESCE(il_sku.buy_price, il_asin.buy_price, 0)) as onHandValue
       FROM live_inventory li
       LEFT JOIN (SELECT sku, MIN(buy_price) as buy_price FROM inventory_ledger WHERE sku IS NOT NULL AND buy_price > 0 GROUP BY sku) il_sku ON il_sku.sku = li.sku
@@ -184,14 +186,14 @@ export async function GET(request: NextRequest) {
       GROUP BY ${onHandGroupKey}
     `).all() as any[];
 
-    const onHandMap = new Map(onHandByGroup.map((h: any) => [h.groupKey, { onHand: h.onHand, valueCents: h.onHandValue }]));
+    const onHandMap = new Map(onHandByGroup.map((h: any) => [h.groupKey, { onHand: h.onHand, warehouse: h.warehouse, inbound: h.inbound, valueCents: h.onHandValue }]));
 
     // Build result rows
     const result = rows.map((row: any) => {
       const fees = feesMap.get(row.groupKey) || 0;
       const cogs = cogsMap.get(row.groupKey) || 0;
       const refunds = refundsMap.get(row.groupKey) || { count: 0, units: 0 };
-      const onHand = onHandMap.get(row.groupKey) || { onHand: 0, valueCents: 0 };
+      const onHand = onHandMap.get(row.groupKey) || { onHand: 0, warehouse: 0, inbound: 0, valueCents: 0 };
       const shippingCost = row.shippingCost || 0;
       const shippingCharged = row.shippingCharged || 0;
       const profit = row.revenue + shippingCharged - cogs - fees - shippingCost;
@@ -218,6 +220,8 @@ export async function GET(request: NextRequest) {
         roi,
         margin,
         onHand: onHand.onHand,
+        warehouse: onHand.warehouse || 0,
+        inbound: onHand.inbound || 0,
         onHandValueCents: onHand.valueCents || 0,
         shippingCharged: row.shippingCharged,
       };
@@ -234,13 +238,33 @@ export async function GET(request: NextRequest) {
       acc.profit += r.profit;
       acc.refunds += r.refunds;
       acc.onHand += r.onHand;
+      acc.warehouse += r.warehouse;
+      acc.inbound += r.inbound;
       acc.onHandValueCents += r.onHandValueCents;
       return acc;
-    }, { orders: 0, unitsSold: 0, revenue: 0, fees: 0, cogs: 0, shippingCost: 0, profit: 0, refunds: 0, onHand: 0, onHandValueCents: 0 });
+    }, { orders: 0, unitsSold: 0, revenue: 0, fees: 0, cogs: 0, shippingCost: 0, profit: 0, refunds: 0, onHand: 0, warehouse: 0, inbound: 0, onHandValueCents: 0 });
 
     totals.roi = totals.cogs > 0 ? (totals.profit / totals.cogs) * 100 : 0;
     totals.margin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : 0;
     totals.costPerUnit = totals.unitsSold > 0 ? totals.cogs / totals.unitsSold : 0;
+
+    // On-hand summary cards reflect TOTAL current inventory (independent of the
+    // selected grouping / sales period) so they're consistent across every tab.
+    const inv = db.prepare(`
+      SELECT
+        COALESCE(SUM(li.fulfillable_qty + li.inbound_qty), 0) as onHand,
+        COALESCE(SUM(li.fulfillable_qty), 0) as warehouse,
+        COALESCE(SUM(li.inbound_qty), 0) as inbound,
+        COALESCE(SUM((li.fulfillable_qty + li.inbound_qty) * COALESCE(il_sku.buy_price, il_asin.buy_price, 0)), 0) as valueCents
+      FROM live_inventory li
+      LEFT JOIN (SELECT sku, MIN(buy_price) as buy_price FROM inventory_ledger WHERE sku IS NOT NULL AND buy_price > 0 GROUP BY sku) il_sku ON il_sku.sku = li.sku
+      LEFT JOIN (SELECT asin, MIN(buy_price) as buy_price FROM inventory_ledger WHERE buy_price > 0 GROUP BY asin) il_asin ON il_asin.asin = li.asin
+      WHERE (li.fulfillable_qty + li.inbound_qty) > 0
+    `).get() as any;
+    totals.onHand = inv.onHand;
+    totals.warehouse = inv.warehouse;
+    totals.inbound = inv.inbound;
+    totals.onHandValueCents = inv.valueCents;
 
     db.close();
 
