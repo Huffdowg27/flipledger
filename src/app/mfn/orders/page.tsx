@@ -49,6 +49,12 @@ function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
     : null;
 }
 
+// Link an ASIN to its public Amazon product page.
+function amazonAsinUrl(asin: string | null | undefined): string | null {
+  const value = (asin ?? '').trim();
+  return value ? `https://www.amazon.com/dp/${encodeURIComponent(value)}` : null;
+}
+
 // Labeled identifier with copy button. When `href` is set, the value links out (new tab).
 function IdentifierChip({ label, value, href }: { label: string; value: string | null | undefined; href?: string | null }) {
   if (!value) return null;
@@ -62,7 +68,7 @@ function IdentifierChip({ label, value, href }: { label: string; value: string |
             rel="noopener noreferrer"
             onClick={e => e.stopPropagation()}
             className="text-accent truncate hover:underline"
-            title={`Open ${label} in Seller Central: ${value}`}
+            title={`Open ${label}: ${value}`}
           >
             {value}
           </a>
@@ -272,6 +278,7 @@ export default function MfnOrdersPage() {
                     </div>
                     <div className="mt-0.5 flex items-center gap-2 text-xs font-mono text-text-tertiary">
                       <IdentifierChip label="MSKU" value={o.sku || o.asin} href={sellerCentralSkuUrl(o.sku || o.asin)} />
+                      <IdentifierChip label="ASIN" value={o.asin} href={amazonAsinUrl(o.asin)} />
                       {o.bin && <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent">Bin {o.bin}</span>}
                       {o.itemCount > 1 && <span className="shrink-0">· {o.itemCount} items</span>}
                     </div>
