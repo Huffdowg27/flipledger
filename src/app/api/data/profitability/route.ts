@@ -166,26 +166,32 @@ export async function GET(request: NextRequest) {
     const refundsMap = new Map(refundsByGroup.map((r: any) => [r.groupKey, { count: r.refundCount, units: r.refundUnits }]));
 
     // Get on-hand inventory per group
-    const onHandGroupKey = groupBy === 'sku' ? 'il.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(il.sku)' : 'il.asin';
+    // On-hand = ACTUAL current stock from live_inventory (FBA), valued at lot cost.
+    // NOT inventory_ledger.quantity_remaining — that's a COGS cost-reference that
+    // includes non-depleting il:* infinite lots and massively overstates stock
+    // (matches the dedicated Inventory Valuation report's approach).
+    const onHandGroupKey = groupBy === 'sku' ? 'li.sku' : groupBy === 'category' ? 'p.category' : groupBy === 'supplier' ? 'supplier_code(li.sku)' : 'li.asin';
     const onHandByGroup = db.prepare(`
       SELECT
         ${onHandGroupKey} as groupKey,
-        SUM(il.quantity_remaining) as onHand,
-        AVG(il.buy_price) as avgCostPerUnit
-      FROM inventory_ledger il
-      ${groupBy === 'category' ? 'LEFT JOIN products p ON il.asin = p.asin' : ''}
-      WHERE il.quantity_remaining > 0
+        SUM(li.fulfillable_qty + li.inbound_qty) as onHand,
+        SUM((li.fulfillable_qty + li.inbound_qty) * COALESCE(il_sku.buy_price, il_asin.buy_price, 0)) as onHandValue
+      FROM live_inventory li
+      LEFT JOIN (SELECT sku, MIN(buy_price) as buy_price FROM inventory_ledger WHERE sku IS NOT NULL AND buy_price > 0 GROUP BY sku) il_sku ON il_sku.sku = li.sku
+      LEFT JOIN (SELECT asin, MIN(buy_price) as buy_price FROM inventory_ledger WHERE buy_price > 0 GROUP BY asin) il_asin ON il_asin.asin = li.asin
+      ${groupBy === 'category' ? 'LEFT JOIN products p ON li.asin = p.asin' : ''}
+      WHERE (li.fulfillable_qty + li.inbound_qty) > 0
       GROUP BY ${onHandGroupKey}
     `).all() as any[];
 
-    const onHandMap = new Map(onHandByGroup.map((h: any) => [h.groupKey, { onHand: h.onHand, avgCost: h.avgCostPerUnit }]));
+    const onHandMap = new Map(onHandByGroup.map((h: any) => [h.groupKey, { onHand: h.onHand, valueCents: h.onHandValue }]));
 
     // Build result rows
     const result = rows.map((row: any) => {
       const fees = feesMap.get(row.groupKey) || 0;
       const cogs = cogsMap.get(row.groupKey) || 0;
       const refunds = refundsMap.get(row.groupKey) || { count: 0, units: 0 };
-      const onHand = onHandMap.get(row.groupKey) || { onHand: 0, avgCost: 0 };
+      const onHand = onHandMap.get(row.groupKey) || { onHand: 0, valueCents: 0 };
       const shippingCost = row.shippingCost || 0;
       const shippingCharged = row.shippingCharged || 0;
       const profit = row.revenue + shippingCharged - cogs - fees - shippingCost;
@@ -212,6 +218,7 @@ export async function GET(request: NextRequest) {
         roi,
         margin,
         onHand: onHand.onHand,
+        onHandValueCents: onHand.valueCents || 0,
         shippingCharged: row.shippingCharged,
       };
     });
@@ -227,8 +234,9 @@ export async function GET(request: NextRequest) {
       acc.profit += r.profit;
       acc.refunds += r.refunds;
       acc.onHand += r.onHand;
+      acc.onHandValueCents += r.onHandValueCents;
       return acc;
-    }, { orders: 0, unitsSold: 0, revenue: 0, fees: 0, cogs: 0, shippingCost: 0, profit: 0, refunds: 0, onHand: 0 });
+    }, { orders: 0, unitsSold: 0, revenue: 0, fees: 0, cogs: 0, shippingCost: 0, profit: 0, refunds: 0, onHand: 0, onHandValueCents: 0 });
 
     totals.roi = totals.cogs > 0 ? (totals.profit / totals.cogs) * 100 : 0;
     totals.margin = totals.revenue > 0 ? (totals.profit / totals.revenue) * 100 : 0;

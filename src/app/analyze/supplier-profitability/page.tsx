@@ -41,6 +41,7 @@ interface Totals {
   profit: number;
   refunds: number;
   onHand: number;
+  onHandValueCents: number;
   roi: number;
   margin: number;
   costPerUnit: number;
@@ -202,7 +203,7 @@ export default function SupplierProfitabilityPage() {
         <StatCard label="Total Profit" value={totals?.profit || 0} format="currency" accentColor={(totals?.profit || 0) >= 0 ? 'positive' : 'negative'} />
         <StatCard label="Units Sold" value={totals?.unitsSold || 0} format="number" />
         <StatCard label="Avg ROI" value={totals?.roi || 0} format="percent" accentColor={(totals?.roi || 0) >= 0 ? 'positive' : 'negative'} />
-        <StatCard label="Inventory Value" value={totals ? totals.onHand * totals.costPerUnit : 0} format="currency" accentColor="amazon" />
+        <StatCard label="Inventory Value" value={totals ? totals.onHandValueCents : 0} format="currency" accentColor="amazon" />
       </div>
 
       <DataTable
