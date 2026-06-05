@@ -250,16 +250,35 @@ export async function GET(request: NextRequest) {
 
     // On-hand summary cards reflect TOTAL current inventory (independent of the
     // selected grouping / sales period) so they're consistent across every tab.
+    // Includes BOTH FBA stock (live_inventory) AND merchant-fulfilled stock
+    // (merchant_listings) — the latter isn't in live_inventory, so no double-count.
     const inv = db.prepare(`
       SELECT
-        COALESCE(SUM(li.fulfillable_qty + li.inbound_qty), 0) as onHand,
-        COALESCE(SUM(li.fulfillable_qty), 0) as warehouse,
-        COALESCE(SUM(li.inbound_qty), 0) as inbound,
-        COALESCE(SUM((li.fulfillable_qty + li.inbound_qty) * COALESCE(il_sku.buy_price, il_asin.buy_price, 0)), 0) as valueCents
-      FROM live_inventory li
-      LEFT JOIN (SELECT sku, MIN(buy_price) as buy_price FROM inventory_ledger WHERE sku IS NOT NULL AND buy_price > 0 GROUP BY sku) il_sku ON il_sku.sku = li.sku
-      LEFT JOIN (SELECT asin, MIN(buy_price) as buy_price FROM inventory_ledger WHERE buy_price > 0 GROUP BY asin) il_asin ON il_asin.asin = li.asin
-      WHERE (li.fulfillable_qty + li.inbound_qty) > 0
+        COALESCE(SUM(onHand), 0) as onHand,
+        COALESCE(SUM(warehouse), 0) as warehouse,
+        COALESCE(SUM(inbound), 0) as inbound,
+        COALESCE(SUM(valueCents), 0) as valueCents
+      FROM (
+        SELECT
+          (li.fulfillable_qty + li.inbound_qty) as onHand,
+          li.fulfillable_qty as warehouse,
+          li.inbound_qty as inbound,
+          (li.fulfillable_qty + li.inbound_qty) * COALESCE(il_sku.buy_price, il_asin.buy_price, 0) as valueCents
+        FROM live_inventory li
+        LEFT JOIN (SELECT sku, MIN(buy_price) as buy_price FROM inventory_ledger WHERE sku IS NOT NULL AND buy_price > 0 GROUP BY sku) il_sku ON il_sku.sku = li.sku
+        LEFT JOIN (SELECT asin, MIN(buy_price) as buy_price FROM inventory_ledger WHERE buy_price > 0 GROUP BY asin) il_asin ON il_asin.asin = li.asin
+        WHERE (li.fulfillable_qty + li.inbound_qty) > 0
+        UNION ALL
+        SELECT
+          ml.quantity as onHand,
+          ml.quantity as warehouse,
+          0 as inbound,
+          ml.quantity * COALESCE(il_sku.buy_price, il_asin.buy_price, 0) as valueCents
+        FROM merchant_listings ml
+        LEFT JOIN (SELECT sku, MIN(buy_price) as buy_price FROM inventory_ledger WHERE sku IS NOT NULL AND buy_price > 0 GROUP BY sku) il_sku ON il_sku.sku = ml.sku
+        LEFT JOIN (SELECT asin, MIN(buy_price) as buy_price FROM inventory_ledger WHERE buy_price > 0 GROUP BY asin) il_asin ON il_asin.asin = ml.asin
+        WHERE ml.fulfillment_channel = 'DEFAULT' AND ml.quantity > 0
+      )
     `).get() as any;
     totals.onHand = inv.onHand;
     totals.warehouse = inv.warehouse;
