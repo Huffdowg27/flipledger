@@ -19,6 +19,7 @@ import { syncWalmartDisputeCandidates } from '../walmart-api/disputeCandidates';
 import { generateRecurringExpenses } from '../recurring-expenses';
 import { recalculateFIFO } from '../fifo';
 import { backfillMfnFees } from './backfillMfnFees';
+import { backfillUpcs } from './backfillUpcs';
 import type { SPAPICredentials } from './types';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -116,6 +117,10 @@ const SALES_RANK_INTERVAL_HOURS = 24;
 // MFN fee backfill — daily safety net. On-demand pricing at receive time is the
 // primary path; this catches merchant listings that were never manually scanned.
 const MFN_FEES_BACKFILL_INTERVAL_HOURS = 24;
+
+// MFN UPC backfill — daily. Fills products.upc from the Catalog API for ASINs on
+// MFN orders, so new orders get UPCs without manual runs.
+const MFN_UPCS_BACKFILL_INTERVAL_HOURS = 24;
 
 // Reimbursement candidates — weekly. The FBA inventory adjustments report
 // is async (60-120s) and inventory adjustments don't accumulate fast.
@@ -371,6 +376,26 @@ async function autoSyncTick() {
           const result = await backfillMfnFees(amazonCreds, { limit: 100, delayMs: 300, writeFallback: true });
           console.log(
             `[AutoSync] MFN fee backfill: ${result.eligible} eligible, ${result.attempted} attempted, ${result.estimated} priced (${result.spApiEstimated} sp-api, ${result.fallbackWritten} fallback), ${result.failed} failed`
+          );
+        },
+      });
+    }
+  }
+
+  // MFN UPC backfill (daily) — fills products.upc from the Catalog API for ASINs
+  // on MFN orders, so new orders get UPCs (shown on /mfn/orders) hands-free.
+  {
+    const amazonCreds = getAmazonCredentials();
+    if (amazonCreds) {
+      await runGatedSync({
+        key: 'mfn_upcs_backfill_last_sync',
+        intervalHours: MFN_UPCS_BACKFILL_INTERVAL_HOURS,
+        label: 'MFN UPC backfill',
+        run: async () => {
+          console.log('[AutoSync] Starting MFN UPC backfill');
+          const result = await backfillUpcs(amazonCreds, { limit: 100, delayMs: 300 });
+          console.log(
+            `[AutoSync] MFN UPC backfill: ${result.eligible} eligible, ${result.attempted} attempted, ${result.found} found, ${result.missing} none, ${result.failed} failed`
           );
         },
       });
