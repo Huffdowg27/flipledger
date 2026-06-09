@@ -88,6 +88,7 @@ const NAV: NavSection[] = [
   {
     key: 'tools', label: 'Tools', icon: <Wrench size={26} />,
     items: [
+      { label: 'Data Integrity', href: '/analyze/data-integrity' },
       { label: 'Sync', href: '/sync' },
       { label: 'Settings', href: '/settings' },
     ],
