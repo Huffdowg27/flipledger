@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { calculateProfit } from '@/lib/calculations';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -70,7 +71,7 @@ export async function GET(request: NextRequest) {
       const mfnShipping = r.shipping_cost || 0;
       // Estimate fees at 13% of revenue (slightly above 12.6% historical for conservatism)
       const estimatedFees = Math.round(r.revenue * 0.13);
-      const projectedProfit = r.revenue - cogs - estimatedFees - mfnShipping;
+      const projectedProfit = calculateProfit(r.revenue, cogs, estimatedFees, mfnShipping);
       const daysHeld = Math.floor((Date.now() - new Date(shipBase).getTime()) / 86400000);
       const daysUntilRelease = Math.max(0, DDP_DAYS - daysHeld);
       return {

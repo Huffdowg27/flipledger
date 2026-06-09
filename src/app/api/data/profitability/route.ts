@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { calculateProfit, calculateROI, calculateMargin } from '@/lib/calculations';
 import { parseSupplier } from '@/lib/supplier';
 
 function getDb() {
@@ -196,9 +197,9 @@ export async function GET(request: NextRequest) {
       const onHand = onHandMap.get(row.groupKey) || { onHand: 0, warehouse: 0, inbound: 0, valueCents: 0 };
       const shippingCost = row.shippingCost || 0;
       const shippingCharged = row.shippingCharged || 0;
-      const profit = row.revenue + shippingCharged - cogs - fees - shippingCost;
-      const roi = cogs > 0 ? (profit / cogs) * 100 : 0;
-      const margin = row.revenue > 0 ? (profit / row.revenue) * 100 : 0;
+      const profit = calculateProfit(row.revenue + shippingCharged, cogs, fees, shippingCost);
+      const roi = calculateROI(profit, cogs);
+      const margin = calculateMargin(profit, row.revenue);
 
       return {
         groupKey: row.groupKey || 'Unknown',

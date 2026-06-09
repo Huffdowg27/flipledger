@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { calculateProfit, calculateROI, calculateMargin } from '@/lib/calculations';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -72,9 +73,9 @@ export async function GET(request: NextRequest) {
 
     const items = rows.map((row) => {
       const buyCost = row.buyCostPerUnit * row.quantity;
-      const profit = row.salePrice - buyCost - row.fees;
-      const profitPercent = row.salePrice > 0 ? (profit / row.salePrice) * 100 : 0;
-      const roiPercent = buyCost > 0 ? (profit / buyCost) * 100 : 0;
+      const profit = calculateProfit(row.salePrice, buyCost, row.fees);
+      const profitPercent = calculateMargin(profit, row.salePrice);
+      const roiPercent = calculateROI(profit, buyCost);
       const isReconciled = row.status === 'reconciled';
       return {
         // soldDate is canonical; `date` aliased for any legacy consumer.

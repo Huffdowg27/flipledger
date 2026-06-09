@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { calculateProfit } from '@/lib/calculations';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -273,7 +274,7 @@ export async function GET(request: NextRequest) {
 
     const chartData = dailyRevenue.map((d: any) => ({
       day: d.day, revenue: d.revenue,
-      profit: d.revenue - d.cogs - (feesByDay[d.day] || 0),
+      profit: calculateProfit(d.revenue, d.cogs, feesByDay[d.day] || 0),
       grouping: chartGrouping,
     }));
 
@@ -490,7 +491,7 @@ export async function GET(request: NextRequest) {
     // Projected profit on the shipped-not-posted cohort: revenue - cogs - estimated fees @ 13% - estimated MFN ship
     // Historical Amazon all-in fee rate is ~12.6%, round to 13% for forecast conservatism.
     const shippedNotPostedFees = Math.round(shippedNotPostedData.revenue * 0.13);
-    const shippedNotPostedProfit = shippedNotPostedData.revenue - shippedNotPostedData.cogs - shippedNotPostedFees;
+    const shippedNotPostedProfit = calculateProfit(shippedNotPostedData.revenue, shippedNotPostedData.cogs, shippedNotPostedFees);
 
     db.close();
 
