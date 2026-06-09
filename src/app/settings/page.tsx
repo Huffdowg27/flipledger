@@ -60,6 +60,8 @@ export default function SettingsPage() {
   const [veeqoTesting, setVeeqoTesting] = useState(false);
   const [veeqoSyncing, setVeeqoSyncing] = useState(false);
   const [veeqoResult, setVeeqoResult] = useState<{ ok?: boolean; success?: boolean; message?: string; error?: string; set?: number; setCents?: number; matched?: number; notFound?: number } | null>(null);
+  const [binBusy, setBinBusy] = useState(false);
+  const [binResult, setBinResult] = useState<{ success?: boolean; error?: string; preview?: boolean; flSkusWithBin?: number; matched?: number; toWrite?: number; written?: number; unchanged?: number; unmatched?: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -168,6 +170,19 @@ export default function SettingsPage() {
       setVeeqoResult({ success: false, error: String(e) });
     }
     setVeeqoSyncing(false);
+  }
+
+  async function pushBins(apply: boolean) {
+    setBinBusy(true); setBinResult(null);
+    try {
+      await saveThen(async () => {
+        const res = await fetch('/api/sync/veeqo-bins', { method: apply ? 'POST' : 'GET' });
+        setBinResult(await res.json());
+      });
+    } catch (e) {
+      setBinResult({ success: false, error: String(e) });
+    }
+    setBinBusy(false);
   }
 
   async function handleSync() {
@@ -411,6 +426,32 @@ export default function SettingsPage() {
               : `Done — set ${veeqoResult.set ?? 0} orders ($${(((veeqoResult.setCents ?? 0)) / 100).toFixed(2)}); matched ${veeqoResult.matched ?? 0}, not found ${veeqoResult.notFound ?? 0}.`}
           </div>
         )}
+
+        <div className="mt-5 pt-4 border-t border-border-subtle">
+          <div className="text-xs font-medium uppercase tracking-wide text-text-tertiary mb-2">Push Bin Locations → Veeqo</div>
+          <p className="text-xs text-text-tertiary mb-3">
+            Writes each FlipLedger bin into Veeqo&apos;s product location (matched by SKU). Preview first; unmatched SKUs are reported, never guessed.
+          </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button onClick={() => pushBins(false)} disabled={binBusy || !settings.veeqo_api_key}
+              className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors disabled:opacity-50">
+              {binBusy ? 'Working...' : 'Preview Bin Push'}
+            </button>
+            <button onClick={() => pushBins(true)} disabled={binBusy || !settings.veeqo_api_key || !(binResult && (binResult.toWrite ?? 0) > 0 && binResult.preview)}
+              className="flex items-center gap-2 h-9 px-3 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50">
+              Push Bins to Veeqo
+            </button>
+          </div>
+          {binResult && (
+            <div className={`mt-3 text-sm ${binResult.error ? 'text-negative' : 'text-text-secondary'}`}>
+              {binResult.error
+                ? `Error: ${binResult.error}`
+                : binResult.preview
+                ? `Preview — ${binResult.matched ?? 0} matched, ${binResult.toWrite ?? 0} to write, ${binResult.unchanged ?? 0} already correct, ${binResult.unmatched ?? 0} unmatched (of ${binResult.flSkusWithBin ?? 0} binned SKUs). Click "Push Bins" to apply.`
+                : `Done — wrote ${binResult.written ?? 0} bins to Veeqo (${binResult.unchanged ?? 0} already correct, ${binResult.unmatched ?? 0} unmatched).`}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Sync */}
