@@ -4,6 +4,25 @@ _Last updated: 2026-05-17. Covers commits 28f2efa through 09991e9._
 
 ---
 
+## 2026-06-08 — Trustworthiness/VPS-readiness audit (DEPLOYED)
+
+Full findings: `docs/agent-control/AUDIT_2026-06-08.md`. Shipped commits b8d4bca→8a7feba,
+deployed via pm2 stop→build→start (verified: homepage 200, /api/data/data-integrity live).
+DB backed up to `data/flipledger.pre-audit-deploy-20260608-185530.db` before deploy.
+
+- **F1** profit math centralized in `calculations.ts` (8 surfaces; numbers identical) + `npm test`.
+- **F3** `recalcAll` now deterministic/idempotent (was rewriting 5 items every run); +$92.96 one-time.
+- **F4** new `/analyze/data-integrity` guardrail (Tools nav).
+- **F2** `extractCogsFromSku` unwraps `amzn.gr.` prefix (partial; backfill RUN deferred).
+- **F6** infinite-lot is now the fail-SAFE default (`FIFO_IL_FINITE=true` to disable); the old
+  opt-in `FIFO_IL_INFINITE` flag could silently destroy COGS if omitted.
+
+**Deferred (need Jamie):** run COGS backfill (~$2,210 recoverable); confirm IF_/SFLIP_/MF-Kohl's
+SKU-cost parser formats + manual costs for FD-/6D-/numeric ASINs (~$1,436); push to remote.
+Tests: 15 pass. Nothing pushed (still local on `main`).
+
+---
+
 ## 2026-06-05 — Margin added to reports + MFN ship-cost gap diagnosed (uncommitted)
 
 **Margin alongside ROI (operator prefers margin):**
