@@ -242,13 +242,15 @@ export async function syncReimbursementsReport(
       reimbursement_id, reimbursement_date, asin, sku, reason, amount, quantity, status, marketplace, created_at
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, 'Approved', 'amazon', datetime('now'))
-    ON CONFLICT(reimbursement_id) DO UPDATE SET
-      reimbursement_date = excluded.reimbursement_date,
-      asin = excluded.asin,
-      sku = excluded.sku,
-      reason = excluded.reason,
-      amount = excluded.amount,
-      quantity = excluded.quantity
+    -- reimbursement_id is NOT unique (one Amazon reimbursement spans many item
+    -- rows). Dedup on the same composite key as idx_reimbursements_unique; on a
+    -- match, upgrade the row's id to the canonical one (supersedes an ADJ-/
+    -- SETTLEMENT- placeholder for the same economic event).
+    ON CONFLICT(marketplace, COALESCE(reason,''), date(reimbursement_date), amount, COALESCE(sku,''), COALESCE(asin,''))
+    DO UPDATE SET
+      reimbursement_id = excluded.reimbursement_id,
+      quantity = excluded.quantity,
+      status = 'Approved'
   `);
 
   // After upserting a canonical numeric row, sweep any prior ADJ-* or
