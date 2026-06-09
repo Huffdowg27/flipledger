@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Search, RefreshCw, Package, ExternalLink, ImageOff, Copy, X } from 'lucide-react';
-import StatusBadge from '@/components/ui/StatusBadge';
+import StatusBadge, { StatusBadgeTone } from '@/components/ui/StatusBadge';
 
 interface MfnOrderRow {
   orderId: string;
@@ -10,6 +10,7 @@ interface MfnOrderRow {
   status: string;
   marketplace: string;
   orderTotal: number;
+  shipServiceLevel: string | null;
   itemCount: number;
   quantity: number;
   sku: string | null;
@@ -28,15 +29,39 @@ interface Counts {
   shopify: number;
 }
 
-type StatusFilter = 'awaiting' | 'pending' | 'shipped' | 'all';
+interface StatusCounts {
+  awaiting: number;
+  pending: number;
+  shipped: number;
+  canceled: number;
+  all: number;
+}
+
+type StatusFilter = 'awaiting' | 'pending' | 'shipped' | 'canceled' | 'all';
 type DateFilter = 'all' | 'today' | '7d';
 
 const STATUS_TABS: { value: StatusFilter; label: string }[] = [
-  { value: 'awaiting', label: 'Awaiting' },
+  { value: 'awaiting', label: 'Ready to Ship' },
   { value: 'pending', label: 'Pending' },
   { value: 'shipped', label: 'Shipped' },
+  { value: 'canceled', label: 'Canceled' },
   { value: 'all', label: 'All Open' },
 ];
+
+// Amazon's ShipmentServiceLevelCategory → operator-facing label + badge tone.
+// These mirror Seller Central's "Order type" column (Standard / Expedited / Second Day…).
+function shipLevelBadge(level: string | null | undefined): { label: string; tone: StatusBadgeTone } {
+  switch ((level || '').toLowerCase()) {
+    case 'expedited':    return { label: 'Expedited', tone: 'info' };
+    case 'secondday':    return { label: '2nd Day',   tone: 'warning' };
+    case 'nextday':      return { label: 'Next Day',  tone: 'negative' };
+    case 'sameday':      return { label: 'Same Day',  tone: 'negative' };
+    case 'priority':     return { label: 'Priority',  tone: 'info' };
+    case 'scheduleddelivery': return { label: 'Scheduled', tone: 'info' };
+    case 'standard':     return { label: 'Standard',  tone: 'neutral' };
+    default:             return { label: level || 'Standard', tone: 'neutral' };
+  }
+}
 
 function amazonOrderUrl(orderId: string): string {
   return `https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(orderId)}`;
@@ -111,6 +136,7 @@ function withinDateFilter(dateStr: string, filter: DateFilter): boolean {
 export default function MfnOrdersPage() {
   const [orders, setOrders] = useState<MfnOrderRow[]>([]);
   const [counts, setCounts] = useState<Counts>({ all: 0, amazon: 0, walmart: 0, ebay: 0, shopify: 0 });
+  const [statusCounts, setStatusCounts] = useState<StatusCounts>({ awaiting: 0, pending: 0, shipped: 0, canceled: 0, all: 0 });
   const [loading, setLoading] = useState(true);
   const [status, setStatus] = useState<StatusFilter>('awaiting');
   const [search, setSearch] = useState('');
@@ -130,6 +156,7 @@ export default function MfnOrdersPage() {
       const data = await res.json();
       setOrders(data.orders || []);
       setCounts(data.counts || { all: 0, amazon: 0, walmart: 0, ebay: 0, shopify: 0 });
+      setStatusCounts(data.statusCounts || { awaiting: 0, pending: 0, shipped: 0, canceled: 0, all: 0 });
     } finally {
       setLoading(false);
     }
@@ -206,17 +233,32 @@ export default function MfnOrdersPage() {
           </div>
 
           <div className="flex rounded-md border border-border-default bg-bg-surface p-0.5">
-            {STATUS_TABS.map((t) => (
-              <button
-                key={t.value}
-                onClick={() => setStatus(t.value)}
-                className={`rounded px-3 py-1.5 text-sm font-medium transition-colors ${
-                  status === t.value ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary'
-                }`}
-              >
-                {t.label}
-              </button>
-            ))}
+            {STATUS_TABS.map((t) => {
+              const n = statusCounts[t.value];
+              const active = status === t.value;
+              return (
+                <button
+                  key={t.value}
+                  onClick={() => setStatus(t.value)}
+                  className={`flex items-center gap-1.5 rounded px-3 py-1.5 text-sm font-medium transition-colors ${
+                    active ? 'bg-accent text-white' : 'text-text-secondary hover:text-text-primary'
+                  }`}
+                >
+                  {t.label}
+                  <span
+                    className={`min-w-[1.25rem] rounded-full px-1.5 text-center font-mono text-[11px] ${
+                      active
+                        ? 'bg-white/20 text-white'
+                        : t.value === 'canceled' && n > 0
+                          ? 'bg-negative/15 text-negative'
+                          : 'bg-bg-elevated text-text-tertiary'
+                    }`}
+                  >
+                    {n}
+                  </span>
+                </button>
+              );
+            })}
           </div>
 
           <select
@@ -295,11 +337,22 @@ export default function MfnOrdersPage() {
 
                 {/* Status */}
                 <div className="flex flex-col gap-1">
-                  <StatusBadge tone="info" size="xs">Order: OPEN</StatusBadge>
-                  <StatusBadge tone="warning" size="xs">
-                    {o.status === 'PartiallyShipped' ? 'Fulfillment: PARTIAL' : 'Fulfillment: UNSHIPPED'}
-                  </StatusBadge>
-                  <StatusBadge tone="positive" size="xs">Payment: PAID</StatusBadge>
+                  {o.status === 'Canceled' || o.status === 'Cancelled' ? (
+                    <StatusBadge tone="negative" size="xs">Order: CANCELED</StatusBadge>
+                  ) : o.status === 'Shipped' ? (
+                    <>
+                      <StatusBadge tone="positive" size="xs">Order: SHIPPED</StatusBadge>
+                      <StatusBadge tone="positive" size="xs">Payment: PAID</StatusBadge>
+                    </>
+                  ) : (
+                    <>
+                      <StatusBadge tone="info" size="xs">Order: OPEN</StatusBadge>
+                      <StatusBadge tone="warning" size="xs">
+                        {o.status === 'PartiallyShipped' ? 'Fulfillment: PARTIAL' : 'Fulfillment: UNSHIPPED'}
+                      </StatusBadge>
+                      <StatusBadge tone="positive" size="xs">Payment: PAID</StatusBadge>
+                    </>
+                  )}
                 </div>
 
                 {/* Items */}
@@ -307,8 +360,17 @@ export default function MfnOrdersPage() {
                   <div>Ordered: <span className="font-mono text-text-primary">{o.quantity ?? 0}</span></div>
                 </div>
 
-                {/* Shipping */}
-                <div className="text-sm text-text-tertiary" title="Ship-service level not synced">Standard</div>
+                {/* Shipping — Amazon ship-service level (delivery promise) */}
+                <div>
+                  {(() => {
+                    const { label, tone } = shipLevelBadge(o.shipServiceLevel);
+                    return (
+                      <StatusBadge tone={tone} size="xs" className="uppercase tracking-wide">
+                        {label}
+                      </StatusBadge>
+                    );
+                  })()}
+                </div>
 
                 {/* Age */}
                 <div className="text-right text-sm text-text-secondary">{ageLabel(o.purchaseDate)}</div>

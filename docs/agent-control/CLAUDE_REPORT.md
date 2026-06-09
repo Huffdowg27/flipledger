@@ -4,6 +4,87 @@ _Last updated: 2026-05-17. Covers commits 28f2efa through 09991e9._
 
 ---
 
+## 2026-06-05 — Margin added to reports + MFN ship-cost gap diagnosed (uncommitted)
+
+**Margin alongside ROI (operator prefers margin):**
+- `/analyze/profitability` — the API already returned `margin` (route line 201); it was just
+  never displayed. Added a **Margin%** column (after Gross ROI%), a Margin StatCard, footer
+  total, and CSV column. No calc change — `calculations.ts` already has `calculateMargin`.
+- `/bookkeep/merchant-sales` — route already computed `profitPercent` (= profit/salePrice =
+  margin); added a **Margin** column + CSV. (FBA & WFS sales pages already had it.)
+- `/bookkeep/ebay-sales` — added Margin column + CSV to match.
+- Verified live: profitability totals ROI 31.4% / Margin 17.5%; a merchant-sales row ROI
+  110.7% / Margin 64.3% (margin < ROI as expected). tsc+build clean, deployed.
+
+**MFN ship-cost $0.00 gap — DIAGNOSED, not a display bug:**
+- Ship cost is sourced from Amazon **settlement reports** ("Shipping label purchase" line)
+  and applied automatically in the normal sync (`reports.ts:392`) — same logic as the manual
+  `/api/sync/import-shipping` route. NOT from financial events (0 financial_events contain
+  "Postage").
+- Coverage by month: Apr 10/10, May 58/66, Jun 9/18; **pre-Feb-2026 = 0** because Amazon's
+  report API only returns recent settlements (`settlement_periods` oldest = 2026-02-16).
+- The recent zeros are settlement-availability + **API throttling**: a re-run of import-shipping
+  got **26/26 settlement-document fetches 429'd** ("failed after 3 retries"). A gentle targeted
+  scan of the 8 newest reports (period May 27→Jun 5) found NO label line for the May 14-18
+  orders — but those charges post in older (~mid-May) reports I couldn't reach through the 429s.
+- Today's (Jun 5) zeros are simply not-yet-settled. Did NOT hammer the throttled endpoint
+  (known 429-wedge risk). Self-heals as settlement reports post + a clean settlement sync runs.
+  Labels bought OUTSIDE Amazon Buy Shipping have no settlement line → need manual/CSV entry.
+
+---
+
+## 2026-06-05 — MFN Orders: real ship-service level + per-status tab counts (uncommitted)
+
+**Behavior changed (`/mfn/orders`):**
+- Shipping column no longer hard-codes "Standard". It now shows the real Amazon
+  delivery promise as a color-coded badge: Standard (neutral), Expedited (info),
+  2nd Day (warning), Next/Same Day (negative), Priority/Scheduled (info).
+- Status tabs renamed/extended to **Ready to Ship · Pending · Shipped · Canceled · All Open**,
+  each with a live count badge (Canceled badge turns red when > 0).
+- Status column is now status-aware (CANCELED / SHIPPED / OPEN), not always "OPEN+PAID".
+
+**Files changed:**
+- `src/lib/db.ts` — added `orders.ship_service_level TEXT` column migration.
+- `src/lib/sp-api/orders.ts` — `syncOrders` captures `ShipmentServiceLevelCategory`;
+  `reconcileOpenOrders` backfills it for already-synced open orders (UPDATE … WHERE ship_service_level IS NULL).
+- `src/app/api/data/mfn-orders/route.ts` — returns `shipServiceLevel`; new `statusCounts`
+  object (awaiting/pending/shipped/canceled/all) over MFN scope; added `canceled` statusClause.
+- `src/app/mfn/orders/page.tsx` — ship-level badge, tab counts, canceled tab, status-aware badges.
+
+**Data:** migration applied to `data/flipledger.db`; one-off SP-API backfill populated
+ship levels for all 14 current open/canceled MFN orders (matches Seller Central:
+Le Creuset=SecondDay, Fujifilm Instax Mini 9=Expedited, rest Standard).
+
+**Verified:** `npx tsc --noEmit` clean; `npm run build` clean; deployed via pm2 stop→build→start
+(NOT restart). API on :3002 returns `statusCounts {awaiting:6,pending:2,shipped:1918,canceled:6,all:8}`
+with correct per-order ship levels.
+
+**Risk:** Money/P&L untouched (read-only operational view). New orders get ship level on next
+sync automatically; `reconcileOpenOrders` self-heals any that synced before this change.
+
+### Follow-up — photos for Pending orders (display-only, FIFO-safe)
+
+**Problem:** Pending orders showed no photo because Amazon's bulk getOrders hides line
+items while Pending, so `order_items` holds an opaque `asin='PENDING'` placeholder.
+**Key accuracy fact:** FIFO (`fifo.ts:128,136`) only excludes Canceled — **Pending orders
+ARE consumed by FIFO**. So putting the real SKU into `order_items` would deplete inventory
+and could mint a phantom auto-ledger lot (`orders.ts:175-194`) for an unsettled order.
+
+**Solution (display-only, never touches order_items/COGS/inventory):**
+- `db.ts` — new `orders.preview_asin TEXT` (documented as display-only, do-not-feed-FIFO).
+- `orders.ts` — new `resolvePendingPreviews` pass: for Pending orders in the sync batch,
+  calls getOrderItems (which DOES return the real ASIN), stores it in `orders.preview_asin`
+  and upserts a display-only `products` row; `enrichProductCatalog` fills the image on its pass.
+  Throttled 1.5s. order_items stays `PENDING`.
+- `mfn-orders/route.ts` — `LEFT JOIN products pv ON pv.asin = o.preview_asin`; outer SELECT
+  uses `COALESCE(NULLIF(pi.x,'PENDING'), pv.x)` so pending rows resolve photo/title/ASIN.
+
+**Verified:** both current pending orders backfilled (Godzilla Rodan B07QWMWNNF, NECA
+Xenomorph Queen B00LK4BWUC) — API `status=pending` now returns asin + imageUrl for both.
+tsc clean, build OK, deployed pm2 stop→build→start. Still uncommitted on `main`.
+
+---
+
 ## ⚠️ Critical Warnings for Next Agent
 
 1. **COGS canary repair IS complete (5 SKUs, -$641.95).** The remaining

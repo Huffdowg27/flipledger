@@ -689,6 +689,18 @@ export function initializeDatabase() {
     `CREATE INDEX IF NOT EXISTS idx_inventory_ledger_batch ON inventory_ledger(batch_id)`,
     `ALTER TABLE orders ADD COLUMN order_total INTEGER DEFAULT 0`,
     `ALTER TABLE orders ADD COLUMN order_total_currency TEXT`,
+    // Ship-service level from Amazon Orders API (ShipmentServiceLevelCategory):
+    // Standard, Expedited, SecondDay, NextDay, etc. Surfaced on /mfn/orders as the
+    // "Order type" so the operator knows the delivery promise before buying postage.
+    `ALTER TABLE orders ADD COLUMN ship_service_level TEXT`,
+    // DISPLAY-ONLY resolved ASIN for Pending orders. Amazon's bulk getOrders hides
+    // line items while an order is Pending, so order_items holds an opaque 'PENDING'
+    // placeholder (which FIFO/COGS depend on as a sentinel — Pending orders ARE
+    // consumed by FIFO). getOrderItems still returns the real ASIN, so we stash it
+    // here purely so /mfn/orders can show the photo/title. NEVER feed this into
+    // order_items / inventory_ledger / COGS — it would deplete inventory for an
+    // order that may never settle. See src/lib/sp-api/orders.ts resolvePendingPreviews.
+    `ALTER TABLE orders ADD COLUMN preview_asin TEXT`,
     `ALTER TABLE products ADD COLUMN catalog_last_enriched TEXT`,
     `ALTER TABLE products ADD COLUMN upc TEXT`,
     // merchant_listings new columns — populated by GET_MERCHANT_LISTINGS_ALL_DATA

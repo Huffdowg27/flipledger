@@ -26,6 +26,8 @@ function statusClause(status: string): { sql: string; recentLimit: boolean } {
       return { sql: `o.status = 'Pending'`, recentLimit: false };
     case 'shipped':
       return { sql: `o.status IN ('Shipped', 'PartiallyShipped')`, recentLimit: true };
+    case 'canceled':
+      return { sql: `o.status IN ('Canceled', 'Cancelled')`, recentLimit: true };
     case 'all':
       return { sql: `o.status IN ('Pending', 'Unshipped', 'PartiallyShipped')`, recentLimit: false };
     case 'awaiting':
@@ -51,18 +53,23 @@ export async function GET(request: NextRequest) {
         o.status        AS status,
         o.marketplace   AS marketplace,
         o.order_total   AS orderTotal,
+        o.ship_service_level AS shipServiceLevel,
         (SELECT COUNT(*)        FROM order_items x WHERE x.order_id = o.order_id) AS itemCount,
         (SELECT SUM(x.quantity) FROM order_items x WHERE x.order_id = o.order_id) AS quantity,
-        pi.sku          AS sku,
-        pi.asin         AS asin,
-        pi.upc          AS upc,
-        pi.productName  AS productName,
-        pi.imageUrl     AS imageUrl,
+        -- Pending orders carry an opaque 'PENDING' order_item; fall back to the
+        -- display-only preview catalog (pv, keyed by orders.preview_asin) so the
+        -- photo/title/ASIN still render. NULLIF strips the 'PENDING' sentinel.
+        COALESCE(NULLIF(pi.sku, 'PENDING'), pv.sku)            AS sku,
+        COALESCE(NULLIF(pi.asin, 'PENDING'), o.preview_asin)   AS asin,
+        COALESCE(pi.upc, pv.upc)                               AS upc,
+        COALESCE(NULLIF(pi.productName, 'PENDING'), pv.name)   AS productName,
+        COALESCE(pi.imageUrl, pv.image_url)                    AS imageUrl,
         (SELECT il.bin_location FROM inventory_ledger il
           WHERE il.sku = pi.sku AND il.bin_location IS NOT NULL AND il.bin_location != ''
           ORDER BY il.quantity_remaining DESC
           LIMIT 1) AS bin
       FROM orders o
+      LEFT JOIN products pv ON pv.asin = o.preview_asin
       LEFT JOIN (
         SELECT
           oi.order_id,
@@ -107,7 +114,26 @@ export async function GET(request: NextRequest) {
       shopify: 0,
     };
 
-    return NextResponse.json({ orders, counts });
+    // Per-tab badge counts over the MFN scope: how many orders sit in each bucket.
+    // 'all' here matches the "All Open" tab (Pending + Unshipped + PartiallyShipped).
+    const statusRows = db.prepare(`
+      SELECT o.status AS status, COUNT(*) AS n
+      FROM orders o
+      WHERE o.fulfillment_channel IN ('MFN', 'Seller')
+        AND o.marketplace != 'ebay'
+      GROUP BY o.status
+    `).all() as { status: string; n: number }[];
+
+    const byStatus = (s: string) => statusRows.find((r) => r.status === s)?.n || 0;
+    const statusCounts = {
+      awaiting: byStatus('Unshipped') + byStatus('PartiallyShipped'),
+      pending: byStatus('Pending'),
+      shipped: byStatus('Shipped') + byStatus('PartiallyShipped'),
+      canceled: byStatus('Canceled') + byStatus('Cancelled'),
+      all: byStatus('Pending') + byStatus('Unshipped') + byStatus('PartiallyShipped'),
+    };
+
+    return NextResponse.json({ orders, counts, statusCounts });
   } catch (err) {
     console.error('[mfn-orders] error:', err);
     return NextResponse.json({ error: 'Failed to load MFN orders' }, { status: 500 });

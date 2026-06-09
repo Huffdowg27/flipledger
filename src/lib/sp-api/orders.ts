@@ -69,11 +69,13 @@ export async function syncOrders(
           // shipped_at: when status is Shipped or PartiallyShipped, LastUpdateDate is when it shipped.
           // Don't overwrite a previously-recorded shipped_at on subsequent syncs (keep first-seen ship time).
           const shippedAt = (status === 'Shipped' || status === 'PartiallyShipped') ? (order.LastUpdateDate || null) : null;
+          // Delivery promise (Standard / Expedited / SecondDay / NextDay …); shown on /mfn/orders.
+          const shipServiceLevel = order.ShipmentServiceLevelCategory || null;
 
           // Upsert order. Preserve shipped_at once set: COALESCE keeps existing value if not null.
           db.prepare(`
-            INSERT INTO orders (order_id, purchase_date, status, marketplace, fulfillment_channel, is_estimated, order_total, order_total_currency, shipped_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders (order_id, purchase_date, status, marketplace, fulfillment_channel, is_estimated, order_total, order_total_currency, ship_service_level, shipped_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_id) DO UPDATE SET
               purchase_date = excluded.purchase_date,
               status = excluded.status,
@@ -81,8 +83,9 @@ export async function syncOrders(
               is_estimated = excluded.is_estimated,
               order_total = CASE WHEN excluded.order_total > 0 THEN excluded.order_total ELSE orders.order_total END,
               order_total_currency = COALESCE(excluded.order_total_currency, orders.order_total_currency),
+              ship_service_level = COALESCE(excluded.ship_service_level, orders.ship_service_level),
               shipped_at = COALESCE(orders.shipped_at, excluded.shipped_at)
-          `).run(orderId, purchaseDate, status, 'amazon', channel, isEstimated, orderTotal, orderTotalCurrency, shippedAt, now);
+          `).run(orderId, purchaseDate, status, 'amazon', channel, isEstimated, orderTotal, orderTotalCurrency, shipServiceLevel, shippedAt, now);
 
           // Update sales tax state from shipping address
           const shipState = order.ShippingAddress?.StateOrRegion;
@@ -92,8 +95,11 @@ export async function syncOrders(
             `).run(shipState, orderId);
           }
 
-          // For Pending orders, Amazon won't return item details
-          // but OrderTotal is available — use it as a single order_item
+          // Pending orders: the bulk getOrders call hides line items, so we record
+          // an opaque 'PENDING' placeholder order_item carrying just the order total.
+          // (The real ASIN is fetchable via getOrderItems — see resolvePendingPreviews
+          // below — but it must NOT land in order_items, because FIFO consumes Pending
+          // orders and would deplete inventory / mint COGS for an unsettled order.)
           if (status === 'Pending' && order.OrderTotal?.Amount) {
             const totalCents = Math.round(parseFloat(order.OrderTotal.Amount) * 100);
             db.prepare(`
@@ -209,6 +215,49 @@ export async function syncOrders(
         errors.push(`OrderItems ${oid}: ${itemErr}`);
       }
     }
+
+    // Display-only: resolve the real ASIN/title for Pending orders so /mfn/orders
+    // can show a photo. getOrderItems returns line items even while the bulk
+    // getOrders call hides them. We write ONLY to orders.preview_asin and the
+    // products catalog (both display-only) — never to order_items / inventory_ledger,
+    // so FIFO and COGS stay untouched for orders that haven't settled.
+    const pendingToPreview = orderIdsToFetchItems.length
+      ? db.prepare(`
+          SELECT order_id FROM orders
+          WHERE order_id IN (${orderIdsToFetchItems.map(() => '?').join(',')})
+            AND status = 'Pending'
+            AND preview_asin IS NULL
+        `).all(...orderIdsToFetchItems) as { order_id: string }[]
+      : [];
+
+    for (const { order_id: oid } of pendingToPreview) {
+      try {
+        const resp = await spApiRequest(credentials, `/orders/v0/orders/${oid}/orderItems`);
+        const items = resp.payload?.OrderItems || [];
+        if (items.length === 0) continue;
+        // Primary item = highest line value, mirroring the /mfn/orders row picker.
+        const primary = items.reduce((best: any, it: any) =>
+          (it.ItemPrice?.Amount || 0) > (best?.ItemPrice?.Amount || 0) ? it : best, items[0]);
+        const asin = primary.ASIN;
+        if (!asin) continue;
+        const now = new Date().toISOString();
+
+        db.prepare('UPDATE orders SET preview_asin = ? WHERE order_id = ?').run(asin, oid);
+        // Display-only catalog row; enrichProductCatalog fills the image on its pass.
+        db.prepare(`
+          INSERT INTO products (asin, sku, name, marketplace, created_at, updated_at)
+          VALUES (?, ?, ?, 'amazon', ?, ?)
+          ON CONFLICT(asin) DO UPDATE SET
+            name = COALESCE(excluded.name, products.name),
+            sku = COALESCE(excluded.sku, products.sku),
+            updated_at = excluded.updated_at
+        `).run(asin, primary.SellerSKU || null, primary.Title || null, now, now);
+
+        await new Promise(resolve => setTimeout(resolve, 1500));
+      } catch (previewErr) {
+        errors.push(`PendingPreview ${oid}: ${previewErr}`);
+      }
+    }
   } finally {
     db.close();
   }
@@ -269,6 +318,16 @@ export async function reconcileOpenOrders(
           const orderId = order.AmazonOrderId;
           const newStatus = order.OrderStatus;
           const local = db.prepare('SELECT status FROM orders WHERE order_id = ?').get(orderId) as { status: string } | undefined;
+
+          // Backfill the delivery promise for any order missing it, even when the
+          // status hasn't drifted — this is what populates ship_service_level on
+          // already-synced open orders so /mfn/orders can show Standard vs 2nd Day.
+          if (order.ShipmentServiceLevelCategory) {
+            db.prepare(
+              `UPDATE orders SET ship_service_level = ? WHERE order_id = ? AND ship_service_level IS NULL`
+            ).run(order.ShipmentServiceLevelCategory, orderId);
+          }
+
           if (!local || local.status === newStatus) continue;
 
           const isEstimated = (newStatus === 'Pending' || newStatus === 'Unshipped') ? 1 : 0;
