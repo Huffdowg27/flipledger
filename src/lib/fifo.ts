@@ -9,7 +9,15 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 
-const FIFO_IL_INFINITE = process.env.FIFO_IL_INFINITE === 'true';
+// Infinite-lot treatment for `il:` import-snapshot lots is the CORRECT default:
+// those lots carry a known per-unit cost and must cover every unit sold, not
+// deplete to zero. This used to be opt-IN (`FIFO_IL_INFINITE=true`), which fails
+// OPEN — any runtime that forgets the flag (bare `npm start`, a different process
+// manager, a one-off recalc script) would silently zero out thousands in COGS.
+// It is now ON by default; set `FIFO_IL_FINITE=true` only to deliberately disable.
+// (The legacy `FIFO_IL_INFINITE=true` env var set in ecosystem.config.js is now a
+// harmless no-op — the behavior it enabled is the default.)
+const FIFO_IL_INFINITE = process.env.FIFO_IL_FINITE !== 'true';
 
 interface InventoryBatch {
   id: number;
