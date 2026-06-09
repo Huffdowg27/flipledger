@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "Flip Ledger Veeqo Context",
+  "version": "0.1.0",
+  "description": "Overlays Flip Ledger ASIN and bin context on Veeqo shipment rows.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "http://*/*",
+    "https://*.veeqo.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.veeqo.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html"
+}

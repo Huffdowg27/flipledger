@@ -18,6 +18,7 @@ import { syncAmazonDisputeCandidates } from './amazonDisputeCandidates';
 import { syncWalmartDisputeCandidates } from '../walmart-api/disputeCandidates';
 import { generateRecurringExpenses } from '../recurring-expenses';
 import { recalculateFIFO } from '../fifo';
+import { syncVeeqoShipping, getVeeqoApiKey } from '../veeqo-api/shipping';
 import { backfillMfnFees } from './backfillMfnFees';
 import { backfillUpcs } from './backfillUpcs';
 import type { SPAPICredentials } from './types';
@@ -494,6 +495,25 @@ async function autoSyncTick() {
       } catch (err) {
         console.error('[AutoSync] eBay error:', err);
       }
+    }
+  }
+
+  // Veeqo shipping costs (daily) — pull per-order label cost from the Veeqo API
+  // and fill order_items.shipping_cost. Hands-free equivalent of the CSV import.
+  // Only runs if a Veeqo API key is saved in Settings.
+  {
+    if (getVeeqoApiKey()) {
+      await runGatedSync({
+        key: 'veeqo_shipping_last_sync',
+        intervalHours: 24,
+        label: 'Veeqo shipping sync',
+        run: async () => {
+          const v = await syncVeeqoShipping();
+          if (v.set > 0) {
+            console.log(`[AutoSync] Veeqo shipping: set ${v.set} orders ($${(v.setCents / 100).toFixed(2)}) across ${v.pages} page(s)`);
+          }
+        },
+      });
     }
   }
 

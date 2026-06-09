@@ -1,0 +1,106 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Flip Ledger Veeqo Context</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 24px;
+        width: 520px;
+        color: #172033;
+        background: #f8fafc;
+        font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      h1 {
+        margin: 0 0 4px;
+        font-size: 18px;
+      }
+
+      p {
+        margin: 0 0 18px;
+        color: #64748b;
+      }
+
+      label {
+        display: block;
+        margin: 14px 0 6px;
+        color: #334155;
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+
+      input {
+        box-sizing: border-box;
+        width: 100%;
+        height: 38px;
+        padding: 8px 10px;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #fff;
+        color: #0f172a;
+        font: 13px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        margin-top: 18px;
+      }
+
+      button {
+        height: 36px;
+        padding: 0 13px;
+        border: 1px solid #2563eb;
+        border-radius: 6px;
+        background: #2563eb;
+        color: #fff;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        border-color: #cbd5e1;
+        background: #fff;
+        color: #334155;
+      }
+
+      #status {
+        min-height: 18px;
+        margin-top: 12px;
+        color: #64748b;
+        font-size: 12px;
+      }
+
+      #status.ok {
+        color: #15803d;
+      }
+
+      #status.error {
+        color: #b91c1c;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Flip Ledger Veeqo Context</h1>
+    <p>Point this extension at the Flip Ledger instance running on your local network.</p>
+
+    <label for="baseUrl">Flip Ledger URL</label>
+    <input id="baseUrl" placeholder="http://192.168.1.25:3000">
+
+    <label for="apiKey">Extension API Key</label>
+    <input id="apiKey" type="password" placeholder="Same key saved in Flip Ledger Settings">
+
+    <div class="actions">
+      <button id="save">Save</button>
+      <button id="test" class="secondary">Test Connection</button>
+    </div>
+    <div id="status"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

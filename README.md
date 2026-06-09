@@ -48,6 +48,9 @@ an accurate cash-basis P&L per marketplace and across your whole business.
   reimbursements you may want to re-evaluate.
 - **Listing tool** — multi-marketplace listing creation (Amazon + MFN), inbound
   plan creation, FNSKU / box label printing.
+- **Shipping station helper** — optional unpacked Chrome extension in
+  `extensions/veeqo-flipledger-context/` that overlays Flip Ledger ASIN/bin
+  context on Veeqo shipment rows.
 
 The numbers reconcile to within a few dollars per marketplace against Walmart
 Seller Center, Amazon Seller Central, and Sellerboard — see [`CLAUDE.md`](CLAUDE.md)

@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { Save, TestTube, RefreshCw, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Save, TestTube, RefreshCw, CheckCircle, XCircle, AlertCircle, KeyRound } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/formatters';
 
 interface SettingsData {
@@ -10,6 +10,8 @@ interface SettingsData {
   refreshToken: string;
   marketplaceId: string;
   lastSync: string | null;
+  extensionApiKey: string;
+  veeqo_api_key?: string;
 }
 
 interface SyncResult {
@@ -27,6 +29,24 @@ interface SyncStatus {
   completedAt?: string;
 }
 
+interface MarketplaceSyncResult {
+  syncType: string;
+  recordsFetched: number;
+  duration: number;
+}
+
+interface MarketplaceSyncStatus {
+  results?: MarketplaceSyncResult[];
+}
+
+interface TransactionImportResult {
+  rowsProcessed?: number;
+  shippingCostsUpdated?: number;
+  feesUpdated?: number;
+  feesInserted?: number;
+  error?: string;
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<SettingsData>({
     clientId: '',
@@ -34,7 +54,12 @@ export default function SettingsPage() {
     refreshToken: '',
     marketplaceId: 'ATVPDKIKX0DER',
     lastSync: null,
+    extensionApiKey: '',
+    veeqo_api_key: '',
   });
+  const [veeqoTesting, setVeeqoTesting] = useState(false);
+  const [veeqoSyncing, setVeeqoSyncing] = useState(false);
+  const [veeqoResult, setVeeqoResult] = useState<{ ok?: boolean; success?: boolean; message?: string; error?: string; set?: number; setCents?: number; matched?: number; notFound?: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -102,6 +127,47 @@ export default function SettingsPage() {
       setTestResult({ success: false, error: 'Network error' });
     }
     setTesting(false);
+  }
+
+  function generateExtensionKey() {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    const key = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    setSettings(s => ({ ...s, extensionApiKey: key }));
+  }
+
+  // Persist current settings (so the server can read the key), then run fn.
+  async function saveThen(fn: () => Promise<void>) {
+    await fetch('/api/data/settings', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings),
+    });
+    await fn();
+  }
+
+  async function veeqoTest() {
+    setVeeqoTesting(true); setVeeqoResult(null);
+    try {
+      await saveThen(async () => {
+        const res = await fetch('/api/sync/veeqo-shipping?test=1');
+        setVeeqoResult(await res.json());
+      });
+    } catch (e) {
+      setVeeqoResult({ ok: false, error: String(e) });
+    }
+    setVeeqoTesting(false);
+  }
+
+  async function veeqoSync() {
+    setVeeqoSyncing(true); setVeeqoResult(null);
+    try {
+      await saveThen(async () => {
+        const res = await fetch('/api/sync/veeqo-shipping', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        setVeeqoResult(await res.json());
+      });
+    } catch (e) {
+      setVeeqoResult({ success: false, error: String(e) });
+    }
+    setVeeqoSyncing(false);
   }
 
   async function handleSync() {
@@ -237,6 +303,112 @@ export default function SettingsPage() {
         {testResult && !testResult.success && testResult.error && (
           <div className="mt-3 p-3 bg-negative-muted rounded-md text-xs text-negative font-mono break-all">
             {testResult.error}
+          </div>
+        )}
+      </div>
+
+      {/* Shipping Station Extension */}
+      <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+        <h2 className="text-md font-medium text-text-primary mb-1">Shipping Station Extension</h2>
+        <p className="text-xs text-text-tertiary mb-4">
+          Shared key for the Chrome extension that overlays Flip Ledger ASIN/bin context inside Veeqo.
+        </p>
+        <div>
+          <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">
+            Extension API Key
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              value={settings.extensionApiKey}
+              onChange={e => setSettings(s => ({ ...s, extensionApiKey: e.target.value }))}
+              placeholder="Generate a key and use the same value in the Chrome extension"
+              className="flex-1 h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+            />
+            <button
+              onClick={generateExtensionKey}
+              className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
+            >
+              <KeyRound size={14} />
+              Generate
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-3 mt-5">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+          >
+            <Save size={14} />
+            {saving ? 'Saving...' : 'Save Extension Key'}
+          </button>
+          {saved && (
+            <span className="flex items-center gap-1 text-sm text-positive">
+              <CheckCircle size={14} /> Saved
+            </span>
+          )}
+        </div>
+        <p className="text-[11px] text-text-tertiary mt-3 font-mono break-all">
+          Endpoint: http://YOUR-FLIPLEDGER-IP:3000/api/extension/veeqo-context
+        </p>
+      </div>
+
+      {/* Veeqo Shipping Costs */}
+      <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+        <h2 className="text-md font-medium text-text-primary mb-1">Veeqo Shipping Costs</h2>
+        <p className="text-xs text-text-tertiary mb-4">
+          Pulls each MFN order&apos;s label cost from the Veeqo API and fills its shipping cost
+          (fill-empty only; runs daily in auto-sync). Get the key from Veeqo → Settings → Users → API access.
+        </p>
+        <div>
+          <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">
+            Veeqo API Key
+          </label>
+          <input
+            type="password"
+            value={settings.veeqo_api_key || ''}
+            onChange={e => setSettings(s => ({ ...s, veeqo_api_key: e.target.value }))}
+            placeholder="Paste your Veeqo API key"
+            className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+          />
+        </div>
+        <div className="flex items-center gap-3 mt-5 flex-wrap">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+          >
+            <Save size={14} />
+            {saving ? 'Saving...' : 'Save Key'}
+          </button>
+          <button
+            onClick={veeqoTest}
+            disabled={veeqoTesting || !settings.veeqo_api_key}
+            className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors disabled:opacity-50"
+          >
+            {veeqoTesting ? 'Testing...' : 'Test Connection'}
+          </button>
+          <button
+            onClick={veeqoSync}
+            disabled={veeqoSyncing || !settings.veeqo_api_key}
+            className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors disabled:opacity-50"
+          >
+            {veeqoSyncing ? 'Syncing...' : 'Sync Shipping Now'}
+          </button>
+          {saved && (
+            <span className="flex items-center gap-1 text-sm text-positive">
+              <CheckCircle size={14} /> Saved
+            </span>
+          )}
+        </div>
+        {veeqoResult && (
+          <div className={`mt-4 text-sm ${(veeqoResult.ok || veeqoResult.success) ? 'text-positive' : 'text-negative'}`}>
+            {veeqoResult.error
+              ? `Error: ${veeqoResult.error}`
+              : veeqoResult.message
+              ? veeqoResult.message
+              : `Done — set ${veeqoResult.set ?? 0} orders ($${(((veeqoResult.setCents ?? 0)) / 100).toFixed(2)}); matched ${veeqoResult.matched ?? 0}, not found ${veeqoResult.notFound ?? 0}.`}
           </div>
         )}
       </div>
@@ -598,10 +770,8 @@ function WalmartSettings() {
   const [clientSecret, setClientSecret] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testOk, setTestOk] = useState<boolean | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<any>(null);
+  const [syncResult, setSyncResult] = useState<MarketplaceSyncStatus | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
 
   useEffect(() => {
@@ -625,20 +795,6 @@ function WalmartSettings() {
     setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 3000);
-  }
-
-  async function handleTest() {
-    setTesting(true);
-    setTestOk(null);
-    try {
-      const res = await fetch('/api/sync/walmart');
-      const data = await res.json();
-      // If we can get status without error, auth works
-      setTestOk(true);
-    } catch {
-      setTestOk(false);
-    }
-    setTesting(false);
   }
 
   async function handleSync() {
@@ -708,8 +864,6 @@ function WalmartSettings() {
           {syncing ? 'Syncing...' : 'Sync Walmart'}
         </button>
         {saved && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Saved</span>}
-        {testOk === true && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Connected</span>}
-        {testOk === false && <span className="flex items-center gap-1 text-sm text-negative"><XCircle size={14} /> Failed</span>}
       </div>
 
       {lastSync && (
@@ -720,7 +874,7 @@ function WalmartSettings() {
 
       {syncResult && (
         <div className="mt-3 space-y-1">
-          {syncResult.results?.map((r: any, i: number) => (
+          {syncResult.results?.map((r, i) => (
             <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-bg-root rounded-md text-xs">
               <span className="text-text-primary">{r.syncType.replace('walmart_', '')}</span>
               <span className="font-mono text-text-secondary">{r.recordsFetched} records ({(r.duration/1000).toFixed(1)}s)</span>
@@ -738,10 +892,8 @@ function EbaySettings() {
   const [refreshToken, setRefreshToken] = useState('');
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testOk, setTestOk] = useState<boolean | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncResult, setSyncResult] = useState<any>(null);
+  const [syncResult, setSyncResult] = useState<MarketplaceSyncStatus | null>(null);
   const [lastSync, setLastSync] = useState<string | null>(null);
 
   useEffect(() => {
@@ -847,8 +999,6 @@ function EbaySettings() {
           {syncing ? 'Syncing...' : 'Sync eBay'}
         </button>
         {saved && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Saved</span>}
-        {testOk === true && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Connected</span>}
-        {testOk === false && <span className="flex items-center gap-1 text-sm text-negative"><XCircle size={14} /> Failed</span>}
       </div>
 
       {lastSync && (
@@ -859,7 +1009,7 @@ function EbaySettings() {
 
       {syncResult && (
         <div className="mt-3 space-y-1">
-          {syncResult.results?.map((r: any, i: number) => (
+          {syncResult.results?.map((r, i) => (
             <div key={i} className="flex items-center justify-between py-1.5 px-3 bg-bg-root rounded-md text-xs">
               <span className="text-text-primary">{r.syncType.replace('ebay_', '')}</span>
               <span className="font-mono text-text-secondary">{r.recordsFetched} records ({(r.duration/1000).toFixed(1)}s)</span>
@@ -873,7 +1023,7 @@ function EbaySettings() {
 
 function ImportTransactionReport() {
   const [importing, setImporting] = useState(false);
-  const [result, setResult] = useState<any>(null);
+  const [result, setResult] = useState<TransactionImportResult | null>(null);
 
   async function handleImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
