@@ -160,6 +160,8 @@ export default function MerchantSalesPage() {
       ), size: 280,
     },
     { id: 'salePrice', header: 'Order Price', accessorKey: 'salePrice', cell: ({ getValue }) => <span className="font-mono text-text-primary">{formatCurrency(getValue() as number)}</span>, size: 100 },
+    { id: 'buyCost', header: 'Buy Cost', accessorKey: 'buyCost', cell: ({ getValue }) => <span className="font-mono text-negative">{formatCurrency(-(getValue() as number))}</span>, size: 100 },
+    { id: 'fees', header: 'Fees', accessorKey: 'fees', cell: ({ getValue }) => <span className="font-mono text-negative">{formatCurrency(-(getValue() as number))}</span>, size: 90 },
     { id: 'shippingCharged', header: 'Ship Charged', accessorKey: 'shippingCharged', cell: ({ getValue }) => <span className="font-mono text-text-secondary">{formatCurrency(getValue() as number)}</span>, size: 100 },
     { id: 'shippingCost', header: 'Ship Cost', accessorKey: 'shippingCost', cell: ({ getValue }) => <span className="font-mono text-negative">{formatCurrency(getValue() as number)}</span>, size: 100 },
     {
@@ -182,7 +184,7 @@ export default function MerchantSalesPage() {
   ], []);
 
   function handleExport() {
-    const headers = ['Sold Date', 'Posted Date', 'Status', 'Order ID', 'ASIN', 'SKU', 'Product', 'Sale Price', 'Ship Charged', 'Ship Cost', 'Profit', 'ROI %', 'Margin %'];
+    const headers = ['Sold Date', 'Posted Date', 'Status', 'Order ID', 'ASIN', 'SKU', 'Product', 'Sale Price', 'Buy Cost', 'Fees', 'Ship Charged', 'Ship Cost', 'Profit', 'ROI %', 'Margin %'];
     const csvRows = visibleRows.map(r => [
       (r.soldDate || r.date).split('T')[0],
       r.postedDate ? r.postedDate.split('T')[0] : '',
@@ -192,6 +194,8 @@ export default function MerchantSalesPage() {
       r.sku,
       `"${r.productName}"`,
       (r.salePrice/100).toFixed(2),
+      (r.buyCost/100).toFixed(2),
+      (r.fees/100).toFixed(2),
       (r.shippingCharged/100).toFixed(2),
       (r.shippingCost/100).toFixed(2),
       (r.profit/100).toFixed(2),
