@@ -195,45 +195,18 @@ async function fetchReimbursementWindow(
   throw lastErr;
 }
 
-/** Split [start,end] into contiguous windows of at most chunkDays. Smaller
- *  windows are far less likely to FATAL or time out on Amazon's side. */
-function chunkDateRange(startIso: string, endIso: string, chunkDays: number): Array<{ start: string; end: string }> {
-  const out: Array<{ start: string; end: string }> = [];
-  const endMs = new Date(endIso).getTime();
-  const span = chunkDays * 86400000;
-  let s = new Date(startIso).getTime();
-  while (s < endMs) {
-    const e = Math.min(s + span, endMs);
-    out.push({ start: new Date(s).toISOString(), end: new Date(e).toISOString() });
-    s = e;
-  }
-  return out;
-}
-
 export async function syncReimbursementsReport(
   credentials: SPAPICredentials,
   startDate: string,
   endDate: string
-): Promise<{ reportRows: number; inserted: number; updated: number; totalAmountCents: number; chunksFailed: number }> {
-  // Pull in <=180-day chunks with per-chunk retry. A transient FATAL self-heals,
-  // and one bad chunk no longer fails the whole sync (the others still land).
-  const chunks = chunkDateRange(startDate, endDate, 180);
-  const byId = new Map<string, ReimbursementRow>();
-  let chunksFailed = 0;
-  for (const c of chunks) {
-    try {
-      for (const row of await fetchReimbursementWindow(credentials, c.start, c.end)) {
-        byId.set(row.reimbursementId, row); // dedup across chunk boundaries
-      }
-    } catch (err) {
-      chunksFailed++;
-      console.error(`[reimbursementsReport] chunk ${c.start.slice(0, 10)}..${c.end.slice(0, 10)} failed after retries:`, err);
-    }
-  }
-  if (chunksFailed === chunks.length) {
-    throw new Error(`All ${chunks.length} reimbursement chunks failed (Amazon FATAL/timeout)`);
-  }
-  const rows = [...byId.values()];
+): Promise<{ reportRows: number; inserted: number; updated: number; totalAmountCents: number }> {
+  // Single-window pull with a bounded retry on transient FATAL. Chunking was
+  // tried, but the binding constraint is Amazon's report-creation QUOTA (429
+  // QuotaExceeded) — GET_FBA_REIMBURSEMENTS_DATA's create-quota is tiny and
+  // restores slowly. The full window fetches fine, so one report (+ at most one
+  // FATAL retry) is far gentler than 3 chunks x retries. Do NOT run this
+  // back-to-back; let the quota recover between attempts.
+  const rows = await fetchReimbursementWindow(credentials, startDate, endDate, 2);
 
   const db = getDb();
 
@@ -323,5 +296,5 @@ export async function syncReimbursementsReport(
   }
 
   db.close();
-  return { reportRows: rows.length, inserted, updated, totalAmountCents: totalAmount, chunksFailed };
+  return { reportRows: rows.length, inserted, updated, totalAmountCents: totalAmount };
 }
