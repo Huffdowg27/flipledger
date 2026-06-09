@@ -168,15 +168,72 @@ export function parseReimbursementsReport(tsv: string): ReimbursementRow[] {
   return rows;
 }
 
+/** One report pull for a single window, retrying Amazon's transient
+ *  FATAL/CANCELLED (this report is flaky — a fresh report usually succeeds). */
+async function fetchReimbursementWindow(
+  credentials: SPAPICredentials,
+  startDate: string,
+  endDate: string,
+  maxAttempts = 3,
+): Promise<ReimbursementRow[]> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const { reportId } = await createReimbursementsReport(credentials, startDate, endDate);
+      const { reportDocumentId } = await waitForReimbursementsReport(credentials, reportId);
+      const tsv = await downloadReport(credentials, reportDocumentId);
+      return parseReimbursementsReport(tsv);
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err);
+      const retryable = msg.includes('FATAL') || msg.includes('CANCELLED') || msg.includes('did not complete');
+      if (!retryable || attempt === maxAttempts) throw err;
+      console.warn(`[reimbursementsReport] ${startDate.slice(0, 10)}..${endDate.slice(0, 10)} attempt ${attempt}/${maxAttempts}: ${msg.slice(0, 90)} — retrying`);
+      await new Promise((r) => setTimeout(r, 15_000 * attempt));
+    }
+  }
+  throw lastErr;
+}
+
+/** Split [start,end] into contiguous windows of at most chunkDays. Smaller
+ *  windows are far less likely to FATAL or time out on Amazon's side. */
+function chunkDateRange(startIso: string, endIso: string, chunkDays: number): Array<{ start: string; end: string }> {
+  const out: Array<{ start: string; end: string }> = [];
+  const endMs = new Date(endIso).getTime();
+  const span = chunkDays * 86400000;
+  let s = new Date(startIso).getTime();
+  while (s < endMs) {
+    const e = Math.min(s + span, endMs);
+    out.push({ start: new Date(s).toISOString(), end: new Date(e).toISOString() });
+    s = e;
+  }
+  return out;
+}
+
 export async function syncReimbursementsReport(
   credentials: SPAPICredentials,
   startDate: string,
   endDate: string
-): Promise<{ reportRows: number; inserted: number; updated: number; totalAmountCents: number }> {
-  const { reportId } = await createReimbursementsReport(credentials, startDate, endDate);
-  const { reportDocumentId } = await waitForReimbursementsReport(credentials, reportId);
-  const tsv = await downloadReport(credentials, reportDocumentId);
-  const rows = parseReimbursementsReport(tsv);
+): Promise<{ reportRows: number; inserted: number; updated: number; totalAmountCents: number; chunksFailed: number }> {
+  // Pull in <=180-day chunks with per-chunk retry. A transient FATAL self-heals,
+  // and one bad chunk no longer fails the whole sync (the others still land).
+  const chunks = chunkDateRange(startDate, endDate, 180);
+  const byId = new Map<string, ReimbursementRow>();
+  let chunksFailed = 0;
+  for (const c of chunks) {
+    try {
+      for (const row of await fetchReimbursementWindow(credentials, c.start, c.end)) {
+        byId.set(row.reimbursementId, row); // dedup across chunk boundaries
+      }
+    } catch (err) {
+      chunksFailed++;
+      console.error(`[reimbursementsReport] chunk ${c.start.slice(0, 10)}..${c.end.slice(0, 10)} failed after retries:`, err);
+    }
+  }
+  if (chunksFailed === chunks.length) {
+    throw new Error(`All ${chunks.length} reimbursement chunks failed (Amazon FATAL/timeout)`);
+  }
+  const rows = [...byId.values()];
 
   const db = getDb();
 
@@ -264,5 +321,5 @@ export async function syncReimbursementsReport(
   }
 
   db.close();
-  return { reportRows: rows.length, inserted, updated, totalAmountCents: totalAmount };
+  return { reportRows: rows.length, inserted, updated, totalAmountCents: totalAmount, chunksFailed };
 }
