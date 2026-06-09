@@ -177,10 +177,12 @@ export default function MerchantSalesPage() {
       }, size: 100,
     },
     { id: 'roiPercent', header: 'ROI', accessorKey: 'roiPercent', cell: ({ getValue }) => { const v = getValue() as number; return <span className={`font-mono ${v >= 0 ? 'text-positive' : 'text-negative'}`}>{formatPercent(v)}</span>; }, size: 80 },
+    // Margin = profit / sale price (profitPercent from the route). Shown alongside ROI per operator preference.
+    { id: 'profitPercent', header: 'Margin', accessorKey: 'profitPercent', cell: ({ getValue }) => { const v = getValue() as number; return <span className={`font-mono ${v >= 0 ? 'text-positive' : 'text-negative'}`}>{formatPercent(v)}</span>; }, size: 80 },
   ], []);
 
   function handleExport() {
-    const headers = ['Sold Date', 'Posted Date', 'Status', 'Order ID', 'ASIN', 'SKU', 'Product', 'Sale Price', 'Ship Charged', 'Ship Cost', 'Profit', 'ROI %'];
+    const headers = ['Sold Date', 'Posted Date', 'Status', 'Order ID', 'ASIN', 'SKU', 'Product', 'Sale Price', 'Ship Charged', 'Ship Cost', 'Profit', 'ROI %', 'Margin %'];
     const csvRows = visibleRows.map(r => [
       (r.soldDate || r.date).split('T')[0],
       r.postedDate ? r.postedDate.split('T')[0] : '',
@@ -194,6 +196,7 @@ export default function MerchantSalesPage() {
       (r.shippingCost/100).toFixed(2),
       (r.profit/100).toFixed(2),
       r.roiPercent.toFixed(1),
+      r.profitPercent.toFixed(1),
     ].join(','));
     const csv = [headers.join(','), ...csvRows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'merchant-sales.csv'; a.click(); URL.revokeObjectURL(url);

@@ -75,11 +75,12 @@ export default function EbaySalesPage() {
       }, size: 100,
     },
     { id: 'roiPercent', header: 'ROI', accessorKey: 'roiPercent', cell: ({ getValue }) => { const v = getValue() as number; return <span className={`font-mono ${v >= 0 ? 'text-positive' : 'text-negative'}`}>{formatPercent(v)}</span>; }, size: 80 },
+    { id: 'profitPercent', header: 'Margin', accessorKey: 'profitPercent', cell: ({ getValue }) => { const v = getValue() as number; return <span className={`font-mono ${v >= 0 ? 'text-positive' : 'text-negative'}`}>{formatPercent(v)}</span>; }, size: 80 },
   ], []);
 
   function handleExport() {
-    const headers = ['Date', 'Order ID', 'ASIN', 'Product', 'Sale Price', 'Ship Charged', 'Ship Cost', 'Profit', 'ROI %'];
-    const csvRows = rows.map(r => [r.date.split('T')[0], r.orderId, r.asin, `"${r.productName}"`, (r.salePrice/100).toFixed(2), (r.shippingCharged/100).toFixed(2), (r.shippingCost/100).toFixed(2), (r.profit/100).toFixed(2), r.roiPercent.toFixed(1)].join(','));
+    const headers = ['Date', 'Order ID', 'ASIN', 'Product', 'Sale Price', 'Ship Charged', 'Ship Cost', 'Profit', 'ROI %', 'Margin %'];
+    const csvRows = rows.map(r => [r.date.split('T')[0], r.orderId, r.asin, `"${r.productName}"`, (r.salePrice/100).toFixed(2), (r.shippingCharged/100).toFixed(2), (r.shippingCost/100).toFixed(2), (r.profit/100).toFixed(2), r.roiPercent.toFixed(1), r.profitPercent.toFixed(1)].join(','));
     const csv = [headers.join(','), ...csvRows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'merchant-sales.csv'; a.click(); URL.revokeObjectURL(url);
   }

@@ -114,16 +114,17 @@ export default function ProfitabilityReportsPage() {
     { id: 'revenue', header: 'Revenue', accessorKey: 'revenue', cell: ({ getValue }) => money(getValue() as number), size: 110 },
     { id: 'profit', header: 'Gross Profit', accessorKey: 'profit', cell: ({ getValue }) => signed(getValue() as number), size: 110 },
     { id: 'roi', header: 'Gross ROI%', accessorKey: 'roi', cell: ({ getValue }) => pct(getValue() as number), size: 100 },
+    { id: 'margin', header: 'Margin%', accessorKey: 'margin', cell: ({ getValue }) => pct(getValue() as number), size: 100 },
     { id: 'inbound', header: 'Inbound', accessorKey: 'inbound', cell: ({ getValue }) => <span className="font-mono text-accent">{formatNumber(getValue() as number)}</span>, size: 80 },
     { id: 'warehouse', header: 'Warehouse', accessorKey: 'warehouse', cell: ({ getValue }) => { const v = getValue() as number; return <span className={`font-mono ${v > 0 ? 'text-warning' : 'text-text-tertiary'}`}>{formatNumber(v)}</span>; }, size: 90 },
   ], [groupBy]);
 
   function handleExport() {
-    const headers = [DIM_LABEL[groupBy], 'Qty', 'Platform Fees', 'MFN Shipping', 'Total COGS', 'Revenue', 'Gross Profit', 'Gross ROI %', 'Inbound', 'Warehouse'];
+    const headers = [DIM_LABEL[groupBy], 'Qty', 'Platform Fees', 'MFN Shipping', 'Total COGS', 'Revenue', 'Gross Profit', 'Gross ROI %', 'Margin %', 'Inbound', 'Warehouse'];
     const csvRows = rows.map(r => [
       `"${r.groupKey}"`, r.unitsSold, (r.fees / 100).toFixed(2), (r.shippingCost / 100).toFixed(2),
       (r.cogs / 100).toFixed(2), (r.revenue / 100).toFixed(2), (r.profit / 100).toFixed(2),
-      r.roi.toFixed(1), r.inbound, r.warehouse,
+      r.roi.toFixed(1), r.margin.toFixed(1), r.inbound, r.warehouse,
     ].join(','));
     const csv = [headers.join(','), ...csvRows].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -144,6 +145,7 @@ export default function ProfitabilityReportsPage() {
     revenue: <span className="font-mono">{formatCurrency(totals.revenue)}</span>,
     profit: <span className={`font-mono font-medium ${totals.profit >= 0 ? 'text-positive' : 'text-negative'}`}>{formatCurrency(totals.profit)}</span>,
     roi: <span className={`font-mono ${totals.roi >= 0 ? 'text-positive' : 'text-negative'}`}>{formatPercent(totals.roi)}</span>,
+    margin: <span className={`font-mono ${totals.margin >= 0 ? 'text-positive' : 'text-negative'}`}>{formatPercent(totals.margin)}</span>,
     inbound: <span className="font-mono text-accent">{formatNumber(totals.inbound)}</span>,
     warehouse: <span className="font-mono text-warning">{formatNumber(totals.warehouse)}</span>,
   } : undefined;
@@ -181,6 +183,7 @@ export default function ProfitabilityReportsPage() {
         <StatCard label="Revenue" value={totals?.revenue || 0} format="currency" />
         <StatCard label="Gross Profit" value={totals?.profit || 0} format="currency" accentColor={(totals?.profit || 0) >= 0 ? 'positive' : 'negative'} />
         <StatCard label="Gross ROI" value={totals?.roi || 0} format="percent" accentColor={(totals?.roi || 0) >= 0 ? 'positive' : 'negative'} />
+        <StatCard label="Margin" value={totals?.margin || 0} format="percent" accentColor={(totals?.margin || 0) >= 0 ? 'positive' : 'negative'} />
         <StatCard label="On Hand Qty" value={totals?.onHand || 0} format="number" />
         <StatCard label="On Hand Value" value={totals?.onHandValueCents || 0} format="currency" accentColor="amazon" />
       </div>
