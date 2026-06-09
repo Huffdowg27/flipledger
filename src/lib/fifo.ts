@@ -79,11 +79,21 @@ export function recalculateFIFO(options: {
     let skusToProcess: { sku: string; asin: string }[] = [];
 
     if (recalcAll) {
-      // Get all unique SKUs from inventory_ledger
+      // Get all unique SKUs from inventory_ledger, oldest-lot-first. The order
+      // matters for the ASIN fallback below: when an ASIN has lots under several
+      // SKUs, an orphan-SKU sale (its own SKU has no lot) is claimed by the FIRST
+      // same-ASIN SKU we process — so processing the SKU with the oldest lot first
+      // makes that fallback behave like true FIFO across the ASIN's SKUs, and makes
+      // the result deterministic (was: alphabetical, which let ~5 items oscillate
+      // between equal-cost SKUs on every recalc).
       skusToProcess = db.prepare(`
-        SELECT DISTINCT sku, asin FROM inventory_ledger
-        WHERE buy_price > 0
-        ORDER BY sku
+        SELECT sku, asin FROM (
+          SELECT sku, asin, MIN(date_purchased) AS first_lot
+          FROM inventory_ledger
+          WHERE buy_price > 0
+          GROUP BY sku, asin
+        )
+        ORDER BY first_lot ASC, sku ASC
       `).all() as any[];
     } else if (sku) {
       // Single SKU
@@ -142,6 +152,14 @@ export function recalculateFIFO(options: {
 
     // Process all SKUs in a single transaction
     const processAll = db.transaction(() => {
+      // An orphan-SKU sale (its own SKU carries no lot) matches the ASIN fallback
+      // for EVERY same-ASIN SKU that has lots. Without this guard each of those SKU
+      // passes consumes the same sale from its own lots — double-counting inventory
+      // and leaving cogs_per_unit set by whichever SKU ran last (the source of the
+      // run-to-run oscillation). Claim each ASIN-fallback sale exactly once, by the
+      // first SKU pass (oldest-lot, per the ordering above).
+      const claimedAsinSaleIds = new Set<number>();
+
       for (const item of skusToProcess) {
         const batches = getBatches.all(item.sku) as InventoryBatch[];
         if (batches.length === 0) continue;
@@ -149,8 +167,11 @@ export function recalculateFIFO(options: {
         // Get sales — by SKU primarily
         let sales = getSalesBySku.all(item.sku) as SaleItem[];
 
-        // Also get sales matched by ASIN that don't have their own SKU inventory entry
-        const asinSales = getSalesByAsin.all(item.asin) as SaleItem[];
+        // Also get sales matched by ASIN that don't have their own SKU inventory
+        // entry — but only those not already claimed by an earlier same-ASIN SKU.
+        const asinSales = (getSalesByAsin.all(item.asin) as SaleItem[])
+          .filter((s) => !claimedAsinSaleIds.has(s.id));
+        for (const s of asinSales) claimedAsinSaleIds.add(s.id);
         sales = [...sales, ...asinSales];
 
         // Sort by purchase_date
