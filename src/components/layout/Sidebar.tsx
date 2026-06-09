@@ -51,6 +51,7 @@ const NAV: NavSection[] = [
       { label: 'Batches', href: '/list' },
       { label: 'MFN Orders', href: '/mfn/orders' },
       { label: 'Labels', href: '/labels' },
+      { label: 'Import Shipping Costs', href: '/bookkeep/import-shipping' },
       { label: 'Inbound Shipping', href: '/bookkeep/inbound-shipping' },
     ],
   },
