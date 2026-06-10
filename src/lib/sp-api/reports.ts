@@ -338,6 +338,13 @@ function parseSettlementReport(content: string): number {
     // Every data row repeats the same settlement-id/start/end, so one pass is enough.
     let settlementMetaUpserted = false;
 
+    // Multiplicity tracker for service-fee rows within THIS report. Amazon
+    // legitimately charges identical fees (same type/amount/day) several times —
+    // e.g. two $0.84 removal fees for the same removal order on one day. A pure
+    // (type, amount, date) existence check collapses those and undercounts
+    // expenses, so we count occurrences and top the DB up to match.
+    const serviceFeeSeen = new Map<string, number>();
+
     for (let i = 1; i < lines.length; i++) {
       const cols = lines[i].split('\t').map(c => c.trim().replace(/"/g, ''));
       if (cols.length < Math.max(orderIdIdx, amountIdx) + 1) continue;
@@ -489,28 +496,46 @@ function parseSettlementReport(content: string): number {
           continue;
         }
 
-        // Check if we already have this service fee (by type + amount + date)
-        const existing = db.prepare(`
-          SELECT 1 FROM fee_details fd
+        // Dedup with multiplicity: compare how many identical rows (type+amount+day)
+        // this report contains so far vs how many the DB already holds, and insert
+        // only the difference. Re-parsing the same report stays a no-op.
+        const seenKey = `${feeType}|${feeCents}|${String(feeDate).slice(0, 10)}`;
+        const seen = (serviceFeeSeen.get(seenKey) || 0) + 1;
+        serviceFeeSeen.set(seenKey, seen);
+
+        const existingCount = (db.prepare(`
+          SELECT COUNT(*) as cnt FROM fee_details fd
           JOIN financial_events fe ON fd.financial_event_id = fe.id
           WHERE fe.event_type = 'SettlementServiceFee'
             AND fd.fee_type = ? AND fd.amount = ? AND date(fd.posted_date) = date(?)
-          LIMIT 1
-        `).get(feeType, feeCents, feeDate);
+        `).get(feeType, feeCents, feeDate) as { cnt: number }).cnt;
 
-        if (!existing) {
-          const eventResult = db.prepare(`
-            INSERT INTO financial_events (event_type, posted_date, order_id, asin, sku, marketplace, total_amount, raw_data, created_at)
-            VALUES ('SettlementServiceFee', ?, NULL, NULL, NULL, 'amazon', ?, ?, datetime('now'))
-          `).run(feeDate, feeCents, JSON.stringify({ description: amountDescription, settlement: true }));
+        if (existingCount < seen) {
+          // Duplicate rows share one anchor financial_events row — the unique
+          // index (event_type, order_id, asin, sku, posted_date, total_amount)
+          // cannot hold two identical events, so multiplicity lives in
+          // fee_details (which has no unique index).
+          const anchor = db.prepare(`
+            SELECT id FROM financial_events
+            WHERE event_type = 'SettlementServiceFee' AND order_id IS NULL
+              AND total_amount = ? AND posted_date = ?
+            LIMIT 1
+          `).get(feeCents, feeDate) as { id?: number } | undefined;
 
-          if (eventResult.changes > 0) {
-            db.prepare(`
-              INSERT OR IGNORE INTO fee_details (financial_event_id, order_id, asin, fee_type, fee_category, amount, posted_date)
-              VALUES (?, NULL, NULL, ?, ?, ?, ?)
-            `).run(Number(eventResult.lastInsertRowid), feeType, feeCategory, feeCents, feeDate);
-            updated++;
+          let eventId = anchor?.id;
+          if (!eventId) {
+            const eventResult = db.prepare(`
+              INSERT INTO financial_events (event_type, posted_date, order_id, asin, sku, marketplace, total_amount, raw_data, created_at)
+              VALUES ('SettlementServiceFee', ?, NULL, NULL, NULL, 'amazon', ?, ?, datetime('now'))
+            `).run(feeDate, feeCents, JSON.stringify({ description: amountDescription, settlement: true }));
+            eventId = Number(eventResult.lastInsertRowid);
           }
+
+          db.prepare(`
+            INSERT INTO fee_details (financial_event_id, order_id, asin, fee_type, fee_category, amount, posted_date)
+            VALUES (?, NULL, NULL, ?, ?, ?, ?)
+          `).run(eventId, feeType, feeCategory, feeCents, feeDate);
+          updated++;
         }
       }
 

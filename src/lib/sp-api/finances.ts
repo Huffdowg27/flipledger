@@ -237,7 +237,10 @@ function toCents(amount: { CurrencyAmount?: number; CurrencyCode?: string } | un
 
 /** Categorize Amazon fee types into groups for P&L reporting */
 function categorizeFee(feeType: string): string {
-  const sellingFees = ['Commission', 'RefundCommission', 'VariableClosingFee', 'FixedClosingFee', 'HighVolumeListingFee'];
+  // ShippingHB = shipping holdback (referral fee on buyer-paid shipping).
+  // InventoryLab groups it with closing fees under selling fees; keeping it
+  // there makes FL's Selling Fees line reconcile 1:1 against IL.
+  const sellingFees = ['Commission', 'RefundCommission', 'VariableClosingFee', 'FixedClosingFee', 'HighVolumeListingFee', 'ShippingHB'];
   const fbaTransactionFees = ['FBAPerUnitFulfillmentFee', 'FBAPerOrderFulfillmentFee', 'FBAWeightBasedFee', 'ShippingChargeback', 'ShippingChargeBack'];
   const fbaInventoryFees = ['FBAInboundTransportationFee', 'FBAStorageFee', 'FBALongTermStorageFee', 'FBARemovalFee', 'FBADisposalFee', 'FBAInboundTransportationProgramFee'];
 
