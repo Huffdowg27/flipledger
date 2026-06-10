@@ -45,6 +45,21 @@ export async function GET(request: NextRequest) {
 
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
+  // ── History cutover ──────────────────────────────────────────────────
+  // Synced SP-API coverage starts 2024-06-29; before that, settlement truth
+  // lives in historical_transactions / historical_cogs (imported from Amazon
+  // Date Range Transaction Reports + InventoryLab exports). The two sources
+  // must never overlap: synced queries are clamped to >= CUTOVER and the
+  // historical segment covers < CUTOVER. May–June 2024 partial synced data is
+  // deliberately superseded by the (complete) historical ledger.
+  const HISTORY_CUTOVER = '2024-07-01';
+  // Historical data is Amazon-only — skip the segment when filtering to
+  // another marketplace. User-entered tables (expenses, other_income) are not
+  // marketplace syncs and keep the full requested range.
+  const histActive = startDate < HISTORY_CUTOVER && (!marketplace || marketplace === 'amazon');
+  const histEnd = endDateNext < HISTORY_CUTOVER ? endDateNext : HISTORY_CUTOVER;
+  const syncedStart = startDate < HISTORY_CUTOVER ? HISTORY_CUTOVER : startDate;
+
   try {
     // Income (by posted_date — cash basis)
     const salesIncome = db.prepare(`
@@ -53,7 +68,7 @@ export async function GET(request: NextRequest) {
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // MFN shipping credits (income — seller charges buyer for shipping)
     const mfnShippingCredits = db.prepare(`
@@ -62,7 +77,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel IN ('MFN', 'Seller')
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // FBA/WFS shipping credits (Amazon/Walmart charges buyer, passes to seller)
     const fbaShippingCredits = db.prepare(`
@@ -71,7 +86,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel NOT IN ('MFN', 'Seller')
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // FBA shipping credits ARE income: Amazon's settlement shows
     // ShippingCharge credit − free-shipping promo − ShippingChargeback = 0,
@@ -86,7 +101,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     const otherIncomeTotal = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total FROM other_income WHERE date >= ? AND date < ? ${MF_R}
@@ -107,7 +122,7 @@ export async function GET(request: NextRequest) {
         WHERE disposition = 'SELLABLE' AND item_returned = 1 AND marketplace = 'amazon'
       ) sr ON oi.order_id = sr.order_id AND COALESCE(oi.sku,'') = sr.sku
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // Order-linked fees (by order's posted_date)
     // Use -SUM(amount) instead of SUM(ABS(amount)) so the fee total stays sign-correct.
@@ -131,7 +146,7 @@ export async function GET(request: NextRequest) {
         AND NOT (src.event_type = 'RefundEvent' AND fd.amount > 0)
         ${REAL_FEES_ONLY}
       GROUP BY fd.fee_category, fd.fee_type
-    `).all(startDate, endDateNext) as any[];
+    `).all(syncedStart, endDateNext) as any[];
 
     // Non-order fees (service fees like storage, inbound shipping, subscriptions)
     // These are marketplace-specific — filter by marketplace when one is selected
@@ -163,7 +178,7 @@ export async function GET(request: NextRequest) {
           )
         )
       GROUP BY fd.fee_category, fd.fee_type
-    `).all(startDate, endDateNext) as any[];
+    `).all(syncedStart, endDateNext) as any[];
 
     const feesByCategory = [...orderFees, ...serviceFees]
       .sort((a, b) => (a.category || '').localeCompare(b.category || '') || b.total - a.total);
@@ -186,7 +201,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel = 'MFN'
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // Refunds — for Walmart, only count refunds that have a corresponding
     // WalmartRefundEvent in the recon report (i.e., Walmart has actually
@@ -208,20 +223,77 @@ export async function GET(request: NextRequest) {
               AND json_extract(fe.raw_data, '$."Amount Type"') = 'Product Price'
           )
         )
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // Reimbursements — exclude SETTLEMENT- rows (duplicates of ADJ- rows from settlement report re-import)
     const reimbTotal = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
         AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
 
     // Sales tax — stored as negative (Amazon reports withheld tax as a deduction);
     // negate so the P&L surfaces tax collected/remitted as a positive figure.
     const taxTotal = db.prepare(`
       SELECT COALESCE(SUM(-tax_collected), 0) as collected, COALESCE(SUM(-marketplace_facilitator_tax), 0) as facilitator
       FROM sales_tax WHERE posted_date >= ? AND posted_date < ? ${MF_R}
-    `).get(startDate, endDateNext) as any;
+    `).get(syncedStart, endDateNext) as any;
+
+    // ── Historical segment (< HISTORY_CUTOVER) ─────────────────────────
+    // Settlement-truth buckets from Amazon's Date Range Transaction Reports
+    // plus per-order InventoryLab buy costs. Transfer / loan / debt rows are
+    // cash movements, not P&L, and are excluded.
+    if (histActive) {
+      const h = db.prepare(`
+        SELECT
+          COALESCE(SUM(CASE WHEN type='Order' THEN product_sales + gift_wrap_credits END), 0) AS sales,
+          COALESCE(SUM(CASE WHEN type='Order' AND fulfillment='Amazon' THEN shipping_credits END), 0) AS shipFba,
+          COALESCE(SUM(CASE WHEN type='Order' AND COALESCE(fulfillment,'') != 'Amazon' THEN shipping_credits END), 0) AS shipMfn,
+          COALESCE(SUM(CASE WHEN type='Order' THEN promotional_rebates END), 0) AS promo,
+          COALESCE(SUM(CASE WHEN type='Order' THEN selling_fees END), 0) AS sellingFees,
+          COALESCE(SUM(CASE WHEN type='Order' THEN fba_fees END), 0)
+            + COALESCE(SUM(CASE WHEN type='FBA Customer Return Fee' THEN total END), 0) AS fbaFees,
+          COALESCE(SUM(CASE WHEN type='Order' THEN other_transaction_fees + other END), 0) AS orderOtherFees,
+          COALESCE(SUM(CASE WHEN type='Refund' THEN -(product_sales + shipping_credits + gift_wrap_credits + promotional_rebates) END), 0) AS refunds,
+          COALESCE(SUM(CASE WHEN type='Refund' THEN selling_fees + fba_fees + other_transaction_fees + other END), 0) AS clawback,
+          COALESCE(SUM(CASE WHEN type IN ('Adjustment','SAFE-T reimbursement') THEN total END), 0) AS reimb,
+          COALESCE(SUM(CASE WHEN type='Shipping Services' THEN total END), 0) AS shippingServices,
+          COALESCE(SUM(CASE WHEN type IN ('FBA Inventory Fee','FBA Inventory Fee - Reversal') THEN total END), 0) AS fbaInventoryFees,
+          COALESCE(SUM(CASE WHEN type='Service Fee' THEN total END), 0) AS serviceFees,
+          COALESCE(SUM(CASE WHEN type LIKE 'Liquidations%' THEN total END), 0) AS liquidations,
+          COALESCE(SUM(CASE WHEN type NOT IN ('Order','Refund','Transfer','Automated Loan Repayment','Debt',
+            'Adjustment','SAFE-T reimbursement','Shipping Services','FBA Inventory Fee','FBA Inventory Fee - Reversal',
+            'Service Fee','FBA Customer Return Fee') AND type NOT LIKE 'Liquidations%' THEN total END), 0) AS otherMisc
+        FROM historical_transactions
+        WHERE txn_date >= ? AND txn_date < ?
+      `).get(startDate, histEnd) as any;
+      const hCogs = (db.prepare(
+        'SELECT COALESCE(SUM(buy_cost), 0) AS t FROM historical_cogs WHERE date_posted >= ? AND date_posted < ?'
+      ).get(startDate, histEnd) as any).t;
+
+      salesIncome.total += h.sales;
+      mfnShippingCredits.total += h.shipMfn;
+      fbaShippingCredits.total += h.shipFba;
+      shippingCredits.total += h.shipMfn;
+      promoRebates.total += h.promo;
+      otherIncomeTotal.total += h.liquidations;
+      cogsTotal.total += hCogs;
+      refundTotal.total += h.refunds;
+      refundTotal.clawback += h.clawback;
+      reimbTotal.total += h.reimb;
+      shippingCosts.total += -h.shippingServices; // stored negative; cost is positive
+
+      // Fee buckets are pre-aggregated in the reports — surface them as
+      // explicit "Historical" children so they're distinguishable in the UI.
+      const histFees: { category: string; fee_type: string; total: number }[] = [
+        { category: 'Selling Fees', fee_type: 'Historical Selling Fees', total: -h.sellingFees },
+        { category: 'FBA Transaction Fees', fee_type: 'Historical FBA Fees', total: -h.fbaFees },
+        { category: 'FBA Inventory and Inbound Service Fees', fee_type: 'Historical FBA Inventory Fees', total: -h.fbaInventoryFees },
+        { category: 'Other Fees', fee_type: 'Historical Service & Other Fees', total: -(h.serviceFees + h.orderOtherFees + h.otherMisc) },
+      ];
+      for (const f of histFees) {
+        if (f.total !== 0) feesByCategory.push(f);
+      }
+    }
 
     // Group fees into hierarchy
     const feeHierarchy: Record<string, { total: number; children: { name: string; amount: number }[] }> = {};
@@ -249,7 +321,7 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(startDate, endDateNext) as any : null;
+    `).get(syncedStart, endDateNext) as any : null;
 
     const dailySummary = summaryOnly ? db.prepare(`
       SELECT
@@ -262,7 +334,7 @@ export async function GET(request: NextRequest) {
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
       GROUP BY substr(fe.posted_date, 1, 10)
       ORDER BY day
-    `).all(startDate, endDateNext) as any[] : [];
+    `).all(syncedStart, endDateNext) as any[] : [];
 
     // Sales detail — individual products sold in the period, with per-order fees
     const salesDetail = summaryOnly ? [] : db.prepare(`
@@ -294,7 +366,7 @@ export async function GET(request: NextRequest) {
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
       ORDER BY fe.posted_date DESC
       LIMIT 500
-    `).all(startDate, endDateNext) as any[];
+    `).all(syncedStart, endDateNext) as any[];
 
     // Refund detail for the period.
     //
@@ -350,7 +422,7 @@ export async function GET(request: NextRequest) {
       GROUP BY r.id
       ORDER BY r.refund_date DESC
       LIMIT 200
-    `).all(startDate, endDateNext) as any[];
+    `).all(syncedStart, endDateNext) as any[];
 
     db.close();
 
