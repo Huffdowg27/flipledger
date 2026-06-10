@@ -729,6 +729,50 @@ export function initializeDatabase() {
     // refund_amount (which must contain only money returned to the buyer) so the
     // P&L can surface it as income, matching Amazon settlements and IL.
     `ALTER TABLE refunds ADD COLUMN restocking_fee INTEGER DEFAULT 0`,
+    // ── Fresh-install drift repair (found by clean-clone boot test 2026-06-10) ──
+    // Everything below existed on the live DB via manual ALTERs but was never
+    // durable; a fresh install was missing them (P&L 500'd on disposition, and
+    // worse, the dedup-critical unique indexes were absent — syncs would
+    // re-duplicate refunds/products/reimbursements on a new machine).
+    `ALTER TABLE refunds ADD COLUMN disposition TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN transportation_operation_id TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN transportation_option_id TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN transportation_status TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN transportation_confirmed_at TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN transportation_error TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN confirmed_shipment_ids TEXT`,
+    `ALTER TABLE listing_batches ADD COLUMN confirmed_shipments TEXT`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_refunds_unique ON refunds(
+       order_id, COALESCE(sku,''), COALESCE(asin,''), refund_date, refund_amount, marketplace)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_products_asin_unique ON products(asin)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_reimbursements_unique ON reimbursements(
+       marketplace, COALESCE(reason,''), date(reimbursement_date), amount, COALESCE(sku,''), COALESCE(asin,''))`,
+    // Historical era (pre sync-coverage, < 2024-07-01): settlement truth imported
+    // from Amazon Date Range Transaction Reports + InventoryLab exports by
+    // scripts/import-history.js. The P&L reads these for pre-cutover dates, so
+    // the tables must exist (empty is fine) on fresh installs.
+    `CREATE TABLE IF NOT EXISTS historical_transactions (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       txn_date TEXT NOT NULL, type TEXT NOT NULL, order_id TEXT, sku TEXT,
+       description TEXT, quantity INTEGER, fulfillment TEXT,
+       product_sales INTEGER NOT NULL DEFAULT 0, shipping_credits INTEGER NOT NULL DEFAULT 0,
+       gift_wrap_credits INTEGER NOT NULL DEFAULT 0, promotional_rebates INTEGER NOT NULL DEFAULT 0,
+       marketplace_withheld_tax INTEGER NOT NULL DEFAULT 0, selling_fees INTEGER NOT NULL DEFAULT 0,
+       fba_fees INTEGER NOT NULL DEFAULT 0, other_transaction_fees INTEGER NOT NULL DEFAULT 0,
+       other INTEGER NOT NULL DEFAULT 0, total INTEGER NOT NULL DEFAULT 0,
+       source_file TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_hist_txn_date ON historical_transactions(txn_date)`,
+    `CREATE INDEX IF NOT EXISTS idx_hist_txn_order ON historical_transactions(order_id)`,
+    `CREATE TABLE IF NOT EXISTS historical_cogs (
+       id INTEGER PRIMARY KEY AUTOINCREMENT,
+       date_posted TEXT NOT NULL, order_id TEXT, msku TEXT, asin TEXT,
+       quantity INTEGER, buy_cost INTEGER NOT NULL DEFAULT 0,
+       supplier TEXT, channel TEXT NOT NULL, source_file TEXT NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS idx_hist_cogs_date ON historical_cogs(date_posted)`,
+    `CREATE INDEX IF NOT EXISTS idx_hist_cogs_order ON historical_cogs(order_id)`,
+    `CREATE TABLE IF NOT EXISTS historical_inventory_snapshots (
+       snapshot_date TEXT PRIMARY KEY, total_value INTEGER NOT NULL,
+       sku_rows INTEGER, source_file TEXT)`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }
