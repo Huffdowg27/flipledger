@@ -75,3 +75,7 @@ backup/
 # match any depth under docs/ — the old /docs/*.csv missed subfolders like docs/audits/
 /docs/**/*.csv
 /docs/*.csv
+
+# Operator docs (contain business financials / design refs) — local only
+/docs/agent-control/
+/docs/design-reference/
