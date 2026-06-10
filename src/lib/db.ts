@@ -725,6 +725,10 @@ export function initializeDatabase() {
      )`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_tax_unique
        ON sales_tax(COALESCE(order_id,''), tax_collected, marketplace_facilitator_tax, posted_date)`,
+    // Restocking fee the seller KEEPS on a partial refund. Stored separately from
+    // refund_amount (which must contain only money returned to the buyer) so the
+    // P&L can surface it as income, matching Amazon settlements and IL.
+    `ALTER TABLE refunds ADD COLUMN restocking_fee INTEGER DEFAULT 0`,
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }

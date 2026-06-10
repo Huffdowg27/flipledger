@@ -43,7 +43,7 @@ interface SaleItem {
 }
 
 interface PLData {
-  income: { sales: number; shippingCredits: number; otherIncome: number; total: number };
+  income: { sales: number; shippingCredits: number; fbaShippingCredits: number; promoRebates: number; restockingFees: number; otherIncome: number; total: number };
   expenses: {
     cogs: number;
     feeHierarchy: Record<string, { total: number; children: { name: string; amount: number }[] }>;
@@ -157,6 +157,9 @@ export default function ProfitLossPage() {
             </tr>
             <PLRow label="Sales" amount={data.income.sales} />
             <PLRow label="MFN Shipping Credits" amount={data.income.shippingCredits} />
+            <PLRow label="FBA Shipping Credits" amount={data.income.fbaShippingCredits} />
+            <PLRow label="Promotional Rebates" amount={data.income.promoRebates} />
+            <PLRow label="Restocking Fees" amount={data.income.restockingFees} />
             <PLRow label="Other Income" amount={data.income.otherIncome} />
             <PLRow label="Total Income" amount={data.income.total} bold />
 

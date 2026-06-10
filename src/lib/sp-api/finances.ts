@@ -189,6 +189,18 @@ export async function syncFinancialEvents(
         }
       }
 
+      // Process Product Ads Payments (sponsored ads invoices)
+      if (eventGroup.ProductAdsPaymentEventList) {
+        for (const event of eventGroup.ProductAdsPaymentEventList) {
+          try {
+            processProductAdsPaymentEvent(db, event);
+            eventsProcessed++;
+          } catch (err) {
+            errors.push(`ProductAdsPayment error: ${err}`);
+          }
+        }
+      }
+
       // Process Removal Shipment Events
       if (eventGroup.RemovalShipmentEventList) {
         for (const event of eventGroup.RemovalShipmentEventList) {
@@ -357,11 +369,30 @@ function processRefundEvent(db: Database.Database, event: any) {
   for (const item of items) {
     let refundAmount = 0;
     let feeClawback = 0;
+    let restockingFee = 0;
 
-    // Charges being refunded to customer
+    // Charges being refunded to customer. Adjustments post NEGATIVE when money
+    // goes back to the buyer, so negate to store the refund as a positive cost.
+    // Two charge types are NOT refund costs and must stay out of refund_amount:
+    // - RestockingFee posts positive — money the seller KEEPS (income).
+    // - Tax/ShippingTax are marketplace-facilitator money; Amazon collects and
+    //   remits both legs, so neither direction touches seller profit.
     const charges = item.ItemChargeAdjustmentList || [];
     for (const charge of charges) {
-      refundAmount += Math.abs(toCents(charge.ChargeAmount));
+      const chargeType: string = charge.ChargeType || '';
+      if (chargeType === 'RestockingFee') {
+        restockingFee += toCents(charge.ChargeAmount);
+        continue;
+      }
+      if (chargeType.includes('Tax')) continue;
+      refundAmount += -toCents(charge.ChargeAmount);
+    }
+
+    // Promotion adjustments post POSITIVE when a promo discount is clawed back
+    // from the buyer's refund — they reduce what the seller pays out.
+    const promos = item.PromotionAdjustmentList || [];
+    for (const promo of promos) {
+      refundAmount += -toCents(promo.PromotionAmount);
     }
 
     // Fees being returned to seller
@@ -377,18 +408,19 @@ function processRefundEvent(db: Database.Database, event: any) {
     // Amazon sometimes sends the same refund item twice — once with fee credits
     // and once without — so we upsert to always preserve the real credit amount.
     db.prepare(`
-      INSERT INTO refunds (order_id, refund_date, asin, sku, quantity, refund_amount, reason, item_returned, fee_clawback, marketplace, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO refunds (order_id, refund_date, asin, sku, quantity, refund_amount, reason, item_returned, fee_clawback, restocking_fee, marketplace, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(order_id, COALESCE(sku,''), COALESCE(asin,''), refund_date, refund_amount, marketplace)
-      DO UPDATE SET fee_clawback = MAX(fee_clawback, excluded.fee_clawback)
+      DO UPDATE SET fee_clawback = MAX(fee_clawback, excluded.fee_clawback),
+                    restocking_fee = MAX(restocking_fee, excluded.restocking_fee)
     `).run(orderId, postedDate, item.ASIN || null, item.SellerSKU, item.QuantityShipped || 1,
-      refundAmount, 'CUSTOMER_RETURN', 0, feeClawback, 'amazon', now);
+      refundAmount, 'CUSTOMER_RETURN', 0, feeClawback, restockingFee, 'amazon', now);
 
     // Also insert fee details for the clawback
     const result = db.prepare(`
       INSERT OR IGNORE INTO financial_events (event_type, posted_date, order_id, asin, sku, marketplace, total_amount, raw_data, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('RefundEvent', postedDate, orderId, item.ASIN || null, item.SellerSKU, 'amazon', -refundAmount + feeClawback, JSON.stringify(event), now);
+    `).run('RefundEvent', postedDate, orderId, item.ASIN || null, item.SellerSKU, 'amazon', -refundAmount + feeClawback + restockingFee, JSON.stringify(event), now);
 
     if (result.changes > 0) {
       const eventId = Number(result.lastInsertRowid);
@@ -401,6 +433,39 @@ function processRefundEvent(db: Database.Database, event: any) {
         `).run(eventId, orderId, item.ASIN || null, fee.FeeType, categorizeFee(fee.FeeType), feeAmount, postedDate);
       }
     }
+  }
+}
+
+// Sponsored ads invoices. NOTE: unlike every other financial event type,
+// ProductAdsPaymentEvent uses lowerCamelCase field names (postedDate,
+// invoiceId, transactionValue) — a documented SP-API inconsistency. Read both
+// casings defensively. The invoiceId is stored in order_id purely as a stable
+// identity key for the financial_events unique index.
+function processProductAdsPaymentEvent(db: Database.Database, event: any) {
+  const postedDate = event.postedDate || event.PostedDate;
+  if (!postedDate) return;
+  const invoiceId = event.invoiceId || event.InvoiceId || null;
+  let amount = toCents(event.transactionValue || event.TransactionValue);
+  if (amount === 0) amount = toCents(event.baseValue || event.BaseValue);
+  if (amount === 0) return;
+
+  // Normalize sign: ad charges are costs (negative), refunds are credits.
+  const txType = String(event.transactionType || event.TransactionType || '').toLowerCase();
+  const signed = txType === 'refund' ? Math.abs(amount) : -Math.abs(amount);
+
+  const now = new Date().toISOString();
+  const result = db.prepare(`
+    INSERT OR IGNORE INTO financial_events (event_type, posted_date, order_id, asin, sku, marketplace, total_amount, raw_data, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run('ProductAdsPaymentEvent', postedDate, invoiceId, null, null, 'amazon', signed, JSON.stringify(event), now);
+
+  if (result.changes > 0) {
+    // order_id stays NULL so the P&L picks this up via its non-order
+    // (service fee) query — invoiceId is not a customer order.
+    db.prepare(`
+      INSERT INTO fee_details (financial_event_id, order_id, asin, fee_type, fee_category, amount, posted_date)
+      VALUES (?, NULL, NULL, 'CostOfAdvertising', 'Cost of Advertising', ?, ?)
+    `).run(Number(result.lastInsertRowid), signed, postedDate);
   }
 }
 

@@ -47,6 +47,7 @@ export async function GET(request: NextRequest) {
       SELECT
         COALESCE(SUM(refund_amount), 0) as totalRefunds,
         COALESCE(SUM(fee_clawback), 0) as totalClawbacks,
+        COALESCE(SUM(COALESCE(restocking_fee, 0)), 0) as totalRestocking,
         COUNT(*) as refundCount
       FROM refunds
       WHERE refund_date >= ? AND refund_date < ?
@@ -321,7 +322,8 @@ export async function GET(request: NextRequest) {
     const line3_netReceipts = line1_grossReceipts - line2_returnsAllowances;
     const line4_cogs = cogsSold.total;
     const line5_grossProfit = line3_netReceipts - line4_cogs;
-    const line6_otherIncome = reimbursements.total + otherIncomeData.total + refundTotals.totalClawbacks;
+    // Restocking fees: money kept by the seller on partial refunds — income.
+    const line6_otherIncome = reimbursements.total + otherIncomeData.total + refundTotals.totalClawbacks + refundTotals.totalRestocking;
     const line7_grossIncome = line5_grossProfit + line6_otherIncome;
 
     // Deductions (Lines 8-27 on Schedule C)

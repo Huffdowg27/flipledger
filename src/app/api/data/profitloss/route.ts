@@ -73,7 +73,10 @@ export async function GET(request: NextRequest) {
       WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel NOT IN ('MFN', 'Seller')
     `).get(startDate, endDateNext) as any;
 
-    // Only include MFN shipping credits as income — FBA shipping credits are offset by ShippingChargeback fees
+    // FBA shipping credits ARE income: Amazon's settlement shows
+    // ShippingCharge credit − free-shipping promo − ShippingChargeback = 0,
+    // so the credit must be counted alongside promo rebates and the chargeback
+    // fee for the three to net out (verified against IL 6/1-6/6: 56.81 − 47.11 − 9.70 = 0).
     const shippingCredits = { total: mfnShippingCredits.total };
 
     // Promotional rebates (negative — reduces income)
@@ -107,7 +110,12 @@ export async function GET(request: NextRequest) {
     `).get(startDate, endDateNext) as any;
 
     // Order-linked fees (by order's posted_date)
-    // Use -SUM(amount) instead of SUM(ABS(amount)) so that positive clawbacks reduce the fee total
+    // Use -SUM(amount) instead of SUM(ABS(amount)) so the fee total stays sign-correct.
+    // Positive fee rows attached to RefundEvents are commission clawbacks — those are
+    // already counted once via refunds.fee_clawback in netProfit, so they must NOT
+    // also reduce the fee lines here (that double-counts the credit). Excluding them
+    // keeps Selling Fees gross, matching IL's "Referral Fee" + "Selling Fee Refunds" split.
+    // Negative RefundEvent fees (RefundCommission = refund admin fee) remain expenses.
     // In reconciled mode: REAL_FEES_ONLY excludes financial_event_id=0 estimated fee rows.
     const orderFees = db.prepare(`
       SELECT
@@ -117,8 +125,10 @@ export async function GET(request: NextRequest) {
       FROM fee_details fd
       JOIN ${DATE_SUB} fe ON fd.order_id = fe.order_id
       JOIN orders o ON fd.order_id = o.order_id
+      LEFT JOIN financial_events src ON fd.financial_event_id = src.id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
         AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND NOT (src.event_type = 'RefundEvent' AND fd.amount > 0)
         ${REAL_FEES_ONLY}
       GROUP BY fd.fee_category, fd.fee_type
     `).all(startDate, endDateNext) as any[];
@@ -185,7 +195,8 @@ export async function GET(request: NextRequest) {
     // initiation overstates expenses; matching to recon settlement gives true
     // cash basis matching Walmart's Net Payable view.
     const refundTotal = db.prepare(`
-      SELECT COALESCE(SUM(refund_amount), 0) as total, COALESCE(SUM(fee_clawback), 0) as clawback
+      SELECT COALESCE(SUM(refund_amount), 0) as total, COALESCE(SUM(fee_clawback), 0) as clawback,
+             COALESCE(SUM(restocking_fee), 0) as restocking
       FROM refunds r
       WHERE r.refund_date >= ? AND r.refund_date < ? ${MF_R.replace(/marketplace/g, 'r.marketplace')}
         AND (
@@ -222,7 +233,10 @@ export async function GET(request: NextRequest) {
       feeHierarchy[fee.category].children.push({ name: fee.fee_type, amount: fee.total });
     }
 
-    const totalIncome = salesIncome.total + shippingCredits.total + otherIncomeTotal.total;
+    // promoRebates is negative (reduces income); restocking fees are kept by the
+    // seller on partial refunds (income, matching IL's "Restocking Fee" line).
+    const totalIncome = salesIncome.total + shippingCredits.total + fbaShippingCredits.total
+      + promoRebates.total + refundTotal.restocking + otherIncomeTotal.total;
     const totalFees = Object.values(feeHierarchy).reduce((sum: number, cat: any) => sum + cat.total, 0);
     const totalAllExpenses = cogsTotal.total + totalFees + shippingCosts.total + totalExpenses.total;
     const netProfit = totalIncome - totalAllExpenses - refundTotal.total + refundTotal.clawback + reimbTotal.total;
@@ -347,6 +361,7 @@ export async function GET(request: NextRequest) {
         mfnShippingCredits: mfnShippingCredits.total,
         fbaShippingCredits: fbaShippingCredits.total,
         promoRebates: promoRebates.total,
+        restockingFees: refundTotal.restocking,
         otherIncome: otherIncomeTotal.total,
         total: totalIncome,
       },
