@@ -5,6 +5,8 @@
 
 import { syncFinancialEvents, resetServiceFeeTracker } from './finances';
 import { dedupAmazonReimbursements } from './dedupReimbursements';
+import { reconcileOrderItemsFromShipmentEvents } from './reconcileOrderItems';
+import { recalculateFIFO } from '../fifo';
 import { syncOrders, reconcileOpenOrders } from './orders';
 import { syncFBAInventory } from './inventory';
 import { enrichProductCatalog } from './catalog';
@@ -218,6 +220,19 @@ export async function runFullSync(
     // Self-healing dedup: ADJ-* / SETTLEMENT-* placeholders shadowed by canonical
     // numeric reimbursements (from FBA Reimbursements Report). Idempotent.
     dedupAmazonReimbursements();
+
+    // Self-healing sweep: partially-shipped orders accumulate quantity/revenue
+    // across multiple ShipmentEvents — rebuild order_items from their sum.
+    // Scoped to orders with an event in this sync's window. Idempotent.
+    const reconcileResult = reconcileOrderItemsFromShipmentEvents(startDate);
+    if (reconcileResult.itemsUpdated || reconcileResult.itemsInserted) {
+      console.log(`[Sync] Order items reconciled from shipment events: ${reconcileResult.itemsUpdated} updated, ${reconcileResult.itemsInserted} inserted`);
+    }
+    if (reconcileResult.quantitiesChanged > 0) {
+      // Quantities feed FIFO lot depletion — recalc so COGS tracks the real units
+      console.log(`[Sync] ${reconcileResult.quantitiesChanged} item quantities changed — recalculating FIFO`);
+      recalculateFIFO({ recalcAll: true });
+    }
 
     // Collect all errors
     currentSync.totalErrors = [
