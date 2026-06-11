@@ -178,6 +178,53 @@ for (const file of fs.readdirSync(ilDir).filter(f => f.endsWith('.csv')).sort())
   console.log(`cogs ${file}: ${rows.length} rows`);
 }
 
+// ---------- IL disposition ledger (return restocks + write-offs) ----------
+// buy_cost_adj sign (IL's): positive = unit restocked to inventory (COGS
+// reversal), negative = unit written off (cost into COGS). FBA-return
+// reversals do NOT appear here — IL applies those silently from Amazon's
+// disposition; the P&L derives them from Refund rows × per-unit cost.
+db.exec(`
+CREATE TABLE IF NOT EXISTS historical_dispositions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  disp_date TEXT NOT NULL,           -- YYYY-MM-DD
+  type TEXT NOT NULL,                -- Removal | MFN Return | Liquidate | Disposal
+  ref_id TEXT,
+  msku TEXT,
+  asin TEXT,
+  sellable_qty INTEGER,
+  unsellable_qty INTEGER,
+  buy_cost_adj INTEGER NOT NULL DEFAULT 0,  -- cents, signed (see above)
+  source_file TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hist_disp_date ON historical_dispositions(disp_date);
+`);
+const insDisp = db.prepare(`INSERT INTO historical_dispositions
+  (disp_date, type, ref_id, msku, asin, sellable_qty, unsellable_qty, buy_cost_adj, source_file)
+  VALUES (?,?,?,?,?,?,?,?,?)`);
+for (const file of fs.readdirSync(ilDir).filter(f => /^Dispositions .*\.csv$/.test(f)).sort()) {
+  const lines = fs.readFileSync(path.join(ilDir, file), 'utf8').replace(/^﻿/, '').split('\n');
+  const hdr = parseCsvLine(lines[0]);
+  const ix = {}; hdr.forEach((h, i) => { ix[h.trim()] = i; });
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    if (!lines[i].trim()) continue;
+    const c = parseCsvLine(lines[i]);
+    if (c.length !== hdr.length) continue;
+    const d = ilDate(c[ix['Date']] || '');
+    if (!d) continue;
+    rows.push([
+      d, c[ix['Type']] || '?', c[ix['ID']] || null, c[ix['MSKU']] || null, c[ix['ASIN']] || null,
+      parseInt(c[ix['SellableQty']]) || 0, parseInt(c[ix['UnsellableQty']]) || 0,
+      money(c[ix['Buy Cost Adj']]), file,
+    ]);
+  }
+  db.transaction(() => {
+    db.prepare('DELETE FROM historical_dispositions WHERE source_file = ?').run(file);
+    for (const r of rows) insDisp.run(...r);
+  })();
+  console.log(`disp ${file}: ${rows.length} rows`);
+}
+
 // ---------- verification ----------
 console.log('\n=== historical_transactions: Order product_sales by year ===');
 for (const r of db.prepare(`

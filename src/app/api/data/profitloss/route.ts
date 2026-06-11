@@ -273,9 +273,37 @@ export async function GET(request: NextRequest) {
         FROM historical_transactions
         WHERE txn_date >= ? AND txn_date < ?
       `).get(startDate, histEnd) as any;
-      const hCogs = (db.prepare(
+      const hCogsGross = (db.prepare(
         'SELECT COALESCE(SUM(buy_cost), 0) AS t FROM historical_cogs WHERE date_posted >= ? AND date_posted < ?'
       ).get(startDate, histEnd) as any).t;
+
+      // Return-COGS reversal (disposition-based, matching IL/Amazon's model):
+      // refunded units restock and their COGS reverses — but only when the
+      // item actually comes back. The restock rate is measured from 2025, the
+      // one report-era year with full ground truth (IL COGS 224,686.67 vs
+      // mechanical full reversal): ~10.8% of refunds are returnless.
+      const RETURN_RESTOCK_RATE = 0.8915;
+      const hReversal = (db.prepare(`
+        WITH unit_costs AS (
+          SELECT order_id, msku, SUM(buy_cost) * 1.0 / NULLIF(SUM(quantity), 0) AS unit_cost
+          FROM historical_cogs GROUP BY order_id, msku
+        )
+        SELECT COALESCE(SUM(COALESCE(t.quantity, 1) * COALESCE(u.unit_cost, 0)), 0) AS t
+        FROM historical_transactions t
+        LEFT JOIN unit_costs u ON u.order_id = t.order_id AND u.msku = t.sku
+        WHERE t.type = 'Refund' AND t.txn_date >= ? AND t.txn_date < ?
+      `).get(startDate, histEnd) as any).t;
+
+      // Write-offs from IL's disposition ledger: unsellable removals,
+      // disposals, liquidations — buy cost goes INTO COGS. Positive
+      // adjustments (MFN restocks) are deliberately ignored here: those
+      // refunds already reverse through the refund-row reversal above.
+      const hWriteoffs = (db.prepare(`
+        SELECT COALESCE(SUM(-buy_cost_adj), 0) AS t FROM historical_dispositions
+        WHERE buy_cost_adj < 0 AND disp_date >= ? AND disp_date < ?
+      `).get(startDate, histEnd) as any).t;
+
+      const hCogs = Math.round(hCogsGross - RETURN_RESTOCK_RATE * hReversal + hWriteoffs);
 
       salesIncome.total += h.sales;
       mfnShippingCredits.total += h.shipMfn;
