@@ -26,6 +26,207 @@ export async function GET(request: NextRequest) {
   const mktFilter = marketplace ? 'AND o.marketplace = ?' : '';
   const mktParams = marketplace ? [marketplace] : [];
 
+  // ── Historical years (< 2026) ──────────────────────────────────────
+  // Pre-cutover years come entirely from the imported Amazon Date Range
+  // Transaction Reports + IL buy costs/dispositions (see profitloss route for
+  // the cutover rationale: settlement-sourced fees are unreachable >90 days
+  // back, so synced tables are structurally incomplete before 2026).
+  // Historical data is Amazon-only; a year is all-historical or all-synced.
+  if (year < 2026) {
+    try {
+      const o = db.prepare(`
+        SELECT
+          COALESCE(SUM(product_sales + gift_wrap_credits), 0) AS productSales,
+          COALESCE(SUM(shipping_credits), 0) AS shippingIncome,
+          COUNT(DISTINCT order_id) AS orderCount,
+          COALESCE(SUM(COALESCE(quantity, 0)), 0) AS unitsSold,
+          COALESCE(SUM(promotional_rebates), 0) AS promoSigned,
+          COALESCE(SUM(selling_fees), 0) AS sellingFees,
+          COALESCE(SUM(fba_fees), 0) AS fbaFees,
+          COALESCE(SUM(other_transaction_fees + other), 0) AS otherTxnFees,
+          COALESCE(SUM(marketplace_withheld_tax), 0) AS withheldTax
+        FROM historical_transactions
+        WHERE type = 'Order' AND txn_date >= ? AND txn_date < ?
+      `).get(startDate, endDate) as any;
+      const grossReceipts = o.productSales + o.shippingIncome;
+
+      const r = db.prepare(`
+        SELECT
+          COALESCE(SUM(-(product_sales + shipping_credits + gift_wrap_credits + promotional_rebates)), 0) AS totalRefunds,
+          COALESCE(SUM(selling_fees + fba_fees + other_transaction_fees + other), 0) AS totalClawbacks,
+          COUNT(*) AS refundCount
+        FROM historical_transactions
+        WHERE type = 'Refund' AND txn_date >= ? AND txn_date < ?
+      `).get(startDate, endDate) as any;
+
+      const byType = (types: string[], like?: string) => (db.prepare(`
+        SELECT COALESCE(SUM(total), 0) AS t, COUNT(*) AS n FROM historical_transactions
+        WHERE (type IN (${types.map(() => '?').join(',') || "''"})${like ? ` OR type LIKE '${like}'` : ''})
+          AND txn_date >= ? AND txn_date < ?
+      `).get(...types, startDate, endDate) as any);
+      const reimb = byType(['Adjustment', 'SAFE-T reimbursement']);
+      const serviceFees = byType(['Service Fee']);
+      const fbaInventoryFees = byType(['FBA Inventory Fee', 'FBA Inventory Fee - Reversal']);
+      const fbaReturnFees = byType(['FBA Customer Return Fee']);
+      const shippingServices = byType(['Shipping Services']);
+      const liquidations = byType([], 'Liquidations%');
+
+      const otherIncomeUser = db.prepare(
+        'SELECT COALESCE(SUM(amount), 0) AS total FROM other_income WHERE date >= ? AND date < ?'
+      ).get(startDate, endDate) as any;
+
+      const incomeByMonth = db.prepare(`
+        SELECT substr(txn_date, 1, 7) AS month,
+          COALESCE(SUM(product_sales + gift_wrap_credits), 0) AS productSales,
+          COALESCE(SUM(shipping_credits), 0) AS shippingIncome,
+          COUNT(DISTINCT order_id) AS orderCount,
+          COALESCE(SUM(COALESCE(quantity, 0)), 0) AS unitsSold
+        FROM historical_transactions
+        WHERE type = 'Order' AND txn_date >= ? AND txn_date < ?
+        GROUP BY month ORDER BY month
+      `).all(startDate, endDate) as any[];
+
+      // COGS — disposition-adjusted, mirroring the P&L's historical model:
+      // gross buy cost − restocked returns (measured rate) + write-offs.
+      const RETURN_RESTOCK_RATE = 0.8915;
+      const hGross = (db.prepare(
+        'SELECT COALESCE(SUM(buy_cost), 0) AS t FROM historical_cogs WHERE date_posted >= ? AND date_posted < ?'
+      ).get(startDate, endDate) as any).t;
+      const hReversal = (db.prepare(`
+        WITH unit_costs AS (
+          SELECT order_id, msku, SUM(buy_cost) * 1.0 / NULLIF(SUM(quantity), 0) AS unit_cost
+          FROM historical_cogs GROUP BY order_id, msku
+        )
+        SELECT COALESCE(SUM(COALESCE(t.quantity, 1) * COALESCE(u.unit_cost, 0)), 0) AS t
+        FROM historical_transactions t
+        LEFT JOIN unit_costs u ON u.order_id = t.order_id AND u.msku = t.sku
+        WHERE t.type = 'Refund' AND t.txn_date >= ? AND t.txn_date < ?
+      `).get(startDate, endDate) as any).t;
+      const hWriteoffs = (db.prepare(`
+        SELECT COALESCE(SUM(-buy_cost_adj), 0) AS t FROM historical_dispositions
+        WHERE buy_cost_adj < 0 AND disp_date >= ? AND disp_date < ?
+      `).get(startDate, endDate) as any).t;
+      const cogsSoldTotal = Math.round(hGross - RETURN_RESTOCK_RATE * hReversal + hWriteoffs);
+
+      // Real year-end inventory from IL valuation snapshots when available.
+      const snap = db.prepare('SELECT total_value FROM historical_inventory_snapshots WHERE snapshot_date = ?');
+      const beginningInventory = (snap.get(`${year - 1}-12-31`) as any)?.total_value ?? 0;
+      const endingInventory = (snap.get(`${year}-12-31`) as any)?.total_value ?? 0;
+
+      const feeSummary: Record<string, number> = {
+        'Selling Fees (referral, closing, holdback)': -o.sellingFees,
+        'FBA Fulfillment Fees': -o.fbaFees,
+        'Other Transaction Fees': -o.otherTxnFees,
+        'Service Fees (storage, subscription, inbound, ads)': -serviceFees.t,
+        'FBA Inventory Fees (removal, disposal, storage)': -fbaInventoryFees.t,
+        'FBA Customer Return Fees': -fbaReturnFees.t,
+      };
+      for (const k of Object.keys(feeSummary)) if (feeSummary[k] === 0) delete feeSummary[k];
+      const totalAmazonFees = Object.values(feeSummary).reduce((s, v) => s + v, 0);
+      const allFees = Object.entries(feeSummary).map(([category, total]) => ({
+        category, feeType: 'Report bucket', total, count: o.orderCount,
+      }));
+
+      const promosTotal = -o.promoSigned; // stored negative; deduction is positive
+      const shippingCostsTotal = -shippingServices.t;
+
+      const otherExpenses = db.prepare(`
+        SELECT category, COALESCE(SUM(amount), 0) AS total, COUNT(*) AS count
+        FROM expenses WHERE date >= ? AND date < ? GROUP BY category ORDER BY total DESC
+      `).all(startDate, endDate) as any[];
+      const totalOtherExpenses = otherExpenses.reduce((s: number, e: any) => s + e.total, 0);
+
+      const totalTaxCollected = -o.withheldTax; // facilitator-withheld, pass-through
+      const salesTaxByState = totalTaxCollected !== 0 ? [{
+        state: 'All states (marketplace facilitator)', taxCollected: totalTaxCollected,
+        facilitatorTax: totalTaxCollected, total: totalTaxCollected, orderCount: o.orderCount,
+      }] : [];
+
+      const refundsByMonth = db.prepare(`
+        SELECT substr(txn_date, 1, 7) AS month, COUNT(*) AS count,
+          COALESCE(SUM(-(product_sales + shipping_credits + gift_wrap_credits + promotional_rebates)), 0) AS totalRefunded,
+          COALESCE(SUM(selling_fees + fba_fees + other_transaction_fees + other), 0) AS feeClawbacks,
+          COALESCE(SUM(-(product_sales + shipping_credits + gift_wrap_credits + promotional_rebates)
+            - (selling_fees + fba_fees + other_transaction_fees + other)), 0) AS netCost
+        FROM historical_transactions
+        WHERE type = 'Refund' AND txn_date >= ? AND txn_date < ?
+        GROUP BY month ORDER BY month
+      `).all(startDate, endDate) as any[];
+
+      const inboundShipping = db.prepare(
+        'SELECT COALESCE(SUM(cost), 0) AS total FROM inbound_shipments WHERE date_shipped >= ? AND date_shipped < ?'
+      ).get(startDate, endDate) as any;
+      const purchases = db.prepare(
+        'SELECT COALESCE(SUM(buy_price * quantity), 0) AS total FROM inventory_ledger WHERE date_purchased >= ? AND date_purchased < ?'
+      ).get(startDate, endDate) as any;
+
+      const perMarketplace = [{
+        marketplace: 'amazon', grossReceipts, productSales: o.productSales,
+        shippingIncome: o.shippingIncome, cogs: cogsSoldTotal, fees: totalAmazonFees,
+        refunds: r.totalRefunds, clawbacks: r.totalClawbacks,
+        shippingCosts: shippingCostsTotal, orders: o.orderCount, units: o.unitsSold,
+      }];
+
+      const k1099_grossReceipts = o.productSales + o.shippingIncome + o.promoSigned + totalTaxCollected;
+
+      const line1_grossReceipts = grossReceipts;
+      const line2_returnsAllowances = r.totalRefunds;
+      const line3_netReceipts = line1_grossReceipts - line2_returnsAllowances;
+      const line4_cogs = cogsSoldTotal;
+      const line5_grossProfit = line3_netReceipts - line4_cogs;
+      // Clawbacks include restocking (refund-row 'other' bucket); liquidation
+      // proceeds are genuine other income.
+      const line6_otherIncome = reimb.t + otherIncomeUser.total + r.totalClawbacks + Math.max(liquidations.t, 0);
+      const line7_grossIncome = line5_grossProfit + line6_otherIncome;
+      const deductions = {
+        amazonFees: totalAmazonFees,
+        promotionalRebates: promosTotal,
+        shippingCosts: shippingCostsTotal,
+        otherExpenses: totalOtherExpenses,
+        inboundShipping: inboundShipping.total,
+      };
+      const totalDeductions = Object.values(deductions).reduce((s, v) => s + v, 0);
+      const line31_netProfit = line7_grossIncome - totalDeductions;
+
+      db.close();
+      return NextResponse.json({
+        year,
+        scheduleC: {
+          line1_grossReceipts, line2_returnsAllowances, line3_netReceipts,
+          line4_cogs, line5_grossProfit, line6_otherIncome, line7_grossIncome,
+          deductions, totalDeductions, line31_netProfit,
+        },
+        incomeByMonth,
+        cogs: {
+          beginningInventory, purchases: purchases.total,
+          inboundShipping: inboundShipping.total,
+          costOfGoodsSold: cogsSoldTotal, endingInventory,
+        },
+        perMarketplace,
+        amazonFees: allFees,
+        amazonFeeSummary: Object.entries(feeSummary).map(([category, total]) => ({ category, total })).sort((a, b) => b.total - a.total),
+        otherExpenses,
+        salesTaxByState,
+        totalTaxCollected,
+        refundsByMonth,
+        reimbursements: { total: reimb.t, count: reimb.n },
+        promos: promosTotal,
+        shippingCosts: shippingCostsTotal,
+        summary: {
+          totalRevenue: grossReceipts,
+          totalOrders: o.orderCount,
+          totalUnits: o.unitsSold,
+          totalRefunds: r.totalRefunds,
+          refundCount: r.refundCount,
+        },
+      });
+    } catch (error) {
+      db.close();
+      console.error('Tax Report (historical) API error:', error);
+      return NextResponse.json({ error: 'Failed to load tax report data' }, { status: 500 });
+    }
+  }
+
   try {
     // ═══ INCOME ═══════════════════════════════════════════════════════
 
