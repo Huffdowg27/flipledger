@@ -52,7 +52,14 @@ export async function GET(request: NextRequest) {
   // must never overlap: synced queries are clamped to >= CUTOVER and the
   // historical segment covers < CUTOVER. May–June 2024 partial synced data is
   // deliberately superseded by the (complete) historical ledger.
-  const HISTORY_CUTOVER = '2024-07-01';
+  // 2026-01-01, not the sync-coverage start (2024-06-29): synced order-level
+  // data is penny-exact from mid-2024, but NON-order fees (storage, inbound
+  // transport, subscription, MFN labels, ads) come from settlement reports,
+  // which Amazon only serves ~90 days back — all of 2025's are unreachable
+  // (~$25K of expenses missing vs IL). The imported transaction reports have
+  // them complete through 2025-12-31, so the report era owns everything
+  // before 2026.
+  const HISTORY_CUTOVER = '2026-01-01';
   // Historical data is Amazon-only — skip the segment when filtering to
   // another marketplace. User-entered tables (expenses, other_income) are not
   // marketplace syncs and keep the full requested range.
