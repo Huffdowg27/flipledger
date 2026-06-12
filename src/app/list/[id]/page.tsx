@@ -1675,6 +1675,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           onConfirmPlacement={handleConfirmPlacement}
           onConfirmPlacementAndLoadTransport={handleConfirmPlacementAndLoadTransport}
           onConfirmTransportation={handleConfirmTransportation}
+          onRefetchBatch={fetchBatch}
           confirmingBothId={confirmingBothId}
         />
       )}
@@ -3245,6 +3246,7 @@ interface BoxingWorkflowProps {
   onConfirmPlacement: (optionId: string) => void;
   onConfirmPlacementAndLoadTransport: (placementOptionId: string, shipmentIds: string[], readyToShipStart: string, ltl?: any) => Promise<{ success: boolean; options?: any[]; shipments?: any[]; error?: string }>;
   onConfirmTransportation: (selections: Array<{ shipmentId: string; transportationOptionId: string }>, selectedOptions: any[]) => Promise<void>;
+  onRefetchBatch: () => Promise<void>;
   confirmingBothId: string | null;
 }
 
@@ -3274,6 +3276,7 @@ function BoxingWorkflow({
   onConfirmPlacement,
   onConfirmPlacementAndLoadTransport,
   onConfirmTransportation,
+  onRefetchBatch,
   confirmingBothId,
 }: BoxingWorkflowProps) {
   // Auto-load placement options when we first transition into placement state
@@ -4745,6 +4748,16 @@ function BoxingWorkflow({
                             Download box label PDF
                           </button>
                         </div>
+
+                        {/* Locked-in quantity adjustment — works while the
+                            shipment is WORKING/READY_TO_SHIP. Amazon tolerance:
+                            +/-5% or 6 units per SKU, whichever is higher. */}
+                        <ShipmentQtyAdjuster
+                          batchId={batch.id}
+                          shipmentId={s.shipmentId}
+                          syncLocal={shipments.length === 1}
+                          onAdjusted={onRefetchBatch}
+                        />
                       </div>
                     );
                   })}
@@ -4764,6 +4777,210 @@ function BoxingWorkflow({
               )}
             </>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ShipmentQtyAdjuster ────────────────────────────────────────────────────
+// 2DWorkflow-style "adjust Qty after the shipment is locked in": loads the
+// shipment's current per-SKU totals from Amazon's boxes, lets the user nudge
+// them up/down, then runs the v2024 content-update preview → confirm flow.
+// The shipment (destination, carrier, labels) stays locked; only quantities
+// change. Amazon tolerance: ±5% or 6 units per SKU, whichever is higher.
+function ShipmentQtyAdjuster({
+  batchId,
+  shipmentId,
+  syncLocal,
+  onAdjusted,
+}: {
+  batchId: number;
+  shipmentId: string;
+  /** Sync listing_batch_items quantities after confirm — only safe when the batch has exactly one shipment. */
+  syncLocal: boolean;
+  onAdjusted: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [current, setCurrent] = useState<Array<{ msku: string; quantity: number }> | null>(null);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [phase, setPhase] = useState<'idle' | 'previewing' | 'previewed' | 'confirming' | 'done'>('idle');
+  const [preview, setPreview] = useState<any | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function post(body: any) {
+    const res = await fetch(`/api/list/batches/${batchId}/content-update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ shipmentId, ...body }),
+    });
+    return res.json();
+  }
+
+  async function handleOpen() {
+    if (open) { setOpen(false); return; }
+    setOpen(true);
+    if (current) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const data = await post({ action: 'load' });
+      if (data.error) throw new Error(data.error);
+      setCurrent(data.currentItems || []);
+    } catch (err) {
+      setError(String(err));
+    }
+    setLoading(false);
+  }
+
+  function editedQty(msku: string, cur: number): number {
+    const raw = edits[msku];
+    if (raw === undefined || raw === '') return cur;
+    return Math.max(0, parseInt(raw) || 0);
+  }
+
+  const changed = (current ?? []).filter((r) => editedQty(r.msku, r.quantity) !== r.quantity);
+
+  async function handlePreview() {
+    setPhase('previewing');
+    setError(null);
+    setPreview(null);
+    try {
+      const data = await post({
+        action: 'preview',
+        items: changed.map((r) => ({ msku: r.msku, quantity: editedQty(r.msku, r.quantity) })),
+      });
+      if (data.error) throw new Error(data.error);
+      setPreview(data);
+      setPhase('previewed');
+    } catch (err) {
+      setError(String(err));
+      setPhase('idle');
+    }
+  }
+
+  async function handleConfirm() {
+    if (!preview) return;
+    setPhase('confirming');
+    setError(null);
+    try {
+      const data = await post({
+        action: 'confirm',
+        contentUpdatePreviewId: preview.contentUpdatePreviewId,
+        ...(syncLocal ? { items: preview.requestedItems } : {}),
+      });
+      if (data.error) throw new Error(data.error);
+      setPhase('done');
+      setCurrent(preview.requestedItems);
+      setEdits({});
+      setPreview(null);
+      await onAdjusted();
+    } catch (err) {
+      setError(String(err));
+      setPhase('previewed');
+    }
+  }
+
+  return (
+    <div className="mt-2 pt-2 border-t border-border-subtle">
+      <button
+        onClick={handleOpen}
+        className="text-[11px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
+      >
+        <ChevronDown size={12} className={open ? 'rotate-180' : ''} />
+        Adjust quantities (shipment stays locked in)
+      </button>
+
+      {open && (
+        <div className="mt-2 space-y-2">
+          {loading && (
+            <div className="flex items-center gap-2 text-[11px] text-text-muted">
+              <Loader2 size={12} className="animate-spin" /> Loading current shipment contents from Amazon…
+            </div>
+          )}
+
+          {current && current.length > 0 && (
+            <div className="space-y-1">
+              {current.map((r) => {
+                const v = editedQty(r.msku, r.quantity);
+                const delta = v - r.quantity;
+                return (
+                  <div key={r.msku} className="flex items-center gap-2 text-[11px]">
+                    <MskuLink sku={r.msku} className="font-mono text-text-primary hover:text-accent hover:underline max-w-[260px] truncate" />
+                    <span className="text-text-muted ml-auto">qty</span>
+                    <input
+                      type="number"
+                      min="0"
+                      value={edits[r.msku] ?? String(r.quantity)}
+                      onChange={(e) => { setEdits((prev) => ({ ...prev, [r.msku]: e.target.value })); setPhase('idle'); setPreview(null); }}
+                      className="h-7 w-16 px-2 bg-bg-surface border border-border-subtle rounded text-[11px] text-text-primary text-right focus:outline-none focus:border-accent"
+                    />
+                    {delta !== 0 && (
+                      <span className={`font-mono ${delta > 0 ? 'text-positive' : 'text-amber-400'}`}>
+                        {delta > 0 ? `+${delta}` : delta}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+              <p className="text-[10px] text-text-muted">
+                Amazon allows ±5% or 6 units per SKU (whichever is higher). The shipment, destination, and labels stay locked in.
+              </p>
+            </div>
+          )}
+
+          {error && (
+            <div className="text-[11px] text-negative bg-negative/5 border border-negative/30 rounded px-2 py-1 whitespace-pre-wrap">{error}</div>
+          )}
+
+          {phase === 'previewed' && preview && (
+            <div className="text-[11px] text-text-secondary bg-bg-surface/40 border border-border-subtle rounded px-2 py-1.5 space-y-0.5">
+              <div className="font-semibold text-text-primary">Amazon accepted the preview:</div>
+              <div>
+                New contents: {preview.requestedItems.map((i: any) => `${i.msku.slice(0, 24)}… ×${i.quantity}`).join(', ')} in {preview.boxCount} box{preview.boxCount === 1 ? '' : 'es'}
+              </div>
+              {preview.transportationOption?.quote?.cost?.amount != null && (
+                <div>
+                  Updated shipping: <span className="font-mono text-text-primary">${preview.transportationOption.quote.cost.amount.toFixed(2)}</span>
+                  {preview.transportationOption.carrier?.name && ` · ${preview.transportationOption.carrier.name}`}
+                </div>
+              )}
+              <div className="text-text-muted">Preview expires {preview.expiration ? new Date(preview.expiration).toLocaleTimeString() : 'soon'} — confirm to apply.</div>
+            </div>
+          )}
+
+          {phase === 'done' && (
+            <div className="text-[11px] text-positive flex items-center gap-1.5">
+              <CheckCircle size={12} /> Shipment contents updated{syncLocal ? ' — batch quantities synced' : ''}.
+            </div>
+          )}
+
+          <div className="flex items-center gap-2">
+            {phase !== 'previewed' ? (
+              <button
+                onClick={handlePreview}
+                disabled={changed.length === 0 || phase === 'previewing' || loading}
+                className="h-7 px-3 bg-bg-surface border border-accent/40 text-accent rounded text-[11px] font-bold disabled:opacity-50 transition-colors hover:bg-accent/10 flex items-center gap-1.5"
+              >
+                {phase === 'previewing' && <Loader2 size={10} className="animate-spin" />}
+                {phase === 'previewing' ? 'Checking with Amazon…' : 'Preview change with Amazon'}
+              </button>
+            ) : (
+              <button
+                onClick={handleConfirm}
+                disabled={phase !== 'previewed'}
+                className="h-7 px-3 bg-accent text-white rounded text-[11px] font-bold disabled:opacity-50 transition-colors flex items-center gap-1.5"
+              >
+                Confirm adjustment
+              </button>
+            )}
+            {phase === 'confirming' && (
+              <span className="text-[11px] text-text-muted flex items-center gap-1">
+                <Loader2 size={10} className="animate-spin" /> Applying…
+              </span>
+            )}
+          </div>
         </div>
       )}
     </div>
