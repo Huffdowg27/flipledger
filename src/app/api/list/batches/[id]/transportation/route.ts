@@ -254,7 +254,21 @@ async function handlePreview(
     return NextResponse.json({ error: `listTransportationOptions: ${err}` }, { status: 500 });
   }
 
-  return NextResponse.json({ success: true, options });
+  // Destinations for the preview UI — getShipment returns the destination
+  // warehouse + address even before placement confirmation. Normalized to the
+  // destinationWarehouseAddress shape buildTransportSummary expects.
+  const shipments = (
+    await Promise.allSettled(shipmentIds.map((sid) => getShipment(creds, inboundPlanId, sid)))
+  )
+    .flatMap((r) => (r.status === 'fulfilled' && r.value ? [r.value] : []))
+    .map((s: any) => ({
+      shipmentId: s.shipmentId,
+      destinationFC: s.destination?.warehouseId ?? null,
+      destinationWarehouseAddress: s.destinationWarehouseAddress ?? s.destination?.address ?? null,
+      status: s.status ?? null,
+    }));
+
+  return NextResponse.json({ success: true, options, shipments });
 }
 
 async function handleGenerate(

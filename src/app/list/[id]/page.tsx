@@ -3095,13 +3095,15 @@ function buildTransportSummary(rawOptions: any[], shipmentDetails?: any[]): Tran
     const opts = rawOptions.filter((o) => o.shipmentId === sid);
     const best = pickBestTransportOption(opts);
     if (best) {
-      // Use getShipment destinationWarehouseAddress as primary source (post-confirmation only)
+      // Use getShipment data as primary source — destination.warehouseId +
+      // address are available even pre-confirmation (preview path normalizes
+      // them to destinationFC / destinationWarehouseAddress).
       const shipmentData = shipmentDetails?.find((s: any) => s.shipmentId === sid);
       const warehouseAddr = shipmentData?.destinationWarehouseAddress ?? null;
 
       // Fall back to extractDestination on the transport option object
       const dest = extractDestination(best);
-      const fcCode = dest.fcCode ?? null;
+      const fcCode = shipmentData?.destinationFC ?? dest.fcCode ?? null;
 
       // Prefer warehouse address fields; fall back to transport option parse; fall back to FC_LOCATIONS
       const lookup = fcCode ? FC_LOCATIONS[fcCode] : null;
@@ -3381,6 +3383,44 @@ function BoxingWorkflow({
         error: result.success ? null : (result.error ?? 'Failed — check pm2 logs'),
       },
     }));
+  }
+
+  // No-commitment shipping estimate for an UNCONFIRMED placement option.
+  // Uses the transportation 'preview' action: generates + lists carrier
+  // quotes for the candidate option without confirming anything, and returns
+  // per-shipment destinations (available from Amazon pre-confirmation).
+  async function handleLoadTransportPreview(optionId: string) {
+    if (!shipDate) return;
+    const opt = placementOptions.find((o) => o.placementOptionId === optionId);
+    const shipmentIds = opt?.shipmentIds ?? [];
+    const readyToShipStart = new Date(`${shipDate}T09:00:00`).toISOString();
+
+    setTransportDataByOption((prev) => ({
+      ...prev,
+      [optionId]: { loading: true, options: null, shipments: null, error: null },
+    }));
+    try {
+      const res = await fetch(`/api/list/batches/${batch.id}/transportation`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'preview', placementOptionId: optionId, shipmentIds, readyToShipStart }),
+      });
+      const data = await res.json();
+      setTransportDataByOption((prev) => ({
+        ...prev,
+        [optionId]: {
+          loading: false,
+          options: data.options ?? null,
+          shipments: data.shipments ?? null,
+          error: data.error ?? (data.options ? null : 'No options returned'),
+        },
+      }));
+    } catch (err) {
+      setTransportDataByOption((prev) => ({
+        ...prev,
+        [optionId]: { loading: false, options: null, shipments: null, error: String(err) },
+      }));
+    }
   }
 
   // Called when placement is already confirmed (page reload, or after confirmation) — just generate+list transport.
@@ -3897,15 +3937,16 @@ function BoxingWorkflow({
                           Inbound <span className="font-semibold text-text-primary">{formatCurrency(placementFee)}</span>
                         </span>
 
-                        {/* Show shipping + total only after transport is loaded for confirmed option */}
-                        {isConfirmed && tLoading && (
+                        {/* Shipping + total — shown for any option with transport data
+                            loaded (preview for unconfirmed, real for confirmed) */}
+                        {tLoading && (
                           <span className="text-xs text-text-muted flex items-center gap-1 shrink-0">
                             <Loader2 size={10} className="animate-spin" /> loading shipping…
                           </span>
                         )}
-                        {isConfirmed && tSummary && totalShippingCents > 0 && (
+                        {tSummary && totalShippingCents > 0 && (
                           <span className="text-xs text-text-secondary shrink-0">
-                            + Ship <span className="font-semibold text-text-primary">{formatCurrency(totalShippingCents)}</span>
+                            + Ship{!isConfirmed ? ' (est.)' : ''} <span className="font-semibold text-text-primary">{formatCurrency(totalShippingCents)}</span>
                             {' = '}
                             <span className="font-bold text-text-primary">{formatCurrency(placementFee + totalShippingCents)}</span>
                           </span>
@@ -3915,22 +3956,28 @@ function BoxingWorkflow({
                           {opt.shipmentIds.length} Shipment{opt.shipmentIds.length !== 1 ? 's' : ''}
                         </span>
 
-                        {/* Shipment chips — FC code only after confirmed + transport loaded */}
+                        {/* Shipment chips — FC codes come from the placement GET's
+                            per-shipment meta (available pre-confirmation), enriched
+                            by transport data once loaded */}
                         <div className="flex flex-wrap gap-1.5 flex-1 min-w-0">
                           {opt.shipmentIds.map((sid, si) => {
-                            const fcCode = isConfirmed && tSummary
-                              ? (tSummary.perShipment.find((p) => p.shipmentId === sid)?.fcCode ?? null)
-                              : null;
+                            const fcCode =
+                              tSummary?.perShipment.find((p) => p.shipmentId === sid)?.fcCode
+                              ?? derivedShipmentMeta[sid]?.fcCode
+                              ?? null;
+                            const fcState = derivedShipmentMeta[sid]?.state ?? null;
                             return (
                               <span key={sid} className="text-[11px] px-2 py-0.5 bg-bg-surface rounded border border-border-subtle font-mono flex items-center gap-1 shrink-0">
                                 Shipment {si + 1}
-                                {isConfirmed && tLoading ? (
+                                {tLoading ? (
                                   <Loader2 size={10} className="animate-spin text-text-muted ml-0.5" />
                                 ) : fcCode ? (
-                                  <span className="font-bold text-text-primary">· {fcCode}</span>
-                                ) : !isConfirmed ? (
+                                  <span className="font-bold text-text-primary">
+                                    · {fcCode}{fcState ? <span className="font-normal text-text-tertiary"> {fcState}</span> : null}
+                                  </span>
+                                ) : (
                                   <span className="text-text-muted/50">· —</span>
-                                ) : null}
+                                )}
                               </span>
                             );
                           })}
@@ -3969,24 +4016,33 @@ function BoxingWorkflow({
                             </div>
                           )}
 
-                          {/* Case: placement not yet confirmed — primary action */}
+                          {/* Case: placement not yet confirmed — estimate (free) or commit */}
                           {!tLoading && !tError && !tData && !isConfirmed && (
                             <div className="space-y-2">
                               <p className="text-[11px] text-text-tertiary">
-                                FC destination and shipping cost are assigned by Amazon after placement confirmation.
+                                Get a shipping estimate first to compare total cost across options — it commits nothing.
                               </p>
-                              <button
-                                onClick={() => handleConfirmAndLoadTransport(opt.placementOptionId)}
-                                disabled={!!confirmingBothId || !shipDate}
-                                className="h-8 px-4 bg-accent text-white rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
-                              >
-                                {confirmingBothId === opt.placementOptionId && <Loader2 size={10} className="animate-spin" />}
-                                {confirmingBothId === opt.placementOptionId
-                                  ? 'Confirming…'
-                                  : 'Confirm placement and load shipping options'}
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleLoadTransportPreview(opt.placementOptionId)}
+                                  disabled={!!confirmingBothId || !shipDate}
+                                  className="h-8 px-4 bg-bg-surface border border-accent/40 text-accent rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5 hover:bg-accent/10"
+                                >
+                                  Get shipping estimate
+                                </button>
+                                <button
+                                  onClick={() => handleConfirmAndLoadTransport(opt.placementOptionId)}
+                                  disabled={!!confirmingBothId || !shipDate}
+                                  className="h-8 px-4 bg-accent text-white rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                                >
+                                  {confirmingBothId === opt.placementOptionId && <Loader2 size={10} className="animate-spin" />}
+                                  {confirmingBothId === opt.placementOptionId
+                                    ? 'Confirming…'
+                                    : 'Confirm placement and load shipping options'}
+                                </button>
+                              </div>
                               <p className="text-[10px] text-text-muted">
-                                Commits the {formatCurrency(placementFee)} inbound fee and creates real shipments on Amazon.
+                                Confirming commits the {formatCurrency(placementFee)} inbound fee and creates real shipments on Amazon.
                               </p>
                             </div>
                           )}
@@ -4083,7 +4139,28 @@ function BoxingWorkflow({
                                 </div>
                               </div>
 
-                              {isPlacementPhase && batch.transportationStatus !== 'SUCCESS' && (() => {
+                              {/* Preview-loaded UNCONFIRMED option: the next step is
+                                  confirming placement (which re-generates real transport
+                                  quotes) — confirming transportation directly would fail. */}
+                              {!isConfirmed && (
+                                <div className="space-y-2">
+                                  <button
+                                    onClick={() => handleConfirmAndLoadTransport(opt.placementOptionId)}
+                                    disabled={!!confirmingBothId || !shipDate}
+                                    className="w-full h-8 px-3 bg-accent text-white rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
+                                  >
+                                    {confirmingBothId === opt.placementOptionId && <Loader2 size={10} className="animate-spin" />}
+                                    {confirmingBothId === opt.placementOptionId
+                                      ? 'Confirming…'
+                                      : `Confirm this option (${formatCurrency(placementFee)} inbound fee)`}
+                                  </button>
+                                  <p className="text-[10px] text-text-muted">
+                                    Estimates above are non-binding. Confirming locks the placement and loads final quotes.
+                                  </p>
+                                </div>
+                              )}
+
+                              {isConfirmed && isPlacementPhase && batch.transportationStatus !== 'SUCCESS' && (() => {
                                 // Full option objects for the server's delivery-window detector
                                 const selectedOptionObjs = tSummary.perShipment.map((ps) => ps.best);
                                 const anyNeedsWindow = tSummary.perShipment.some((ps) => {

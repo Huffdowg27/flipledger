@@ -29,6 +29,7 @@ import {
   listPlacementOptions,
   confirmPlacementOption,
   listShipments,
+  getShipment,
   getInboundPlan,
   getInboundOperation,
   type PlacementOption,
@@ -372,6 +373,49 @@ export async function GET(
           0
         ),
       } as any);
+    }
+
+    // ── Per-shipment destination fallback ──────────────────────────────────
+    // listShipments 403s on some accounts (and on every completed plan), but
+    // getShipment by ID works and returns the destination warehouse + address
+    // even BEFORE placement confirmation (verified live 2026-06-11). This is
+    // what makes pre-confirm option locations possible.
+    const idsNeedingMeta = [...new Set(enrichedOptions.flatMap((o: any) => o.shipmentIds || []))]
+      .filter((sid: string) => shipmentMeta[sid]?.lat == null);
+    if (idsNeedingMeta.length > 0) {
+      const fetched = await Promise.allSettled(
+        idsNeedingMeta.map((sid: string) => getShipment(creds, batch.inboundPlanId, sid))
+      );
+      fetched.forEach((res, i) => {
+        if (res.status !== 'fulfilled' || !res.value) return;
+        const s: any = res.value;
+        const sid = idsNeedingMeta[i];
+        const addr = s.destination?.address || s.destinationAddress || null;
+        const fcCode: string | null = s.destination?.warehouseId || s.warehouseId || null;
+        const fcInfo = fcCode ? lookupFC(fcCode) : null;
+        // FC table first for curated casing; Amazon returns ALL-CAPS city names.
+        const city: string | null = fcInfo?.city || addr?.city || null;
+        const state: string | null = fcInfo?.state || addr?.stateOrProvinceCode || null;
+        let lat: number | null = fcInfo?.lat ?? null;
+        let lng: number | null = fcInfo?.lng ?? null;
+        if (lat == null && state) {
+          const sc = STATE_CENTROIDS[state.toUpperCase()];
+          if (sc) { lat = sc[0]; lng = sc[1]; }
+        }
+        shipmentMeta[sid] = {
+          shipmentId: sid,
+          fcCode,
+          city,
+          state,
+          postalCode: addr?.postalCode || null,
+          lat,
+          lng,
+          distanceMiles:
+            shipFromCoords && lat != null && lng != null
+              ? haversineMiles(shipFromCoords[0], shipFromCoords[1], lat, lng)
+              : null,
+        };
+      });
     }
 
     // Stored carrier/cost per shipment — attached to destinations below.
