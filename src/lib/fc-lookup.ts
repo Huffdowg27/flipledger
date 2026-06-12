@@ -37,6 +37,7 @@ export const FC_LOOKUP: Record<string, { city: string; state: string; lat: numbe
 
   // ── Georgia / Florida ─────────────────────────────────────────────────────
   ATL6: { city: 'Lithia Springs', state: 'GA', lat: 33.79, lng: -84.66 },
+  RYY2: { city: 'White',          state: 'GA', lat: 34.28, lng: -84.75 },
   ATL7: { city: 'Atlanta',        state: 'GA', lat: 33.64, lng: -84.44 },
   JAX2: { city: 'Jacksonville',   state: 'FL', lat: 30.28, lng: -81.56 },
   JAX3: { city: 'Jacksonville',   state: 'FL', lat: 30.33, lng: -81.66 },
@@ -104,6 +105,7 @@ export const FC_LOOKUP: Record<string, { city: string; state: string; lat: numbe
   LAS2: { city: 'Henderson',      state: 'NV', lat: 36.00, lng: -115.07 },
 
   // ── Arizona ───────────────────────────────────────────────────────────────
+  GEU3: { city: 'Goodyear',       state: 'AZ', lat: 33.40, lng: -112.39 },
   GYR1: { city: 'Goodyear',       state: 'AZ', lat: 33.44, lng: -112.36 },
   GYR2: { city: 'Goodyear',       state: 'AZ', lat: 33.43, lng: -112.36 },
   PHX3: { city: 'Goodyear',       state: 'AZ', lat: 33.45, lng: -112.38 },

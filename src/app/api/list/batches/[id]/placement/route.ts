@@ -147,6 +147,8 @@ export async function GET(
       SELECT id, status, channel, inbound_plan_id as inboundPlanId,
              placement_status as placementStatus,
              placement_option_id as placementOptionId,
+             placement_fee_cents as placementFeeCents,
+             confirmed_shipments as confirmedShipments,
              ship_from_state as shipFromState,
              ship_from_postal_code as shipFromPostalCode
       FROM listing_batches WHERE id = ?
@@ -184,13 +186,34 @@ export async function GET(
       return NextResponse.json({ generated: false, placementStatus: null, options: [], shipmentMeta: {}, shipFromState });
     }
 
+    // Shipments persisted at transportation-confirm time. This is the durable
+    // source for confirmed batches: the v2024 inboundPlans endpoints below
+    // return 403 once the plan's workflow is over, so for a batch in
+    // 'shipping'/'closed' the live calls all fail and the stored snapshot is
+    // everything we have (and everything we need — FC, city/state, carrier, cost).
+    let confirmedShipments: any[] = [];
+    try {
+      const parsed = JSON.parse(batch.confirmedShipments || '[]');
+      if (Array.isArray(parsed)) confirmedShipments = parsed;
+    } catch { /* malformed JSON — treat as none */ }
+
     // Fire all three SP-API calls in parallel — sequential calls were adding
-    // 5-15s of latency on every page load.
+    // 5-15s of latency on every page load. ALL are non-fatal: post-workflow
+    // plans 403 on every endpoint, and we can still render from the stored
+    // confirmed_shipments snapshot.
     const [rawPlacementResponse, rawShipmentsResponseParallel, rawInboundPlan] = await Promise.all([
       spApiRequest(
         creds,
         `/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(batch.inboundPlanId)}/placementOptions`
-      ).catch((err) => { throw new Error(`listPlacementOptions failed: ${err}`); }),
+      ).catch((err) => {
+        // Only fatal when we have no stored fallback — an active plan failing
+        // here is a real problem the user must see.
+        if (confirmedShipments.length === 0) {
+          throw new Error(`listPlacementOptions failed: ${err}`);
+        }
+        console.warn('[placement GET] listPlacementOptions failed (using stored confirmed shipments):', String(err).slice(0, 200));
+        return null;
+      }),
       spApiRequest(
         creds,
         `/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(batch.inboundPlanId)}/shipments`
@@ -294,10 +317,73 @@ export async function GET(
       }
     }
 
+    // ── Fill gaps from the stored confirmed_shipments snapshot ────────────
+    // Live shipments often lack a destination (Amazon only finalizes the FC
+    // at placement/transport confirmation), and for completed plans the live
+    // calls fail entirely. The snapshot has destinationFC/City/State/Address.
+    for (const cs of confirmedShipments) {
+      const sid: string = cs?.shipmentId || '';
+      if (!sid) continue;
+      const existing = shipmentMeta[sid];
+      if (existing?.lat != null && existing?.fcCode) continue; // live data already complete
+
+      const fcCode: string | null = cs.destinationFC || existing?.fcCode || null;
+      const fcInfo = fcCode ? lookupFC(fcCode) : null;
+      const city: string | null = cs.destinationCity || cs.destinationAddress?.city || fcInfo?.city || existing?.city || null;
+      const state: string | null = cs.destinationState || cs.destinationAddress?.stateOrProvinceCode || fcInfo?.state || existing?.state || null;
+
+      let lat: number | null = existing?.lat ?? fcInfo?.lat ?? null;
+      let lng: number | null = existing?.lng ?? fcInfo?.lng ?? null;
+      if (lat == null && state) {
+        const sc = STATE_CENTROIDS[state.toUpperCase()];
+        if (sc) { lat = sc[0]; lng = sc[1]; }
+      }
+
+      shipmentMeta[sid] = {
+        shipmentId: sid,
+        fcCode,
+        city,
+        state,
+        postalCode: cs.destinationAddress?.postalCode || existing?.postalCode || null,
+        lat,
+        lng,
+        distanceMiles:
+          shipFromCoords && lat != null && lng != null
+            ? haversineMiles(shipFromCoords[0], shipFromCoords[1], lat, lng)
+            : existing?.distanceMiles ?? null,
+      };
+    }
+
+    // ── Synthesize the confirmed option when live options are gone ────────
+    // A completed plan returns no placementOptions, but the batch knows which
+    // option was confirmed and which shipments it produced — enough for the
+    // map and the shipping view.
+    if (enrichedOptions.length === 0 && batch.placementOptionId && confirmedShipments.length > 0) {
+      enrichedOptions.push({
+        placementOptionId: batch.placementOptionId,
+        shipmentIds: confirmedShipments.map((cs: any) => cs?.shipmentId).filter(Boolean),
+        fees: [],
+        discounts: [],
+        status: 'ACCEPTED',
+        expiration: null,
+        placementFeeCents: batch.placementFeeCents ?? 0,
+        carrierFeeCents: confirmedShipments.reduce(
+          (sum: number, cs: any) => sum + (typeof cs?.cost === 'number' ? Math.round(cs.cost * 100) : 0),
+          0
+        ),
+      } as any);
+    }
+
+    // Stored carrier/cost per shipment — attached to destinations below.
+    const confirmedByShipmentId = new Map<string, any>(
+      confirmedShipments.filter((cs: any) => cs?.shipmentId).map((cs: any) => [cs.shipmentId, cs])
+    );
+
     // ── Attach destinations array to each enriched option ─────────────────
     const optionsWithDestinations = enrichedOptions.map((opt) => {
       const destinations: PlacementDestination[] = opt.shipmentIds.map((sid) => {
         const meta = shipmentMeta[sid];
+        const cs = confirmedByShipmentId.get(sid);
         if (meta) {
           return {
             shipmentId: sid,
@@ -307,9 +393,9 @@ export async function GET(
             lat: meta.lat,
             lng: meta.lng,
             distanceMiles: meta.distanceMiles,
-            type: null,
-            carrier: null,
-            shippingCost: null,
+            type: cs?.shippingMode ?? null,
+            carrier: cs?.carrier ?? null,
+            shippingCost: typeof cs?.cost === 'number' ? Math.round(cs.cost * 100) : null,
             boxes: null,
             units: null,
           };

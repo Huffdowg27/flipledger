@@ -9,7 +9,9 @@ import {
   Line,
 } from 'react-simple-maps';
 
-const GEO_URL = 'https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json';
+// Vendored from https://cdn.jsdelivr.net/npm/us-atlas@3/states-10m.json so the
+// map renders without a runtime CDN dependency (offline / blocked-CDN safe).
+const GEO_URL = '/maps/us-states-10m.json';
 
 // Option colors: each placement option gets its own color for its routes/dots
 const OPTION_COLORS = ['#7CFF3A', '#3b82f6', '#f59e0b', '#ec4899', '#8b5cf6'];
