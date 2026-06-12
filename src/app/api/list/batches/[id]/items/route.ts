@@ -10,10 +10,13 @@
  *                          FIFO is recalculated after the insert.
  *   - REPLENISH_EXISTING → links the batch item to the newest existing lot
  *                          with quantity_remaining > 0 for that SKU. Does NOT
- *                          insert or mutate any lot (no buy_price overwrite,
- *                          no date_purchased overwrite, no quantity change).
- *                          Returns 409 if no usable lot exists. FIFO is NOT
- *                          recalculated (no lots changed).
+ *                          mutate that lot (no buy_price overwrite, no
+ *                          date_purchased overwrite, no quantity change), so
+ *                          FIFO is NOT recalculated. If NO open lot exists
+ *                          (restock: prior lots sold through), a fresh lot is
+ *                          INSERTed at the entered buy price/date — same as
+ *                          CREATE_NEW but keeping the live Amazon MSKU — and
+ *                          FIFO IS recalculated.
  *
  * The link is stored on listing_batch_items.inventory_ledger_id and is what
  * DELETE uses to roll back correctly without guessing by SKU.
@@ -99,10 +102,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const now = new Date().toISOString();
 
-    // Sentinel error so we can map a missing-lot replenish to 409 without
-    // mixing it with generic 500s. Thrown inside the transaction → rollback.
-    const NO_REPLENISHABLE_LOT = 'NO_REPLENISHABLE_LOT';
-
     let didCreateLot = false;
 
     const addItem = db.transaction(() => {
@@ -125,10 +124,21 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           ORDER BY date_purchased DESC, id DESC
           LIMIT 1
         `).get(sku) as { id?: number } | undefined;
-        if (!existing?.id) {
-          throw new Error(NO_REPLENISHABLE_LOT);
+        if (existing?.id) {
+          inventoryLedgerId = existing.id;
+        } else {
+          // No open local lot — this is a restock: a fresh purchase going to
+          // an existing Amazon listing whose prior lots sold through. Record
+          // the buy as a NEW lot at its own price/date (multi-lot FIFO rule),
+          // keeping the Amazon MSKU so the send flow still skips the listing
+          // PUT and reuses the live FNSKU.
+          const lotResult = db.prepare(`
+            INSERT INTO inventory_ledger (asin, sku, buy_price, quantity, quantity_remaining, supplier_id, date_purchased, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(asin, sku, buyPriceCents, quantity, quantity, supplierId, purchaseDate || now, now);
+          inventoryLedgerId = Number(lotResult.lastInsertRowid);
+          didCreateLot = true;
         }
-        inventoryLedgerId = existing.id;
       } else {
         // CREATE_NEW: always insert a fresh lot. Never merge with prior lots.
         const lotResult = db.prepare(`
@@ -183,15 +193,6 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     } catch (txErr) {
       db.close();
       const msg = txErr instanceof Error ? txErr.message : String(txErr);
-      if (msg === 'NO_REPLENISHABLE_LOT') {
-        return NextResponse.json(
-          {
-            error:
-              'No replenishable lot found for this SKU. Create a local lot via /mfn/batch first, or switch to CREATE_NEW.',
-          },
-          { status: 409 }
-        );
-      }
       return NextResponse.json({ error: msg }, { status: 500 });
     }
 
