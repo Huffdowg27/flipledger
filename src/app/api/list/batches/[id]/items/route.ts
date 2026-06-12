@@ -84,6 +84,19 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ error: `Cannot add items to batch in status: ${batch.status}` }, { status: 400 });
     }
 
+    // A SKU can appear only once per batch — the send flow PUTs one listing
+    // per SKU and the inbound plan carries one entry per MSKU, so a duplicate
+    // row would double-create inventory lots (CREATE_NEW) and double-count
+    // plan quantities.
+    const dup = db.prepare(
+      'SELECT id, quantity FROM listing_batch_items WHERE batch_id = ? AND sku = ?'
+    ).get(batchId, sku) as { id: number; quantity: number } | undefined;
+    if (dup) {
+      return NextResponse.json({
+        error: `SKU ${sku} is already in this batch (qty ${dup.quantity}). Edit that row's quantity instead of adding it again.`,
+      }, { status: 409 });
+    }
+
     const now = new Date().toISOString();
 
     // Sentinel error so we can map a missing-lot replenish to 409 without
