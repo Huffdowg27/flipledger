@@ -171,6 +171,9 @@ interface BatchItem {
   listingStatus?: string | null;
   listingSubmissionId?: string | null;
   listingError?: string | null;
+  listingUpdatedAt?: string | null;
+  listingMode?: string | null;      // CREATE_NEW | REPLENISH_EXISTING
+  fnsku?: string | null;
   labelsPrintedAt?: string | null;  // user marks "I'm done labeling this SKU"
 }
 
@@ -530,9 +533,18 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   // Phase 3 note: pack + placement ops are awaited server-side, so we don't
   // need to poll during boxing/placement/shipping. The handlers refetch the
   // batch themselves on completion.
+  // Scalar deps only — depending on the `batch`/`items` objects would re-run
+  // the effect (and fire an immediate poll) after every setBatch/setItems,
+  // turning the 6s interval into a continuous back-to-back poll loop.
+  const batchStatus = batch?.status ?? null;
+  const anyItemProcessing = items.some((i) => i.listingStatus === 'PROCESSING');
   useEffect(() => {
-    if (!batch) return;
-    if (batch.status !== 'sending') return;
+    // Poll fast while sending; keep a slow poll on 'ready' batches that still
+    // have PROCESSING listings (timeout-advanced before Amazon finished
+    // verifying) so per-item state eventually reflects reality.
+    const isSending = batchStatus === 'sending';
+    if (!isSending && !(batchStatus === 'ready' && anyItemProcessing)) return;
+    const pollMs = isSending ? 6000 : 30000;
 
     let cancelled = false;
     let interval: ReturnType<typeof setInterval> | null = null;
@@ -544,7 +556,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
     const startPolling = () => {
       if (interval) return;
-      interval = setInterval(tick, 6000);
+      interval = setInterval(tick, pollMs);
     };
     const stopPolling = () => {
       if (interval) {
@@ -576,7 +588,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       stopPolling();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [id, batch?.status, batch, pollStatus]);
+  }, [id, batchStatus, anyItemProcessing, pollStatus]);
 
   async function handleSendToAmazon() {
     if (!batch) return;
@@ -2790,68 +2802,122 @@ function SendStatusCard({
         </div>
       )}
 
-      {/* Per-item debug panel */}
-      {isSending && items.length > 0 && (
-        <div className="mt-3">
+      {/* Per-item go-live tracker — visible whenever something is still in
+          flight (sending, or ready with listings that haven't verified yet). */}
+      {(isSending || (isReady && listingsProcessing > 0)) && items.length > 0 && (
+        <div className="mt-3 space-y-1.5">
+          {items.map((item) => {
+            const dbg = debugItems[item.id];
+            return (
+              <GoLiveRow
+                key={item.id}
+                item={item}
+                dbg={dbg}
+                isFBA={isFBA}
+                showDetails={showDebug}
+              />
+            );
+          })}
           <button
             onClick={() => setShowDebug((v) => !v)}
             className="text-[11px] text-text-tertiary hover:text-text-secondary flex items-center gap-1"
           >
             <ChevronDown size={12} className={showDebug ? 'rotate-180' : ''} />
-            Debug: MSKU verification status
+            {showDebug ? 'Hide details' : 'Show details (Amazon status, submission IDs)'}
           </button>
-          {showDebug && (
-            <div className="mt-2 space-y-2">
-              {items.map((item) => {
-                const dbg = debugItems[item.id];
-                return (
-                  <div key={item.id} className="bg-bg-elevated rounded p-2 text-[11px] font-mono">
-                    <div className="flex gap-2 items-start flex-wrap">
-                      <span className="text-text-tertiary">SKU:</span>
-                      <MskuLink sku={item.sku} className="text-text-primary hover:text-accent hover:underline" />
-                      <span className="text-text-tertiary ml-2">ASIN:</span>
-                      <AsinLink asin={item.asin} className="text-text-primary hover:text-accent hover:underline" />
-                    </div>
-                    <div className="flex gap-2 items-start flex-wrap mt-1">
-                      <span className="text-text-tertiary">FNSKU:</span>
-                      <span className={dbg?.fnsku ? 'text-positive' : 'text-text-tertiary'}>
-                        {dbg?.fnsku || 'not yet assigned'}
-                      </span>
-                      <span className="text-text-tertiary ml-2">Amazon status:</span>
-                      <span className="text-text-primary">
-                        {dbg?.amazonStatus?.length ? dbg.amazonStatus.join(', ') : item.listingStatus || '—'}
-                      </span>
-                    </div>
-                    {item.listingSubmissionId && (
-                      <div className="flex gap-2 mt-1">
-                        <span className="text-text-tertiary">SubmissionId:</span>
-                        <span className="text-text-primary">{item.listingSubmissionId}</span>
-                      </div>
-                    )}
-                    {dbg?.pollError && (
-                      <div className="text-negative mt-1">Poll error: {dbg.pollError}</div>
-                    )}
-                    {item.listingError && (
-                      <div className="text-amber-400 mt-1">Amazon note: {item.listingError}</div>
-                    )}
-                    {dbg?.lastChecked && (
-                      <div className="text-text-tertiary mt-1">
-                        Last checked: {new Date(dbg.lastChecked).toLocaleTimeString()}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 
       {isSending && !isTimedOut && (
         <p className="text-[11px] text-text-tertiary mt-3">
-          Amazon is verifying your MSKUs. Usually near-instant for restocks, up to 15 min for new items.
-          You can close this page and come back — FlipLedger will track it.
+          {isFBA
+            ? 'Restocks are near-instant. New SKUs: the offer registers in ~1–2 min, the FNSKU usually follows within 2 min (up to 10), then Amazon’s inbound system takes another 1–6 min before the plan can be created.'
+            : 'New listings typically become buyable in 15–30 min; occasionally longer while Amazon validates the offer.'}
+          {' '}You can close this page and come back — FlipLedger will track it.
         </p>
+      )}
+    </div>
+  );
+}
+
+// ─── GoLiveRow ──────────────────────────────────────────────────────────────
+// One row of the go-live tracker: SKU + stage chips that mirror the send
+// flow's real gates. FBA: offer submitted → listing on Amazon → FNSKU assigned
+// (the ready-for-inbound signal). MFN: … → buyable (the live signal).
+function GoLiveRow({
+  item,
+  dbg,
+  isFBA,
+  showDetails,
+}: {
+  item: BatchItem;
+  dbg?: DebugItem;
+  isFBA: boolean;
+  showDetails: boolean;
+}) {
+  const failed = item.listingStatus === 'FAILED';
+  const active = item.listingStatus === 'ACTIVE';
+  const fnsku = dbg?.fnsku || item.fnsku || null;
+  const isReplenish = item.listingMode === 'REPLENISH_EXISTING';
+  const amazonSeen = active || !!fnsku || (dbg?.amazonStatus?.length ?? 0) > 0;
+  const buyable = active || (dbg?.amazonStatus || []).includes('BUYABLE');
+  const finalDone = isFBA ? (!!fnsku || active) : buyable;
+
+  const stages: { label: string; done: boolean; hint: string }[] = isReplenish
+    ? [{ label: 'Live (restock)', done: true, hint: 'Existing listing — no verification needed' }]
+    : [
+        { label: 'Submitted', done: !failed, hint: 'Offer sent to Amazon' },
+        { label: 'On Amazon', done: amazonSeen, hint: 'Usually ~1–2 min after submit' },
+        isFBA
+          ? { label: fnsku ? `FNSKU ${fnsku}` : 'FNSKU', done: finalDone, hint: 'Usually under 2 min, up to 10 for brand-new SKUs' }
+          : { label: 'Buyable', done: finalDone, hint: 'Typically 15–30 min for new listings' },
+      ];
+
+  // The first not-done stage is the one in flight (unless the item failed).
+  const currentIdx = failed ? -1 : stages.findIndex((s) => !s.done);
+
+  return (
+    <div className="bg-bg-elevated rounded p-2">
+      <div className="flex items-center gap-2 flex-wrap text-[11px]">
+        <MskuLink sku={item.sku} className="font-mono text-text-primary hover:text-accent hover:underline max-w-[220px] truncate" />
+        {failed && <AlertCircle size={12} className="text-negative" />}
+        <div className="flex items-center gap-1 ml-auto">
+          {stages.map((s, idx) => (
+            <span key={s.label} className="flex items-center gap-1" title={s.hint}>
+              {idx > 0 && <span className="text-text-tertiary/40">—</span>}
+              {failed && idx === 0 ? (
+                <AlertCircle size={11} className="text-negative" />
+              ) : s.done ? (
+                <CheckCircle size={11} className="text-positive" />
+              ) : idx === currentIdx ? (
+                <Loader2 size={11} className="text-accent animate-spin" />
+              ) : (
+                <span className="w-[11px] h-[11px] rounded-full border border-text-tertiary/40 inline-block" />
+              )}
+              <span className={
+                failed && idx === 0 ? 'text-negative' :
+                s.done ? 'text-text-secondary' :
+                idx === currentIdx ? 'text-accent' : 'text-text-tertiary'
+              }>
+                {failed && idx === 0 ? 'Rejected' : s.label}
+              </span>
+            </span>
+          ))}
+        </div>
+      </div>
+      {item.listingError && (
+        <div className="text-amber-400 mt-1 text-[11px]">{item.listingError}</div>
+      )}
+      {dbg?.pollError && (
+        <div className="text-negative mt-1 text-[11px]">Poll error: {dbg.pollError}</div>
+      )}
+      {showDetails && (
+        <div className="mt-1 text-[11px] font-mono text-text-tertiary flex gap-3 flex-wrap">
+          <span>ASIN: <AsinLink asin={item.asin} className="text-text-primary hover:text-accent hover:underline" /></span>
+          <span>Amazon: {dbg?.amazonStatus?.length ? dbg.amazonStatus.join(', ') : item.listingStatus || '—'}</span>
+          {item.listingSubmissionId && <span>Submission: {item.listingSubmissionId}</span>}
+          {dbg?.lastChecked && <span>Checked: {new Date(dbg.lastChecked).toLocaleTimeString()}</span>}
+        </div>
       )}
     </div>
   );

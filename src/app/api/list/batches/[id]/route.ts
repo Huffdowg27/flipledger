@@ -81,6 +81,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         listing_submission_id as listingSubmissionId,
         listing_error as listingError,
         listing_updated_at as listingUpdatedAt,
+        listing_mode as listingMode,
+        fnsku,
         labels_printed_at as labelsPrintedAt,
         created_at as createdAt
       FROM listing_batch_items

@@ -108,6 +108,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
         listing_submission_id as listingSubmissionId,
         listing_error as listingError,
         listing_updated_at as listingUpdatedAt,
+        listing_mode as listingMode,
+        fnsku,
         labels_printed_at as labelsPrintedAt,
         created_at as createdAt
       FROM listing_batch_items WHERE batch_id = ?
@@ -115,7 +117,14 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     `).all(batchId) as any[];
 
     // If the batch isn't in an active state, just return what we have.
-    if (batch.status === 'draft' || batch.status === 'failed' || batch.status === 'ready') {
+    // Exception: a 'ready' batch that still has PROCESSING listings (e.g. it
+    // was timeout-advanced before Amazon finished verifying) keeps getting
+    // its listings polled so the per-item state eventually reflects reality.
+    const hasProcessingItems = items.some((i) => i.listingStatus === 'PROCESSING');
+    if (
+      batch.status === 'draft' || batch.status === 'failed' ||
+      (batch.status === 'ready' && !hasProcessingItems)
+    ) {
       db.close();
       return NextResponse.json({ batch, items });
     }
