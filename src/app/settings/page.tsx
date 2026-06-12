@@ -12,6 +12,7 @@ interface SettingsData {
   lastSync: string | null;
   extensionApiKey: string;
   veeqo_api_key?: string;
+  airtable_api_key?: string;
 }
 
 interface SyncResult {
@@ -56,6 +57,7 @@ export default function SettingsPage() {
     lastSync: null,
     extensionApiKey: '',
     veeqo_api_key: '',
+    airtable_api_key: '',
   });
   const [veeqoTesting, setVeeqoTesting] = useState(false);
   const [veeqoSyncing, setVeeqoSyncing] = useState(false);
@@ -371,6 +373,26 @@ export default function SettingsPage() {
 
       {/* Veeqo Shipping Costs */}
       <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+        <h2 className="text-md font-medium text-text-primary mb-1">Airtable Purchases</h2>
+        <p className="text-xs text-text-tertiary mb-4">
+          Syncs your 💳 Orders table into the Incoming page hourly (on-order lots,
+          overdue aging, receive flow). Create a personal access token at
+          airtable.com/create/tokens with data.records:read + data.records:write
+          scoped to the Products base.
+        </p>
+        <div className="mb-6">
+          <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">
+            Airtable Personal Access Token
+          </label>
+          <input
+            type="password"
+            value={settings.airtable_api_key || ''}
+            onChange={e => setSettings(s => ({ ...s, airtable_api_key: e.target.value }))}
+            placeholder="pat..."
+            className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+          />
+        </div>
+
         <h2 className="text-md font-medium text-text-primary mb-1">Veeqo Shipping Costs</h2>
         <p className="text-xs text-text-tertiary mb-4">
           Pulls each MFN order&apos;s label cost from the Veeqo API and fills its shipping cost

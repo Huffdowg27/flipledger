@@ -38,6 +38,7 @@ const NAV: NavSection[] = [
   {
     key: 'inventory', label: 'Inventory', icon: <Warehouse size={26} />, href: '/inventory',
     items: [
+      { label: 'Incoming', href: '/incoming' },
       { label: 'Products & COGS', href: '/products' },
       { label: 'Merchant Inventory', href: '/analyze/merchant-inventory' },
       { label: 'Inventory Valuation', href: '/analyze/inventory-valuation' },

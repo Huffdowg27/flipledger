@@ -22,6 +22,7 @@ import { syncVeeqoShipping, getVeeqoApiKey } from '../veeqo-api/shipping';
 import { backfillMfnFees } from './backfillMfnFees';
 import { backfillUpcs } from './backfillUpcs';
 import { reconcileFbaShipments } from './reconcileFbaShipments';
+import { syncAirtablePurchases } from '../airtable/purchases';
 import type { SPAPICredentials } from './types';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -128,6 +129,10 @@ const MFN_UPCS_BACKFILL_INTERVAL_HOURS = 24;
 // plenty. Only touches batches sitting in 'shipping' (a handful at most).
 const FBA_SHIPMENT_RECONCILE_INTERVAL_HOURS = 6;
 
+// Airtable purchases sync: hourly so a purchase punched into Airtable shows
+// on the Incoming page within the hour. Skips silently when no API key set.
+const AIRTABLE_PURCHASES_INTERVAL_HOURS = 1;
+
 // Reimbursement candidates — weekly. The FBA inventory adjustments report
 // is async (60-120s) and inventory adjustments don't accumulate fast.
 // Weekly is enough to catch them well within the 60-day claim window.
@@ -201,6 +206,15 @@ export const SYNC_JOB_REGISTRY = [
     description: 'Lost/damaged inventory Amazon owes you (60-day claim window)',
     intervalHours: REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS,
     runRoute: '/api/sync/reimbursement-candidates',
+    method: 'POST',
+    family: 'amazon',
+  },
+  {
+    key: 'airtable_purchases_last_sync',
+    label: 'Airtable purchases',
+    description: 'Pulls 💳 Orders into Incoming (on-order lots, overdue aging)',
+    intervalHours: AIRTABLE_PURCHASES_INTERVAL_HOURS,
+    runRoute: '/api/sync/airtable-purchases',
     method: 'POST',
     family: 'amazon',
   },
@@ -437,6 +451,22 @@ async function autoSyncTick() {
         },
       });
     }
+  }
+
+  // Airtable purchases (hourly) — pulls Jamie's 💳 Orders table into
+  // incoming_purchases (on-order tracking, overdue aging, receive flow).
+  {
+    await runGatedSync({
+      key: 'airtable_purchases_last_sync',
+      intervalHours: AIRTABLE_PURCHASES_INTERVAL_HOURS,
+      label: 'Airtable purchases sync',
+      run: async () => {
+        const result = await syncAirtablePurchases();
+        console.log(
+          `[AutoSync] Airtable purchases: ${result.scanned} scanned, ${result.inserted} new, ${result.updated} updated, ${result.skippedLegacy} legacy skipped`
+        );
+      },
+    });
   }
 
   // FBA Reimbursements Report (weekly) — pulls the canonical record of

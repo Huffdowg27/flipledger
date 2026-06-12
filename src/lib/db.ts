@@ -219,6 +219,57 @@ export function initializeDatabase() {
       created_at TEXT NOT NULL
     );
 
+    -- Purchases synced from Airtable "💳 Orders" (eBay/Amazon→Amazon buys).
+    -- These are NOT inventory_ledger lots — they stay out of FIFO/valuation
+    -- until physically received, at which point receive creates the real lot
+    -- and stamps inventory_ledger_id here. Lock rule: once received or
+    -- cancelled, later Airtable edits to the row are ignored.
+    CREATE TABLE IF NOT EXISTS incoming_purchases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      airtable_record_id TEXT UNIQUE,
+      order_source TEXT,
+      order_ref TEXT,
+      asin TEXT,
+      sku TEXT,
+      product_name TEXT,
+      image_url TEXT,
+      quantity INTEGER NOT NULL DEFAULT 0,
+      quantity_received INTEGER NOT NULL DEFAULT 0,
+      unit_cost_cents INTEGER NOT NULL DEFAULT 0,
+      ordered_at TEXT,
+      tracking_number TEXT,
+      delivery_status TEXT,
+      status TEXT NOT NULL DEFAULT 'on_order',
+      received_at TEXT,
+      inventory_ledger_id INTEGER,
+      notes TEXT,
+      snoozed_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_incoming_purchases_status ON incoming_purchases(status);
+
+    -- Receiving issues: units that arrived wrong/damaged/short. Each
+    -- resolution is a money event (refund recovers cost, dispose writes off,
+    -- partial refund lowers the lot's basis, sell-as-is moves to graded lot).
+    CREATE TABLE IF NOT EXISTS receiving_issues (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      incoming_purchase_id INTEGER,
+      inventory_ledger_id INTEGER,
+      asin TEXT,
+      sku TEXT,
+      quantity INTEGER NOT NULL,
+      issue_type TEXT NOT NULL,
+      note TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      resolution TEXT,
+      refund_cents INTEGER,
+      resolved_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_receiving_issues_status ON receiving_issues(status);
+
     CREATE TABLE IF NOT EXISTS inbound_shipments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       shipment_id TEXT NOT NULL,
