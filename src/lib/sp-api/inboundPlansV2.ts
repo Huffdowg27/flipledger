@@ -617,6 +617,38 @@ export async function getShipment(
 // PackageLabelsToPrint must contain the boxId values from listShipmentBoxes.
 // Passing a wrong or locally generated box name returns an error.
 
+/**
+ * Get shipment-level status for confirmed shipments via the v0 API.
+ *
+ * The v2024 inboundPlans endpoints return 403 once a plan's workflow is over
+ * (verified live 2026-06-11 on every past plan, including a 2-week-old one),
+ * so post-confirmation tracking MUST go through v0 using the FBA confirmation
+ * IDs (FBA…) — not the v2024 sh… shipment IDs.
+ *
+ * Statuses: WORKING, READY_TO_SHIP, SHIPPED, IN_TRANSIT, DELIVERED,
+ * CHECKED_IN, RECEIVING, CLOSED, CANCELLED, DELETED, ERROR.
+ */
+export async function getV0ShipmentStatuses(
+  credentials: SPAPICredentials,
+  confirmationIds: string[]
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  // v0 accepts a comma-separated ShipmentIdList; chunk defensively.
+  for (let i = 0; i < confirmationIds.length; i += 50) {
+    const chunk = confirmationIds.slice(i, i + 50);
+    const data = await spApiRequest(credentials, '/fba/inbound/v0/shipments', {
+      QueryType: 'SHIPMENT',
+      MarketplaceId: credentials.marketplaceId,
+      ShipmentIdList: chunk.join(','),
+    });
+    const shipments: any[] = data?.payload?.ShipmentData || [];
+    for (const s of shipments) {
+      if (s?.ShipmentId) result.set(s.ShipmentId, (s.ShipmentStatus || 'UNKNOWN').toUpperCase());
+    }
+  }
+  return result;
+}
+
 export type LabelPageType =
   | 'PackageLabel_Letter_2'
   | 'PackageLabel_Letter_4'

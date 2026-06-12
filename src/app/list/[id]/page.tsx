@@ -1620,7 +1620,10 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
               {cancelling ? 'Cancelling…' : (batch.status === 'failed' || batch.status === 'sending' ? 'Reset & Edit' : 'Cancel & Edit')}
             </button>
           )}
-          {(batch.status === 'ready' || batch.status === 'failed') && (
+          {/* 'shipping' close is the manual fallback for batches the 6h
+              auto-reconcile can't track (no confirmation IDs stored) or when
+              the user knows a shipment is done/dead before Amazon says so. */}
+          {(batch.status === 'ready' || batch.status === 'failed' || batch.status === 'shipping') && (
             <button
               onClick={handleCloseBatch}
               className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default rounded-md text-sm text-text-secondary hover:text-text-primary hover:bg-bg-hover transition-colors"

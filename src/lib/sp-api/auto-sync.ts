@@ -21,6 +21,7 @@ import { recalculateFIFO } from '../fifo';
 import { syncVeeqoShipping, getVeeqoApiKey } from '../veeqo-api/shipping';
 import { backfillMfnFees } from './backfillMfnFees';
 import { backfillUpcs } from './backfillUpcs';
+import { reconcileFbaShipments } from './reconcileFbaShipments';
 import type { SPAPICredentials } from './types';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -123,6 +124,10 @@ const MFN_FEES_BACKFILL_INTERVAL_HOURS = 24;
 // MFN orders, so new orders get UPCs without manual runs.
 const MFN_UPCS_BACKFILL_INTERVAL_HOURS = 24;
 
+// FBA shipment reconcile: receives take days, so a few checks per day is
+// plenty. Only touches batches sitting in 'shipping' (a handful at most).
+const FBA_SHIPMENT_RECONCILE_INTERVAL_HOURS = 6;
+
 // Reimbursement candidates — weekly. The FBA inventory adjustments report
 // is async (60-120s) and inventory adjustments don't accumulate fast.
 // Weekly is enough to catch them well within the 60-day claim window.
@@ -196,6 +201,15 @@ export const SYNC_JOB_REGISTRY = [
     description: 'Lost/damaged inventory Amazon owes you (60-day claim window)',
     intervalHours: REIMBURSEMENT_CANDIDATES_INTERVAL_HOURS,
     runRoute: '/api/sync/reimbursement-candidates',
+    method: 'POST',
+    family: 'amazon',
+  },
+  {
+    key: 'fba_shipment_reconcile_last_sync',
+    label: 'FBA shipment reconcile',
+    description: 'Auto-closes shipping batches once Amazon receives (or cancels) their shipments',
+    intervalHours: FBA_SHIPMENT_RECONCILE_INTERVAL_HOURS,
+    runRoute: '/api/sync/fba-shipment-reconcile',
     method: 'POST',
     family: 'amazon',
   },
@@ -397,6 +411,28 @@ async function autoSyncTick() {
           const result = await backfillUpcs(amazonCreds, { limit: 100, delayMs: 300 });
           console.log(
             `[AutoSync] MFN UPC backfill: ${result.eligible} eligible, ${result.attempted} attempted, ${result.found} found, ${result.missing} none, ${result.failed} failed`
+          );
+        },
+      });
+    }
+  }
+
+  // FBA shipment reconcile (every 6h) — auto-closes FBA batches in 'shipping'
+  // once Amazon marks all their shipments terminal (CLOSED = received, or
+  // cancelled). Closing also triggers the Informed repricer cost push, which
+  // previously never fired for FBA batches because nothing ever closed them.
+  {
+    const amazonCreds = getAmazonCredentials();
+    if (amazonCreds) {
+      await runGatedSync({
+        key: 'fba_shipment_reconcile_last_sync',
+        intervalHours: FBA_SHIPMENT_RECONCILE_INTERVAL_HOURS,
+        label: 'FBA shipment reconcile',
+        run: async () => {
+          console.log('[AutoSync] Starting FBA shipment reconcile');
+          const result = await reconcileFbaShipments(amazonCreds);
+          console.log(
+            `[AutoSync] FBA shipment reconcile: ${result.checked} shipping batches checked, ${result.closed} closed, ${result.untrackable} untrackable, ${result.errors} errors`
           );
         },
       });
