@@ -3331,6 +3331,50 @@ function BoxingWorkflow({
     return d.toISOString().slice(0, 10);
   });
 
+  // "Estimate all" — optionId currently being estimated, or null when idle.
+  const [estimatingAllId, setEstimatingAllId] = useState<string | null>(null);
+
+  // Total cost (placement fee + estimated shipping) per option with loaded
+  // transport data. Used to badge the cheapest option once 2+ are estimated.
+  const { totalsByOption, cheapestOptionId } = useMemo(() => {
+    const totals: Record<string, number> = {};
+    for (const opt of placementOptions) {
+      const td = transportDataByOption[opt.placementOptionId];
+      if (!td?.options) continue;
+      const summary = buildTransportSummary(td.options, td.shipments ?? undefined);
+      if (summary.perShipment.length === 0 || summary.totalShippingCents <= 0) continue;
+      const fee = opt.placementFeeCents ??
+        opt.fees.reduce((s: number, f: any) => s + Math.round((f.value?.amount || 0) * 100), 0);
+      totals[opt.placementOptionId] = fee + summary.totalShippingCents;
+    }
+    const entries = Object.entries(totals);
+    return {
+      totalsByOption: totals,
+      cheapestOptionId: entries.length >= 2
+        ? entries.sort((a, b) => a[1] - b[1])[0][0]
+        : null,
+    };
+  }, [placementOptions, transportDataByOption]);
+
+  // Estimate every option that doesn't have transport data yet. Sequential on
+  // purpose: each estimate is an Amazon async operation (~15-40s) and running
+  // four generates against the same plan concurrently risks throttling.
+  async function handleEstimateAll() {
+    for (const opt of placementOptions) {
+      const existing = transportDataByOption[opt.placementOptionId];
+      if (existing?.options || existing?.loading) continue;
+      const isConfirmedOpt = batch.placementOptionId === opt.placementOptionId;
+      if (batch.placementOptionId && !isConfirmedOpt) continue; // expired once another is confirmed
+      setEstimatingAllId(opt.placementOptionId);
+      if (isConfirmedOpt) {
+        await handleLoadTransportForConfirmed(opt.placementOptionId);
+      } else {
+        await handleLoadTransportPreview(opt.placementOptionId);
+      }
+    }
+    setEstimatingAllId(null);
+  }
+
   async function handleCompleteTransportation() {
     setCompletingTransport(true);
     setTransportationError(null);
@@ -3875,7 +3919,24 @@ function BoxingWorkflow({
               )}
 
               {/* Ship date — shared, set before confirming */}
-              <div className="flex items-center gap-3">
+              <div className="flex items-end gap-3 flex-wrap">
+                {!batch.placementOptionId && placementOptions.length > 1 && (
+                  <button
+                    onClick={handleEstimateAll}
+                    disabled={!!estimatingAllId || !shipDate || !!confirmingBothId}
+                    className="h-9 px-4 bg-bg-surface border border-accent/40 text-accent rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5 hover:bg-accent/10 order-last"
+                    title="Pull a no-commitment shipping estimate for every option, then compare placement fee + shipping totals. Takes ~30s per option."
+                  >
+                    {estimatingAllId ? (
+                      <>
+                        <Loader2 size={12} className="animate-spin" />
+                        Estimating option {Math.max(1, placementOptions.findIndex((o) => o.placementOptionId === estimatingAllId) + 1)} of {placementOptions.length}…
+                      </>
+                    ) : (
+                      <>Estimate all options</>
+                    )}
+                  </button>
+                )}
                 <div>
                   <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Ship Date</label>
                   <input
@@ -3928,6 +3989,14 @@ function BoxingWorkflow({
 
                         {isConfirmed && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-positive/10 text-positive border border-positive/30 shrink-0">✓ CONFIRMED</span>
+                        )}
+                        {!isConfirmed && cheapestOptionId === opt.placementOptionId && (
+                          <span
+                            className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-positive/10 text-positive border border-positive/30 shrink-0"
+                            title={`Lowest total of the ${Object.keys(totalsByOption).length} estimated options (placement fee + shipping)`}
+                          >
+                            ★ CHEAPEST
+                          </span>
                         )}
                         {anotherConfirmed && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-text-muted/10 text-text-muted border border-text-muted/20 shrink-0">EXPIRED</span>
