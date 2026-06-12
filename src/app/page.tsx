@@ -83,6 +83,7 @@ export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [opsPulse, setOpsPulse] = useState<OpsPulse | null>(null);
   const [dailySales, setDailySales] = useState<DailySales | null>(null);
+  const [incomingStats, setIncomingStats] = useState<any | null>(null);
   const [loading, setLoading] = useState(true);
   const nowForDashboard = new Date();
   const dashboardMonthStart = toLocalDateString(new Date(nowForDashboard.getFullYear(), nowForDashboard.getMonth(), 1));
@@ -207,6 +208,11 @@ export default function Dashboard() {
 
   const fetchData = useCallback(async () => {
     setLoading(true);
+    // Purchases strip — independent fetch, never blocks the P&L tiles.
+    fetch('/api/incoming')
+      .then((r) => r.json())
+      .then((d) => { if (d?.stats) setIncomingStats(d.stats); })
+      .catch(() => {});
     try {
       const res = await fetch(`/api/data/profitloss?startDate=${dashboardMonthStart}&endDate=${dashboardToday}&dateBasis=purchase&summaryOnly=1`);
       const json = await res.json();
@@ -395,6 +401,32 @@ export default function Dashboard() {
           </div>
         </Link>
       </div>
+
+      {/* Purchases / Incoming strip — entered in Airtable, received in FlipLedger */}
+      {incomingStats && (
+        <Link href="/incoming" className="block rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-sm font-semibold text-text-secondary">Purchases &amp; Incoming</div>
+            <div className="rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold text-accent">Receive →</div>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
+            {[
+              { label: 'Bought today', main: formatCurrency(incomingStats.purchasedToday.cents), sub: `${incomingStats.purchasedToday.units} units · profit est. ${formatCurrency(incomingStats.purchasedToday.profitCents)}` },
+              { label: 'This week', main: formatCurrency(incomingStats.purchasedWeek.cents), sub: `${incomingStats.purchasedWeek.units} units · profit est. ${formatCurrency(incomingStats.purchasedWeek.profitCents)}` },
+              { label: 'This month', main: formatCurrency(incomingStats.purchasedMonth.cents), sub: `${incomingStats.purchasedMonth.units} units · profit est. ${formatCurrency(incomingStats.purchasedMonth.profitCents)}` },
+              { label: 'On order', main: formatCurrency(incomingStats.onOrderCents), sub: `${incomingStats.onOrderUnits} units incoming` },
+              { label: `Over ${incomingStats.overdueDays} days`, main: String(incomingStats.overdueCount), sub: `${formatCurrency(incomingStats.overdueCents)} at risk`, alert: incomingStats.overdueCount > 0 },
+              { label: 'Open issues', main: String(incomingStats.openIssuesCount), sub: `${formatCurrency(incomingStats.openIssuesCents)} unresolved`, alert: incomingStats.openIssuesCount > 0 },
+            ].map((c: any) => (
+              <div key={c.label} className={`rounded-lg bg-bg-elevated p-3 border-t-2 ${c.alert ? 'border-t-amber-400' : 'border-t-accent/50'}`}>
+                <div className="text-[11px] text-text-tertiary uppercase tracking-wider mb-1">{c.label}</div>
+                <div className={`text-xl font-bold font-mono ${c.alert ? 'text-amber-400' : 'text-text-primary'}`}>{c.main}</div>
+                <div className="text-[11px] text-text-tertiary mt-0.5">{c.sub}</div>
+              </div>
+            ))}
+          </div>
+        </Link>
+      )}
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Link href="/analyze/profitloss" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">

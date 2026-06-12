@@ -88,10 +88,11 @@ export async function GET() {
     const sum = (rows: any[], f: (r: any) => number) => rows.reduce((s, r) => s + f(r), 0);
     const purchasedSince = (sinceIso: string) => {
       const row = db.prepare(`
-        SELECT COALESCE(SUM(quantity * unit_cost_cents), 0) as cents, COALESCE(SUM(quantity), 0) as units, COUNT(*) as orders
+        SELECT COALESCE(SUM(quantity * unit_cost_cents), 0) as cents, COALESCE(SUM(quantity), 0) as units, COUNT(*) as orders,
+               COALESCE(SUM(quantity * COALESCE(profit_cents, 0)), 0) as profitCents
         FROM incoming_purchases WHERE ordered_at >= ? AND status != 'cancelled'
       `).get(sinceIso) as any;
-      return { cents: row.cents, units: row.units, orders: row.orders };
+      return { cents: row.cents, units: row.units, orders: row.orders, profitCents: row.profitCents };
     };
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const week = new Date(today); week.setDate(week.getDate() - week.getDay());

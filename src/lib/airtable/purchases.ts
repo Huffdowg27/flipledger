@@ -24,11 +24,16 @@
  *     skipped on first sight — they predate this system and would flood
  *     Incoming. Partial Airtable receives seed quantity_received.
  *
+ * Scope: ONLY the "Orders Current" Airtable view (the rows Jamie is actively
+ * working) plus a hard date floor — everything older was received before this
+ * system existed and must not flood Incoming.
+ *
  * Settings keys: airtable_api_key (PAT, required),
  *   airtable_purchases_base (default app1G29Xd3K6S5swV),
  *   airtable_purchases_table (default 💳 Orders),
+ *   airtable_purchases_view (default Orders Current),
  *   airtable_products_table (default 💻 Products),
- *   airtable_purchases_lookback_days (default 120).
+ *   airtable_purchases_since (date floor, default 2026-06-01).
  */
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -95,7 +100,8 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
   const baseId = settings.airtable_purchases_base?.trim() || 'app1G29Xd3K6S5swV';
   const ordersTable = settings.airtable_purchases_table?.trim() || '💳 Orders';
   const productsTable = settings.airtable_products_table?.trim() || '💻 Products';
-  const lookbackDays = parseInt(settings.airtable_purchases_lookback_days || '') || 120;
+  const view = settings.airtable_purchases_view?.trim() || 'Orders Current';
+  const sinceDate = settings.airtable_purchases_since?.trim() || '2026-06-01';
 
   // 1. Products record-id → ASIN map (Orders links ASIN via record links).
   const productRecords = await fetchAllRecords(apiKey, baseId, productsTable, {
@@ -106,10 +112,8 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
     if (r.fields?.Asin) asinByRecordId.set(r.id, String(r.fields.Asin).trim());
   }
 
-  // 2. Recent orders.
-  const orders = await fetchAllRecords(apiKey, baseId, ordersTable, {
-    filterByFormula: `IS_AFTER({DateOrdered}, DATEADD(TODAY(), -${lookbackDays}, 'days'))`,
-  });
+  // 2. Orders from the working view only.
+  const orders = await fetchAllRecords(apiKey, baseId, ordersTable, { view });
 
   const db2 = getDb();
   let inserted = 0, updated = 0, skippedLegacy = 0, skippedLocked = 0;
@@ -118,15 +122,15 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
     const insert = db2.prepare(`
       INSERT INTO incoming_purchases (
         airtable_record_id, order_source, order_ref, asin, sku, product_name, image_url,
-        quantity, quantity_received, unit_cost_cents, ordered_at, tracking_number,
-        delivery_status, status, notes, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        quantity, quantity_received, unit_cost_cents, sales_price_cents, profit_cents,
+        ordered_at, tracking_number, delivery_status, status, notes, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const update = db2.prepare(`
       UPDATE incoming_purchases SET
         order_source = ?, order_ref = ?, asin = ?, sku = ?, product_name = ?, image_url = ?,
-        quantity = ?, unit_cost_cents = ?, ordered_at = ?, tracking_number = ?,
-        delivery_status = ?, notes = ?, updated_at = ?
+        quantity = ?, unit_cost_cents = ?, sales_price_cents = ?, profit_cents = ?,
+        ordered_at = ?, tracking_number = ?, delivery_status = ?, notes = ?, updated_at = ?
       WHERE airtable_record_id = ?
     `);
 
@@ -136,6 +140,10 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
       const f = rec.fields || {};
       const qty = Math.max(0, Math.round(Number(f['Order QTY']) || 0));
       if (qty === 0) continue;
+      // Date floor: anything ordered before the cutover was handled in the
+      // old (pre-FlipLedger) process even if it's still in the view.
+      const orderedAtRaw = typeof f['DateOrdered'] === 'string' ? f['DateOrdered'] : null;
+      if (orderedAtRaw && orderedAtRaw < sinceDate) { skippedLegacy++; continue; }
 
       const airtableReceived = Math.max(0, Math.round(Number(f['Received']) || 0));
       const existing = getExisting.get(rec.id) as { id: number; status: string; quantity_received: number } | undefined;
@@ -158,6 +166,8 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
       const skuRaw = f['Seller Sku'];
       const sku = (typeof skuRaw === 'string' && skuRaw.trim()) ? skuRaw.trim() : null;
       const unitCostCents = Math.round((Number(f['Cost']) || 0) * 100);
+      const salesPriceCents = f['SalesPrice'] != null ? Math.round((Number(f['SalesPrice']) || 0) * 100) : null;
+      const profitCents = f['Profit'] != null ? Math.round((Number(f['Profit']) || 0) * 100) : null;
       const deliveryStatus = [
         ...(Array.isArray(f['Delivery Status']) ? f['Delivery Status'] : []),
         ...(typeof f['Order Tracking Status'] === 'string' ? [f['Order Tracking Status']] : []),
@@ -172,7 +182,7 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
       if (existing) {
         update.run(
           source, orderRef, asin, sku, productName, imageUrl,
-          qty, unitCostCents, orderedAt, f['Tracking Number'] || null,
+          qty, unitCostCents, salesPriceCents, profitCents, orderedAt, f['Tracking Number'] || null,
           deliveryStatus, notes, now, rec.id
         );
         updated++;
@@ -182,7 +192,7 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
         const seedReceived = Math.min(airtableReceived, qty);
         insert.run(
           rec.id, source, orderRef, asin, sku, productName, imageUrl,
-          qty, seedReceived, unitCostCents, orderedAt, f['Tracking Number'] || null,
+          qty, seedReceived, unitCostCents, salesPriceCents, profitCents, orderedAt, f['Tracking Number'] || null,
           deliveryStatus, seedReceived > 0 ? 'partial' : 'on_order', notes, now, now
         );
         inserted++;

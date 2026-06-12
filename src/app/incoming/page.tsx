@@ -126,9 +126,9 @@ export default function IncomingPage() {
       {stats && (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
           {[
-            { label: 'Bought today', main: fmt(stats.purchasedToday.cents), sub: `${stats.purchasedToday.units} units · ${stats.purchasedToday.orders} orders` },
-            { label: 'This week', main: fmt(stats.purchasedWeek.cents), sub: `${stats.purchasedWeek.units} units · ${stats.purchasedWeek.orders} orders` },
-            { label: 'This month', main: fmt(stats.purchasedMonth.cents), sub: `${stats.purchasedMonth.units} units · ${stats.purchasedMonth.orders} orders` },
+            { label: 'Bought today', main: fmt(stats.purchasedToday.cents), sub: `${stats.purchasedToday.units} units · est. profit ${fmt(stats.purchasedToday.profitCents)}` },
+            { label: 'This week', main: fmt(stats.purchasedWeek.cents), sub: `${stats.purchasedWeek.units} units · est. profit ${fmt(stats.purchasedWeek.profitCents)}` },
+            { label: 'This month', main: fmt(stats.purchasedMonth.cents), sub: `${stats.purchasedMonth.units} units · est. profit ${fmt(stats.purchasedMonth.profitCents)}` },
             { label: 'On order', main: fmt(stats.onOrderCents), sub: `${stats.onOrderUnits} units incoming` },
             { label: `Overdue (${stats.overdueDays}d+)`, main: fmt(stats.overdueCents), sub: `${stats.overdueCount} orders`, alert: stats.overdueCount > 0 },
             { label: 'Open issues', main: fmt(stats.openIssuesCents), sub: `${stats.openIssuesCount} unresolved`, alert: stats.openIssuesCount > 0 },

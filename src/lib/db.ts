@@ -726,6 +726,9 @@ export function initializeDatabase() {
     // REPLENISH_EXISTING restock fallback when no open lot existed). DELETE
     // uses this — not listing_mode — to decide whether to roll the lot back.
     `ALTER TABLE listing_batch_items ADD COLUMN created_lot INTEGER DEFAULT 0`,
+    // Anticipated economics from the Airtable purchase row (per unit).
+    `ALTER TABLE incoming_purchases ADD COLUMN sales_price_cents INTEGER`,
+    `ALTER TABLE incoming_purchases ADD COLUMN profit_cents INTEGER`,
     `ALTER TABLE inventory_ledger ADD COLUMN bin_location TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN condition TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN quantity_received INTEGER`,
