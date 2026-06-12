@@ -671,6 +671,10 @@ export function initializeDatabase() {
     `ALTER TABLE listing_batch_items ADD COLUMN listing_source TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN amazon_inventory_status TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN inventory_ledger_id INTEGER`,
+    // 1 when the item add INSERTed its linked lot (CREATE_NEW always; the
+    // REPLENISH_EXISTING restock fallback when no open lot existed). DELETE
+    // uses this — not listing_mode — to decide whether to roll the lot back.
+    `ALTER TABLE listing_batch_items ADD COLUMN created_lot INTEGER DEFAULT 0`,
     `ALTER TABLE inventory_ledger ADD COLUMN bin_location TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN condition TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN quantity_received INTEGER`,

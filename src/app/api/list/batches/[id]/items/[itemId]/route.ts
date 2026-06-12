@@ -167,12 +167,14 @@ export async function DELETE(
       return NextResponse.json({ error: `Cannot remove items in status: ${batch.status}` }, { status: 400 });
     }
 
-    // Branch on listing_mode and inventory_ledger_id:
+    // Branch on whether the POST created the linked lot (created_lot), with
+    // listing_mode as the fallback signal for rows that predate the column:
     //
-    // - REPLENISH_EXISTING: the linked lot pre-existed and was never grown by
-    //   the POST. Do not touch inventory_ledger. Just remove the batch item.
+    // - Linked-but-not-created (replenish against an open pre-existing lot):
+    //   the lot was never grown by the POST. Do not touch inventory_ledger.
+    //   Just remove the batch item.
     //
-    // - CREATE_NEW with inventory_ledger_id: the lot was created by this item.
+    // - Created lot (CREATE_NEW always; REPLENISH_EXISTING restock fallback):
     //   Decrement quantity and quantity_remaining by item.quantity. If the lot
     //   has already had units consumed by FIFO (quantity_remaining < quantity
     //   sold's worth), fail closed so we never roll back inventory that's
@@ -185,7 +187,7 @@ export async function DELETE(
 
     const rollback = db.transaction(() => {
       const item = db.prepare(`
-        SELECT sku, quantity, listing_mode, inventory_ledger_id
+        SELECT sku, quantity, listing_mode, inventory_ledger_id, created_lot
         FROM listing_batch_items
         WHERE id = ? AND batch_id = ?
       `).get(itemIdNum, batchId) as {
@@ -193,13 +195,19 @@ export async function DELETE(
         quantity: number;
         listing_mode: string | null;
         inventory_ledger_id: number | null;
+        created_lot: number | null;
       } | undefined;
       if (!item) return null;
 
       affectedSku = item.sku;
       const mode = item.listing_mode || 'CREATE_NEW';
+      // Pre-column rows have created_lot NULL — for those, CREATE_NEW was the
+      // only mode that inserted a lot.
+      const createdLot = item.created_lot != null
+        ? item.created_lot === 1
+        : mode !== 'REPLENISH_EXISTING';
 
-      if (mode === 'REPLENISH_EXISTING') {
+      if (!createdLot) {
         // Pre-existing real inventory. Touch nothing on inventory_ledger.
       } else if (item.inventory_ledger_id != null) {
         // CREATE_NEW with a linked lot (new path from this commit forward).

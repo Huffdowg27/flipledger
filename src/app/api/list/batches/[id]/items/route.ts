@@ -156,8 +156,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           quantity, list_price_cents, buy_price_cents, supplier, purchase_date,
           estimated_fee_cents, estimated_ship_cents, listing_mode, fnsku,
           fulfillment_channel, listing_source, amazon_inventory_status,
-          inventory_ledger_id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          inventory_ledger_id, created_lot, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         batchId,
         asin,
@@ -179,6 +179,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         listingSource || null,
         amazonInventoryStatus || null,
         inventoryLedgerId,
+        didCreateLot ? 1 : 0,
         now
       );
 
