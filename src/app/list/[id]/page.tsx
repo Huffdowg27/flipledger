@@ -1003,6 +1003,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
     placementOptionId: string,
     shipmentIds: string[],
     readyToShipStart: string,
+    ltl?: any,
   ): Promise<{ success: boolean; options?: any[]; shipments?: any[]; error?: string }> {
     if (!batch) return { success: false };
     const chosen = placementOptions.find((o) => o.placementOptionId === placementOptionId);
@@ -1027,7 +1028,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       const tRes = await fetch(`/api/list/batches/${id}/transportation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'generate', shipmentIds, readyToShipStart }),
+        body: JSON.stringify({ action: 'generate', shipmentIds, readyToShipStart, ltl }),
       });
       const tData = await tRes.json();
       if (tData.error) throw new Error(`Transportation: ${tData.error}`);
@@ -3042,17 +3043,32 @@ function extractDestination(obj: any): {
   return { city, state, postalCode, fcCode, foundAt };
 }
 
-const REJECT_SHIPPING_MODES = ['LTL', 'FTL', 'FREIGHT', 'PALLET'];
+const FREIGHT_SHIPPING_MODES = ['LTL', 'FTL', 'FREIGHT', 'PALLET'];
 const REJECT_CARRIER_FRAGMENTS = ['total express', 'tex courier', 'itapemirim', 'correios'];
 
-function pickBestTransportOption(options: any[]): any | null {
+type ShipMode = 'SPD' | 'LTL';
+
+function pickBestTransportOption(options: any[], shipMode: ShipMode = 'SPD'): any | null {
   const valid = options.filter((o) => {
     const mode = (o.shippingMode || '').toUpperCase();
     const carrier = (o.carrier?.name || '').toLowerCase();
-    if (REJECT_SHIPPING_MODES.some((r) => mode.includes(r))) return false;
+    const isFreight = FREIGHT_SHIPPING_MODES.some((r) => mode.includes(r));
+    if (shipMode === 'SPD' ? isFreight : !isFreight) return false;
     if (REJECT_CARRIER_FRAGMENTS.some((r) => carrier.includes(r))) return false;
     return true;
   });
+
+  if (shipMode === 'LTL') {
+    // Freight: prefer partnered, then cheapest quoted.
+    const byCost = (a: any, b: any) =>
+      (a.quote?.cost?.amount ?? Infinity) - (b.quote?.cost?.amount ?? Infinity);
+    const partnered = valid
+      .filter((o) => o.shippingSolution === 'AMAZON_PARTNERED_CARRIER')
+      .sort(byCost);
+    if (partnered[0]) return partnered[0];
+    return valid.sort(byCost)[0] ?? null;
+  }
+
   const upsPartnered = valid.find((o) =>
     o.shippingMode === 'GROUND_SMALL_PARCEL' &&
     o.shippingSolution === 'AMAZON_PARTNERED_CARRIER' &&
@@ -3088,12 +3104,12 @@ interface TransportSummary {
   hasPartnerUps: boolean;
 }
 
-function buildTransportSummary(rawOptions: any[], shipmentDetails?: any[]): TransportSummary {
+function buildTransportSummary(rawOptions: any[], shipmentDetails?: any[], shipMode: ShipMode = 'SPD'): TransportSummary {
   const shipmentIds = [...new Set(rawOptions.map((o) => o.shipmentId).filter(Boolean))] as string[];
   const perShipment: ShipmentSummary[] = [];
   for (const sid of shipmentIds) {
     const opts = rawOptions.filter((o) => o.shipmentId === sid);
-    const best = pickBestTransportOption(opts);
+    const best = pickBestTransportOption(opts, shipMode);
     if (best) {
       // Use getShipment data as primary source — destination.warehouseId +
       // address are available even pre-confirmation (preview path normalizes
@@ -3227,7 +3243,7 @@ interface BoxingWorkflowProps {
   onGeneratePlacement: () => void;
   onLoadPlacement: () => void;
   onConfirmPlacement: (optionId: string) => void;
-  onConfirmPlacementAndLoadTransport: (placementOptionId: string, shipmentIds: string[], readyToShipStart: string) => Promise<{ success: boolean; options?: any[]; shipments?: any[]; error?: string }>;
+  onConfirmPlacementAndLoadTransport: (placementOptionId: string, shipmentIds: string[], readyToShipStart: string, ltl?: any) => Promise<{ success: boolean; options?: any[]; shipments?: any[]; error?: string }>;
   onConfirmTransportation: (selections: Array<{ shipmentId: string; transportationOptionId: string }>, selectedOptions: any[]) => Promise<void>;
   confirmingBothId: string | null;
 }
@@ -3331,6 +3347,63 @@ function BoxingWorkflow({
     return d.toISOString().slice(0, 10);
   });
 
+  // ── LTL (pallet freight) ──────────────────────────────────────────────
+  // Pallet config is shared across options (it describes the physical
+  // freight); quotes are per option. Amazon only returns FREIGHT_LTL options
+  // when pallets + freight info are sent with the generate request.
+  const [ltlEnabled, setLtlEnabled] = useState(false);
+  const [ltlForm, setLtlForm] = useState({
+    palletCount: '1', length: '48', width: '40', height: '60', weightEach: '',
+    stackable: false, declaredValue: '', freightClass: 'NONE',
+    contactName: '', contactEmail: '', contactPhone: '',
+  });
+  // Chosen mode per option once estimates exist. SPD unless toggled.
+  const [shipModeByOption, setShipModeByOption] = useState<Record<string, ShipMode>>({});
+
+  // Prefill LTL contact info: saved values first, ship-from as fallback.
+  useEffect(() => {
+    fetch('/api/data/settings')
+      .then((r) => r.json())
+      .then((d) => {
+        const s = d?.settings || {};
+        setLtlForm((f) => ({
+          ...f,
+          contactName: f.contactName || s.ltl_contact_name || s.listing_ship_from_name || '',
+          contactEmail: f.contactEmail || s.ltl_contact_email || '',
+          contactPhone: f.contactPhone || s.ltl_contact_phone || s.listing_ship_from_phone || '',
+        }));
+      })
+      .catch(() => {});
+  }, []);
+
+  function buildLtlPayload(): any | undefined {
+    if (!ltlEnabled) return undefined;
+    const declared = parseFloat(ltlForm.declaredValue) || 0;
+    const weight = parseFloat(ltlForm.weightEach) || 0;
+    return {
+      pallets: [{
+        quantity: parseInt(ltlForm.palletCount) || 1,
+        dimensions: {
+          length: parseFloat(ltlForm.length) || 48,
+          width: parseFloat(ltlForm.width) || 40,
+          height: parseFloat(ltlForm.height) || 60,
+          unitOfMeasurement: 'IN',
+        },
+        ...(weight > 0 ? { weight: { value: weight, unit: 'LB' } } : {}),
+        stackability: ltlForm.stackable ? 'STACKABLE' : 'NON_STACKABLE',
+      }],
+      freightInformation: {
+        ...(declared > 0 ? { declaredValue: { amount: declared, code: 'USD' } } : {}),
+        freightClass: ltlForm.freightClass || 'NONE',
+      },
+      ...(ltlForm.contactName && ltlForm.contactEmail && ltlForm.contactPhone
+        ? { contactInformation: { name: ltlForm.contactName, email: ltlForm.contactEmail, phoneNumber: ltlForm.contactPhone } }
+        : {}),
+    };
+  }
+
+  const ltlContactComplete = !!(ltlForm.contactName && ltlForm.contactEmail && ltlForm.contactPhone);
+
   // "Estimate all" — optionId currently being estimated, or null when idle.
   const [estimatingAllId, setEstimatingAllId] = useState<string | null>(null);
 
@@ -3341,7 +3414,8 @@ function BoxingWorkflow({
     for (const opt of placementOptions) {
       const td = transportDataByOption[opt.placementOptionId];
       if (!td?.options) continue;
-      const summary = buildTransportSummary(td.options, td.shipments ?? undefined);
+      const mode = shipModeByOption[opt.placementOptionId] ?? 'SPD';
+      const summary = buildTransportSummary(td.options, td.shipments ?? undefined, mode);
       if (summary.perShipment.length === 0 || summary.totalShippingCents <= 0) continue;
       const fee = opt.placementFeeCents ??
         opt.fees.reduce((s: number, f: any) => s + Math.round((f.value?.amount || 0) * 100), 0);
@@ -3354,7 +3428,7 @@ function BoxingWorkflow({
         ? entries.sort((a, b) => a[1] - b[1])[0][0]
         : null,
     };
-  }, [placementOptions, transportDataByOption]);
+  }, [placementOptions, transportDataByOption, shipModeByOption]);
 
   // Estimate every option that doesn't have transport data yet. Sequential on
   // purpose: each estimate is an Amazon async operation (~15-40s) and running
@@ -3417,7 +3491,7 @@ function BoxingWorkflow({
       ...prev,
       [optionId]: { loading: true, options: null, shipments: null, error: null },
     }));
-    const result = await onConfirmPlacementAndLoadTransport(optionId, shipmentIds, readyToShipStart);
+    const result = await onConfirmPlacementAndLoadTransport(optionId, shipmentIds, readyToShipStart, buildLtlPayload());
     setTransportDataByOption((prev) => ({
       ...prev,
       [optionId]: {
@@ -3447,7 +3521,7 @@ function BoxingWorkflow({
       const res = await fetch(`/api/list/batches/${batch.id}/transportation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'preview', placementOptionId: optionId, shipmentIds, readyToShipStart }),
+        body: JSON.stringify({ action: 'preview', placementOptionId: optionId, shipmentIds, readyToShipStart, ltl: buildLtlPayload() }),
       });
       const data = await res.json();
       setTransportDataByOption((prev) => ({
@@ -3482,7 +3556,7 @@ function BoxingWorkflow({
       const res = await fetch(`/api/list/batches/${batch.id}/transportation`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'generate', shipmentIds, readyToShipStart }),
+        body: JSON.stringify({ action: 'generate', shipmentIds, readyToShipStart, ltl: buildLtlPayload() }),
       });
       const data = await res.json();
       setTransportDataByOption((prev) => ({
@@ -3948,8 +4022,101 @@ function BoxingWorkflow({
                   />
                 </div>
                 <p className="text-[11px] text-text-muted mt-3">
-                  Shipping estimates and FC destinations are loaded after confirming a placement option.
+                  Estimates are no-commitment. Enable Pallet/LTL below to include freight quotes.
                 </p>
+              </div>
+
+              {/* LTL (pallet freight) config — shared physical description of the
+                  freight; estimates fetched after enabling include FREIGHT_LTL
+                  carrier quotes alongside small-parcel. */}
+              <div className="border border-border-subtle rounded-lg bg-bg-elevated">
+                <button
+                  onClick={() => setLtlEnabled((v) => !v)}
+                  className="w-full flex items-center gap-2 px-4 py-2.5 text-left"
+                >
+                  <span className={`w-8 h-4.5 rounded-full relative transition-colors shrink-0 ${ltlEnabled ? 'bg-accent' : 'bg-bg-surface border border-border-subtle'}`} style={{ height: 18 }}>
+                    <span className={`absolute top-0.5 w-3.5 h-3.5 rounded-full bg-white transition-all ${ltlEnabled ? 'left-4' : 'left-0.5'}`} />
+                  </span>
+                  <span className="text-xs font-semibold text-text-primary">Pallet shipment (LTL)</span>
+                  <span className="text-[11px] text-text-muted">
+                    {ltlEnabled ? 'Freight quotes will be included in estimates' : 'Off — small parcel only'}
+                  </span>
+                </button>
+                {ltlEnabled && (
+                  <div className="px-4 pb-3 space-y-3 border-t border-border-subtle pt-3">
+                    <div className="flex items-end gap-3 flex-wrap">
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1"># Pallets</label>
+                        <input type="number" min="1" value={ltlForm.palletCount}
+                          onChange={(e) => setLtlForm((f) => ({ ...f, palletCount: e.target.value }))}
+                          className="h-8 w-16 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">L × W × H (in)</label>
+                        <div className="flex items-center gap-1">
+                          {(['length', 'width', 'height'] as const).map((dim) => (
+                            <input key={dim} type="number" min="1" value={ltlForm[dim]}
+                              onChange={(e) => setLtlForm((f) => ({ ...f, [dim]: e.target.value }))}
+                              className="h-8 w-14 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Weight each (lb)</label>
+                        <input type="number" min="1" value={ltlForm.weightEach} placeholder="e.g. 350"
+                          onChange={(e) => setLtlForm((f) => ({ ...f, weightEach: e.target.value }))}
+                          className="h-8 w-24 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                      </div>
+                      <label className="flex items-center gap-1.5 text-xs text-text-secondary h-8 cursor-pointer">
+                        <input type="checkbox" checked={ltlForm.stackable}
+                          onChange={(e) => setLtlForm((f) => ({ ...f, stackable: e.target.checked }))} />
+                        Stackable
+                      </label>
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Declared value ($)</label>
+                        <input type="number" min="0" value={ltlForm.declaredValue} placeholder="goods value"
+                          onChange={(e) => setLtlForm((f) => ({ ...f, declaredValue: e.target.value }))}
+                          className="h-8 w-24 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Freight class</label>
+                        <select value={ltlForm.freightClass}
+                          onChange={(e) => setLtlForm((f) => ({ ...f, freightClass: e.target.value }))}
+                          className="h-8 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent">
+                          {['NONE', 'FC_50', 'FC_55', 'FC_60', 'FC_65', 'FC_70', 'FC_77_5', 'FC_85', 'FC_92_5', 'FC_100', 'FC_110', 'FC_125', 'FC_150', 'FC_175', 'FC_200', 'FC_250', 'FC_300', 'FC_400', 'FC_500'].map((fc) => (
+                            <option key={fc} value={fc}>{fc === 'NONE' ? 'Auto / none' : fc.replace('FC_', 'Class ').replace('_5', '.5')}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-end gap-3 flex-wrap">
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Pickup contact name</label>
+                        <input value={ltlForm.contactName}
+                          onChange={(e) => setLtlForm((f) => ({ ...f, contactName: e.target.value }))}
+                          className="h-8 w-40 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Email</label>
+                        <input value={ltlForm.contactEmail} type="email"
+                          onChange={(e) => setLtlForm((f) => ({ ...f, contactEmail: e.target.value }))}
+                          className="h-8 w-48 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-text-muted uppercase tracking-wider block mb-1">Phone</label>
+                        <input value={ltlForm.contactPhone}
+                          onChange={(e) => setLtlForm((f) => ({ ...f, contactPhone: e.target.value }))}
+                          className="h-8 w-32 px-2 bg-bg-surface border border-border-subtle rounded text-xs text-text-primary focus:outline-none focus:border-accent" />
+                      </div>
+                      {!ltlContactComplete && (
+                        <p className="text-[10px] text-amber-400 h-8 flex items-center">Contact info is required to confirm an LTL carrier (pickup coordination).</p>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-text-muted">
+                      Pallet config applies to each shipment in an option — LTL works best with single-shipment placement options. Standard pallet: 48×40, max 72" tall incl. pallet, ~1,500 lb.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Placement option list */}
@@ -3965,9 +4132,19 @@ function BoxingWorkflow({
                   const tError = tData?.error ?? null;
                   const placementFee = opt.placementFeeCents ??
                     opt.fees.reduce((s, f) => s + Math.round((f.value?.amount || 0) * 100), 0);
-                  const tSummary = tOptions ? buildTransportSummary(tOptions, tShipments ?? undefined) : null;
+                  // Freight quotes present -> user can toggle SPD vs LTL per option.
+                  const hasFreightQuotes = !!tOptions?.some((o: any) =>
+                    FREIGHT_SHIPPING_MODES.some((m) => (o.shippingMode || '').toUpperCase().includes(m)));
+                  const optMode: ShipMode = hasFreightQuotes
+                    ? (shipModeByOption[opt.placementOptionId] ?? 'SPD')
+                    : 'SPD';
+                  const tSummary = tOptions ? buildTransportSummary(tOptions, tShipments ?? undefined, optMode) : null;
                   const totalShippingCents = tSummary?.totalShippingCents ?? 0;
-                  const transportSelections = tSummary?.selections ?? [];
+                  const transportSelections = (tSummary?.selections ?? []).map((sel) =>
+                    optMode === 'LTL' && ltlContactComplete
+                      ? { ...sel, contactInformation: { name: ltlForm.contactName, email: ltlForm.contactEmail, phoneNumber: ltlForm.contactPhone } }
+                      : sel
+                  );
 
                   return (
                     <div
@@ -4132,6 +4309,35 @@ function BoxingWorkflow({
                             </div>
                           )}
 
+                          {/* Ship method toggle — shown when freight quotes exist */}
+                          {!tLoading && tOptions && hasFreightQuotes && (() => {
+                            const spdSumm = buildTransportSummary(tOptions, tShipments ?? undefined, 'SPD');
+                            const ltlSumm = buildTransportSummary(tOptions, tShipments ?? undefined, 'LTL');
+                            const choices: Array<[ShipMode, string, TransportSummary]> = [
+                              ['SPD', 'Small parcel', spdSumm],
+                              ['LTL', 'Pallet (LTL)', ltlSumm],
+                            ];
+                            return (
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] text-text-muted uppercase tracking-wider">Ship method</span>
+                                {choices.map(([m, label, summ]) => {
+                                  const has = summ.perShipment.length > 0;
+                                  const active = optMode === m;
+                                  return (
+                                    <button
+                                      key={m}
+                                      disabled={!has}
+                                      onClick={() => setShipModeByOption((prev) => ({ ...prev, [opt.placementOptionId]: m }))}
+                                      className={`h-7 px-3 rounded text-[11px] font-bold border transition-colors disabled:opacity-40 ${active ? 'bg-accent/15 border-accent text-accent' : 'bg-bg-surface border-border-subtle text-text-secondary hover:text-text-primary'}`}
+                                    >
+                                      {label}{has && summ.totalShippingCents > 0 ? ` · ${formatCurrency(summ.totalShippingCents)}` : ' · —'}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
+
                           {/* Case: transport loaded successfully */}
                           {!tLoading && tSummary && tSummary.perShipment.length > 0 && (
                             <>
@@ -4244,9 +4450,14 @@ function BoxingWorkflow({
                                         Delivery window confirmation required — will run automatically before transportation confirmation.
                                       </div>
                                     )}
+                                    {optMode === 'LTL' && !ltlContactComplete && (
+                                      <div className="text-[11px] text-amber-400 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1">
+                                        Fill in the LTL pickup contact (name, email, phone) above before confirming a freight carrier.
+                                      </div>
+                                    )}
                                     <button
                                       onClick={() => onConfirmTransportation(transportSelections, selectedOptionObjs)}
-                                      disabled={!!confirmingBothId || transportSelections.length === 0}
+                                      disabled={!!confirmingBothId || transportSelections.length === 0 || (optMode === 'LTL' && !ltlContactComplete)}
                                       className="w-full h-8 px-3 bg-accent text-white rounded text-xs font-bold disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-1.5"
                                     >
                                       {confirmingBothId === 'transport-only' && <Loader2 size={10} className="animate-spin" />}

@@ -37,6 +37,8 @@ import {
   listShipments,
   getShipment,
   getInboundOperation,
+  type LtlConfiguration,
+  type LtlContactInformation,
 } from '@/lib/sp-api/inboundPlansV2';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
 
@@ -168,8 +170,30 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const batchId = parseInt(id);
   if (!Number.isFinite(batchId)) return NextResponse.json({ error: 'Invalid batch id' }, { status: 400 });
 
-  let body: { action: string; placementOptionId?: string; shipmentIds?: string[]; readyToShipStart?: string; selections?: Array<{ shipmentId: string; transportationOptionId: string }>; selectedOptions?: any[] };
+  let body: {
+    action: string;
+    placementOptionId?: string;
+    shipmentIds?: string[];
+    readyToShipStart?: string;
+    selections?: Array<{ shipmentId: string; transportationOptionId: string; contactInformation?: LtlContactInformation }>;
+    selectedOptions?: any[];
+    /** LTL: pallets + freight info unlock FREIGHT_LTL quotes on preview/generate. */
+    ltl?: LtlConfiguration;
+  };
   try { body = await request.json(); } catch { return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 }); }
+
+  // Persist LTL contact info for prefill next time (best-effort).
+  if (body.ltl?.contactInformation) {
+    try {
+      const dbC = getDb();
+      const c = body.ltl.contactInformation;
+      const up = dbC.prepare(`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+      if (c.name) up.run('ltl_contact_name', c.name);
+      if (c.email) up.run('ltl_contact_email', c.email);
+      if (c.phoneNumber) up.run('ltl_contact_phone', c.phoneNumber);
+      dbC.close();
+    } catch { /* best effort */ }
+  }
 
   const db = getDb();
   let batch: any;
@@ -201,7 +225,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     if (body.readyToShipStart !== undefined && body.readyToShipStart === '') {
       return NextResponse.json({ error: 'Choose a ship date before generating transportation options' }, { status: 400 });
     }
-    return handlePreview(batch.inboundPlanId, body.placementOptionId, body.shipmentIds, body.readyToShipStart, creds);
+    return handlePreview(batch.inboundPlanId, body.placementOptionId, body.shipmentIds, body.readyToShipStart, creds, body.ltl);
   }
 
   if (!batch.placementOptionId) return NextResponse.json({ error: 'Confirm placement first' }, { status: 400 });
@@ -221,7 +245,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         console.log('[transportation] using saved confirmedShipmentIds:', resolvedShipmentIds);
       } catch {}
     }
-    return handleGenerate(batchId, batch.inboundPlanId, batch.placementOptionId, creds, body.action === 'generate-and-confirm', resolvedShipmentIds, body.readyToShipStart);
+    return handleGenerate(batchId, batch.inboundPlanId, batch.placementOptionId, creds, body.action === 'generate-and-confirm', resolvedShipmentIds, body.readyToShipStart, body.ltl);
   }
 
   return NextResponse.json({ error: "action must be 'preview', 'generate', 'generate-and-confirm', or 'confirm'" }, { status: 400 });
@@ -233,10 +257,11 @@ async function handlePreview(
   shipmentIds: string[],
   readyToShipStart: string | undefined,
   creds: SPAPICredentials,
+  ltl?: LtlConfiguration,
 ): Promise<NextResponse> {
   let genOp: { operationId: string };
   try {
-    genOp = await generateTransportationOptions(creds, inboundPlanId, placementOptionId, shipmentIds, readyToShipStart);
+    genOp = await generateTransportationOptions(creds, inboundPlanId, placementOptionId, shipmentIds, readyToShipStart, ltl);
   } catch (err) {
     return NextResponse.json({ error: `generateTransportationOptions: ${err}` }, { status: 500 });
   }
@@ -279,6 +304,7 @@ async function handleGenerate(
   autoConfirm: boolean,
   clientShipmentIds?: string[],
   readyToShipStart?: string,
+  ltl?: LtlConfiguration,
 ): Promise<NextResponse> {
   updateTransportation(batchId, { status: 'IN_PROGRESS', error: null });
 
@@ -303,7 +329,7 @@ async function handleGenerate(
   // Generate transportation options
   let genOp: { operationId: string };
   try {
-    genOp = await generateTransportationOptions(creds, inboundPlanId, placementOptionId, shipmentIds, readyToShipStart);
+    genOp = await generateTransportationOptions(creds, inboundPlanId, placementOptionId, shipmentIds, readyToShipStart, ltl);
   } catch (err) {
     updateTransportation(batchId, { status: 'FAILED', error: `generateTransportationOptions: ${err}` });
     return NextResponse.json({ error: String(err) }, { status: 500 });
@@ -347,7 +373,7 @@ async function handleGenerate(
     const fallbackDateStr = fallbackDate.toISOString();
     console.log('[transportation] all options require delivery window for', shipmentsMissingPartnered, '— retrying with', fallbackDateStr);
     try {
-      const fbGenOp = await generateTransportationOptions(creds, inboundPlanId, placementOptionId, shipmentIds, fallbackDateStr);
+      const fbGenOp = await generateTransportationOptions(creds, inboundPlanId, placementOptionId, shipmentIds, fallbackDateStr, ltl);
       if (fbGenOp.operationId) await waitForOperation(creds, fbGenOp.operationId, 180_000);
       const fallbackOptions = await listTransportationOptions(creds, inboundPlanId, placementOptionId);
       const hasNewPartnered = fallbackOptions.some(o => !requiresDeliveryWindow(o));
@@ -496,7 +522,9 @@ async function confirmDeliveryWindowForShipment(
 async function handleConfirm(
   batchId: number,
   inboundPlanId: string,
-  selections: Array<{ shipmentId: string; transportationOptionId: string }>,
+  // contactInformation per selection is required by Amazon for FREIGHT_*
+  // options (carrier pickup coordination) — passed through untouched.
+  selections: Array<{ shipmentId: string; transportationOptionId: string; contactInformation?: LtlContactInformation }>,
   creds: SPAPICredentials,
   selectedOptions?: any[],  // full option objects — delivery window detection + persist carrier/cost
   shipmentDetails?: any[],  // from getShipment — persist confirmationId, destination

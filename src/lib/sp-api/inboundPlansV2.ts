@@ -604,6 +604,93 @@ export async function getShipment(
   return data;
 }
 
+// ─── Shipment content updates (post-confirmation quantity adjustments) ─────
+// The v2024 equivalent of the old v0 UpdateShipmentItems (what 2DWorkflow's
+// "adjust Qty any time" / "Confirm Missing Units" is built on): propose the
+// FULL post-update box+item contents for a CONFIRMED shipment, Amazon returns
+// a preview (including any transportation requote), then confirm to apply.
+// Amazon tolerance: ±5% or 6 units per SKU, whichever is higher.
+
+export interface ContentUpdateItemInput {
+  msku: string;
+  quantity: number;
+  labelOwner: string; // 'SELLER' | 'AMAZON' | 'NONE'
+  prepOwner: string;  // 'SELLER' | 'AMAZON' | 'NONE'
+  expiration?: string;
+}
+
+export interface ContentUpdateBoxInput {
+  /** Provide to update an existing box; omit to add a new box. Existing packageIds NOT listed are removed from the shipment. */
+  packageId?: string;
+  contentInformationSource: 'BOX_CONTENT_PROVIDED' | 'BARCODE_2D' | 'MANUAL_PROCESS';
+  /** Must be empty/omitted when contentInformationSource is BARCODE_2D or MANUAL_PROCESS. */
+  items?: ContentUpdateItemInput[];
+  dimensions: { length: number; width: number; height: number; unitOfMeasurement: 'IN' };
+  weight: { value: number; unit: 'LB' };
+  /** Number of identical boxes in this configuration row. */
+  quantity: number;
+}
+
+export async function generateShipmentContentUpdatePreviews(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string,
+  boxes: ContentUpdateBoxInput[],
+  items: ContentUpdateItemInput[],
+): Promise<{ operationId: string }> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+  const body = { boxes, items };
+  console.log('[generateContentUpdatePreviews] payload', JSON.stringify(body, null, 2));
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/contentUpdatePreviews`,
+    {
+      method: 'POST',
+      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  );
+  const text = await response.text();
+  console.log('[generateContentUpdatePreviews] status:', response.status, 'response:', text.slice(0, 500));
+  if (!response.ok) throw new Error(`SP-API generateShipmentContentUpdatePreviews ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return { operationId: data.operationId || '' };
+}
+
+export async function listShipmentContentUpdatePreviews(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string,
+): Promise<any[]> {
+  const data = await spApiRequest(
+    credentials,
+    `/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/contentUpdatePreviews`
+  );
+  return data?.contentUpdatePreviews || [];
+}
+
+export async function confirmShipmentContentUpdatePreview(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+  shipmentId: string,
+  contentUpdatePreviewId: string,
+): Promise<{ operationId: string }> {
+  const endpoint = getEndpoint(credentials.marketplaceId);
+  const accessToken = await getAccessToken(credentials);
+  const response = await fetch(
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/contentUpdatePreviews/${encodeURIComponent(contentUpdatePreviewId)}/confirmation`,
+    {
+      method: 'POST',
+      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
+    }
+  );
+  const text = await response.text();
+  console.log('[confirmContentUpdatePreview] status:', response.status, 'response:', text.slice(0, 500));
+  if (!response.ok) throw new Error(`SP-API confirmShipmentContentUpdatePreview ${response.status}: ${text}`);
+  const data = JSON.parse(text);
+  return { operationId: data.operationId || '' };
+}
+
 // ─── Phase 4: Labels (FNSKU + box ID) ─────────────────────────────────────
 //
 // FBA box/carton labels and FNSKU per-unit labels use the FBA Inbound v0 API,
@@ -798,12 +885,43 @@ export interface TransportationOption {
   preconditions?: string[];
 }
 
+// ─── LTL / freight inputs ──────────────────────────────────────────────────
+// Amazon only returns FREIGHT_* carrier options and quotes when pallet and
+// freight information are provided in the transportation configuration.
+
+export interface LtlPalletInput {
+  /** Identical-pallet count for this configuration row. */
+  quantity: number;
+  dimensions?: { length: number; width: number; height: number; unitOfMeasurement: 'IN' };
+  weight?: { value: number; unit: 'LB' };
+  stackability?: 'STACKABLE' | 'NON_STACKABLE';
+}
+
+export interface LtlFreightInformation {
+  declaredValue?: { amount: number; code: string };
+  /** NONE, FC_50, FC_55, FC_60, FC_65, FC_70, FC_77_5, FC_85, FC_92_5, FC_100, FC_110, FC_125, FC_150, FC_175, FC_200, FC_250, FC_300, FC_400, FC_500 */
+  freightClass?: string;
+}
+
+export interface LtlContactInformation {
+  name: string;
+  email: string;
+  phoneNumber: string;
+}
+
+export interface LtlConfiguration {
+  pallets: LtlPalletInput[];
+  freightInformation: LtlFreightInformation;
+  contactInformation?: LtlContactInformation;
+}
+
 export async function generateTransportationOptions(
   credentials: SPAPICredentials,
   inboundPlanId: string,
   placementOptionId: string,
   shipmentIds: string[],
   readyToShipStart?: string,
+  ltl?: LtlConfiguration,
 ): Promise<{ operationId: string }> {
   const endpoint = getEndpoint(credentials.marketplaceId);
   const accessToken = await getAccessToken(credentials);
@@ -821,6 +939,15 @@ export async function generateTransportationOptions(
   const shipmentTransportationConfigurations = shipmentIds.map((id) => ({
     shipmentId: id,
     readyToShipWindow: { start: shipWindowStart },
+    // LTL: pallets + freight info unlock FREIGHT_LTL carrier quotes. Amazon
+    // still returns SPD options alongside, so the caller compares both.
+    ...(ltl
+      ? {
+          pallets: ltl.pallets,
+          freightInformation: ltl.freightInformation,
+          ...(ltl.contactInformation ? { contactInformation: ltl.contactInformation } : {}),
+        }
+      : {}),
   }));
 
   const body = { placementOptionId, shipmentTransportationConfigurations };
@@ -878,7 +1005,13 @@ export async function listTransportationOptions(
 export async function confirmTransportationOptions(
   credentials: SPAPICredentials,
   inboundPlanId: string,
-  transportationSelections: Array<{ shipmentId: string; transportationOptionId: string }>,
+  // contactInformation is required by Amazon when confirming FREIGHT_* options
+  // (the carrier needs someone to coordinate the pickup appointment with).
+  transportationSelections: Array<{
+    shipmentId: string;
+    transportationOptionId: string;
+    contactInformation?: LtlContactInformation;
+  }>,
 ): Promise<{ operationId: string }> {
   const endpoint = getEndpoint(credentials.marketplaceId);
   const accessToken = await getAccessToken(credentials);
