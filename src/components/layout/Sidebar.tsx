@@ -13,6 +13,8 @@ import {
   Menu,
   X,
   Search,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import GlobalSearch from '@/components/ui/GlobalSearch';
@@ -119,6 +121,20 @@ export default function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [lastSync, setLastSync] = useState<string | null>(null);
+  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
+
+  // Hydrate theme from the attribute the pre-paint script set.
+  useEffect(() => {
+    setTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  }, []);
+
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark';
+    setTheme(next);
+    if (next === 'light') document.documentElement.dataset.theme = 'light';
+    else delete document.documentElement.dataset.theme;
+    try { localStorage.setItem('fl-theme', next); } catch {}
+  }
   const searchRef = useRef<HTMLDivElement>(null);
 
   const fetchLastSync = () => {
@@ -299,6 +315,15 @@ export default function Sidebar() {
             );
           })}
         </nav>
+
+        {/* Theme toggle */}
+        <button
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          className="flex h-12 w-full items-center justify-center border-t border-border-subtle text-text-tertiary hover:text-text-primary hover:bg-bg-hover transition-colors"
+        >
+          {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+        </button>
 
         {/* Sync status */}
         <Link

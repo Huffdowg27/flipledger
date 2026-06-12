@@ -28,6 +28,12 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} font-sans h-full bg-bg-root text-text-primary antialiased`}
       >
+        {/* Apply saved theme before paint to avoid a dark→light flash. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: "try{if(localStorage.getItem('fl-theme')==='light')document.documentElement.dataset.theme='light';}catch(e){}",
+          }}
+        />
         <div className="flex h-full">
           <Sidebar />
           <main className="flex-1 overflow-y-auto">
