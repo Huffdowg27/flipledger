@@ -598,7 +598,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
   async function handleCancelAndEdit() {
     if (!batch) return;
-    const isFailedReset = batch.status === 'failed';
+    const isFailedReset = batch.status === 'failed' || batch.status === 'sending';
     const confirmMsg = isFailedReset
       ? `Reset this failed batch to draft?\n\n`
         + `WHAT STAYS:\n`
@@ -1586,18 +1586,26 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           )}
           {/* Cancel & Edit — unlocks ready/boxing/placement/failed batches for re-editing.
               For ready+ states: cancels the inbound plan on Amazon (listings stay).
-              For failed state: just resets local DB (no plan was created). */}
-          {['ready', 'boxing', 'placement', 'failed'].includes(batch.status) && batch.channel === 'FBA' && (
+              For failed state: just resets local DB (no plan was created).
+              For sending: escape hatch for a wedged send — the API rejects it
+              with a friendly message if the send might still be running (<30 min).
+              MFN batches get the failed/sending reset too (no plan to cancel). */}
+          {(
+            (batch.channel === 'FBA' && ['ready', 'boxing', 'placement', 'failed', 'sending'].includes(batch.status)) ||
+            (batch.channel === 'MFN' && ['failed', 'sending'].includes(batch.status))
+          ) && (
             <button
               onClick={handleCancelAndEdit}
               disabled={cancelling}
               className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-amber-500/30 rounded-md text-sm text-amber-400 hover:bg-amber-500/10 disabled:opacity-50 transition-colors"
               title={batch.status === 'failed'
                 ? 'Reset to draft so you can fix issues (remove items, edit qty) and try sending again.'
+                : batch.status === 'sending'
+                ? 'If this send looks stuck, reset the batch to draft and re-send. Only works once the send can no longer be running (30+ min).'
                 : 'Cancel the inbound plan on Amazon and reset this batch to draft so you can add items / fix mistakes and re-send. Listings stay live on Amazon — no money lost.'}
             >
               {cancelling ? <Loader2 size={14} className="animate-spin" /> : <Pencil size={14} />}
-              {cancelling ? 'Cancelling…' : (batch.status === 'failed' ? 'Reset & Edit' : 'Cancel & Edit')}
+              {cancelling ? 'Cancelling…' : (batch.status === 'failed' || batch.status === 'sending' ? 'Reset & Edit' : 'Cancel & Edit')}
             </button>
           )}
           {(batch.status === 'ready' || batch.status === 'failed') && (

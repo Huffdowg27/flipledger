@@ -23,12 +23,13 @@
  * send flow takes a "replenishment" path (skips PUT validation delays) and
  * createInboundPlan succeeds on first try (no propagation wait).
  *
- * Allowed states: ready, boxing, placement.
+ * Allowed states: ready, boxing, placement, failed, and sending (only after
+ * 30+ min, when the send request can no longer be live).
  *   - draft: nothing to cancel
- *   - sending: plan creation in flight, can't cleanly cancel mid-flow
+ *   - sending (fresh): plan creation in flight, can't cleanly cancel mid-flow
  *   - shipping/shipped: placement confirmed, real shipments exist — different
  *     workflow (would need to cancel each shipment separately)
- *   - failed/closed: terminal, doesn't make sense
+ *   - closed: terminal, doesn't make sense
  */
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
@@ -88,20 +89,34 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   let inboundPlanId: string | null;
   try {
     const batch = db.prepare(`
-      SELECT id, status, channel, inbound_plan_id as inboundPlanId
+      SELECT id, status, channel, inbound_plan_id as inboundPlanId,
+             COALESCE(sent_at, updated_at, created_at) as sentAt
       FROM listing_batches WHERE id = ?
-    `).get(batchId) as { id: number; status: string; channel: string; inboundPlanId: string | null } | undefined;
+    `).get(batchId) as { id: number; status: string; channel: string; inboundPlanId: string | null; sentAt: string | null } | undefined;
 
     if (!batch) {
       return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
     }
     // Allowed: ready/boxing/placement (active plan to cancel) OR failed
     // (send hit a snag, no plan to cancel — just unlock for editing).
+    // 'sending' is allowed only once it's old enough that the send request
+    // can't still be running (worst-case legitimate runtime is ~25 min) —
+    // resetting a batch under a live send would race its later writes.
+    const SENDING_MIN_AGE_MS = 30 * 60 * 1000;
     const allowedStates = ['ready', 'boxing', 'placement', 'failed'];
     if (!allowedStates.includes(batch.status)) {
-      return NextResponse.json({
-        error: `Cancel & Edit is only allowed in ready/boxing/placement/failed (current status: ${batch.status}).`,
-      }, { status: 400 });
+      const sendingAge = batch.sentAt ? Date.now() - new Date(batch.sentAt).getTime() : 0;
+      if (batch.status === 'sending' && sendingAge >= SENDING_MIN_AGE_MS) {
+        console.warn(`[cancel-and-edit] batch ${batchId} stuck in 'sending' for ${Math.round(sendingAge / 60_000)} min — allowing reset`);
+      } else if (batch.status === 'sending') {
+        return NextResponse.json({
+          error: 'A send may still be in progress for this batch. Wait until it finishes (or until 30 minutes have passed) before using Cancel & Edit.',
+        }, { status: 400 });
+      } else {
+        return NextResponse.json({
+          error: `Cancel & Edit is only allowed in ready/boxing/placement/failed (current status: ${batch.status}).`,
+        }, { status: 400 });
+      }
     }
     inboundPlanId = batch.inboundPlanId;
     creds = getAmazonCredentials(db);

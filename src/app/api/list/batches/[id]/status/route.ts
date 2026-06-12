@@ -249,30 +249,37 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       batch.status = 'ready';
     }
 
-    // Timeout auto-advance: if the batch has been stuck in 'sending' for >15 min
-    // and the inbound plan was already created (meaning the listing was accepted),
-    // force it to 'ready' so the user isn't blocked forever. A warning is stored
-    // in sendError so it's visible in the UI.
-    const SENDING_TIMEOUT_MS = 15 * 60 * 1000;
-    if (
-      batch.status === 'sending' &&
-      elapsedMs > SENDING_TIMEOUT_MS &&
-      batch.inboundPlanId &&
-      !anyListingFailed &&
-      !opFailed
-    ) {
+    // Timeout auto-advance: don't leave a batch in 'sending' forever.
+    //   FBA (>15 min, inbound plan exists): the listings were accepted —
+    //     advance to boxing even if verification polling hasn't confirmed yet.
+    //   MFN (>30 min): fresh listings can take 30+ min to reach BUYABLE, but
+    //     past that point keeping the batch wedged helps nobody — advance to
+    //     'ready' with a warning. Per-item listing_status stays PROCESSING so
+    //     the UI still shows which listings haven't gone live.
+    // Without the MFN branch, an MFN batch whose listing never verified had no
+    // exit from 'sending' at all (the FBA branch requires inboundPlanId).
+    const FBA_SENDING_TIMEOUT_MS = 15 * 60 * 1000;
+    const MFN_SENDING_TIMEOUT_MS = 30 * 60 * 1000;
+    if (batch.status === 'sending' && !anyListingFailed && !opFailed) {
       const mins = Math.round(elapsedMs / 60_000);
-      const timeoutNote = `Listing verification timed out after ${mins} min — inbound plan was already created, advancing to boxing.`;
-      console.warn(`[batch status] timeout advance: ${timeoutNote}`);
-      const dbT = getDb();
-      try {
-        dbT.prepare(`UPDATE listing_batches SET status = 'ready', send_error = ?, updated_at = ? WHERE id = ?`)
-          .run(timeoutNote, new Date().toISOString(), batchId);
-      } finally {
-        dbT.close();
+      let timeoutNote: string | null = null;
+      if (batch.channel === 'FBA' && batch.inboundPlanId && elapsedMs > FBA_SENDING_TIMEOUT_MS) {
+        timeoutNote = `Listing verification timed out after ${mins} min — inbound plan was already created, advancing to boxing.`;
+      } else if (batch.channel === 'MFN' && elapsedMs > MFN_SENDING_TIMEOUT_MS) {
+        timeoutNote = `Listing verification timed out after ${mins} min — advancing anyway. Listings still marked Processing may take longer to go live; check them in Seller Central if they don't clear.`;
       }
-      batch.status = 'ready';
-      batch.sendError = timeoutNote;
+      if (timeoutNote) {
+        console.warn(`[batch status] timeout advance: ${timeoutNote}`);
+        const dbT = getDb();
+        try {
+          dbT.prepare(`UPDATE listing_batches SET status = 'ready', send_error = ?, updated_at = ? WHERE id = ?`)
+            .run(timeoutNote, new Date().toISOString(), batchId);
+        } finally {
+          dbT.close();
+        }
+        batch.status = 'ready';
+        batch.sendError = timeoutNote;
+      }
     }
 
     // Optionally fetch a fresh inbound plan snapshot for display

@@ -15,9 +15,30 @@ function getDb() {
   return db;
 }
 
+// A batch wedged in 'sending' means the send request died mid-flight (deploy /
+// PM2 restart) or listing verification never finished while nobody had the
+// batch page open to poll. The send flow's worst-case legitimate runtime is
+// ~25 min (FNSKU wait + prep + inbound-plan retries), so anything older than
+// this is dead — not in flight.
+const STALE_SENDING_MS = 60 * 60 * 1000;
+
 export async function GET() {
   const db = getDb();
   try {
+    // Self-healing sweep: fail stale 'sending' batches so they stop looking
+    // in-flight forever. 'failed' is recoverable — Cancel & Edit resets the
+    // batch to draft with items and any Amazon-side listings intact.
+    const now = new Date().toISOString();
+    const staleCutoff = new Date(Date.now() - STALE_SENDING_MS).toISOString();
+    db.prepare(`
+      UPDATE listing_batches SET
+        status = 'failed',
+        send_error = 'Send was interrupted or timed out (in sending for over an hour). Use Cancel & Edit to reset to draft and re-send — listings already created on Amazon are preserved.',
+        updated_at = ?
+      WHERE status = 'sending'
+        AND COALESCE(sent_at, updated_at, created_at) < ?
+    `).run(now, staleCutoff);
+
     // Batch totals come from two sources depending on channel:
     //   - FBA batches aggregate listing_batch_items (rows the FBA flow writes there)
     //   - MFN batches aggregate inventory_ledger lots tagged with batch_id by
