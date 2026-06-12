@@ -33,7 +33,12 @@
  *   airtable_purchases_table (default 💳 Orders),
  *   airtable_purchases_view (default Orders Current),
  *   airtable_products_table (default 💻 Products),
- *   airtable_purchases_since (date floor, default 2026-06-01).
+ *   airtable_purchases_since (date floor, default 2026-06-01),
+ *   airtable_purchases_bin_cutoff (default 2026-06-13) — rows ordered BEFORE
+ *     this date whose linked product already has a Bin Location are treated
+ *     as received+inspected under the old process (Jamie's rule: a bin is
+ *     only assigned after receive+inspect) and skipped. Rows ordered on/after
+ *     the cutoff ignore bins — FlipLedger receiving owns bins from then on.
  */
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -54,7 +59,7 @@ async function fetchAllRecords(
   apiKey: string,
   baseId: string,
   table: string,
-  params: Record<string, string> = {}
+  params: Record<string, string | string[]> = {}
 ): Promise<AirtableRecord[]> {
   const records: AirtableRecord[] = [];
   let offset: string | undefined;
@@ -62,7 +67,10 @@ async function fetchAllRecords(
   do {
     const url = new URL(`https://api.airtable.com/v0/${baseId}/${encodeURIComponent(table)}`);
     url.searchParams.set('pageSize', '100');
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+    for (const [k, v] of Object.entries(params)) {
+      if (Array.isArray(v)) for (const item of v) url.searchParams.append(k, item);
+      else url.searchParams.set(k, v);
+    }
     if (offset) url.searchParams.set('offset', offset);
     const res = await fetch(url.toString(), { headers: { Authorization: `Bearer ${apiKey}` } });
     if (!res.ok) {
@@ -102,14 +110,17 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
   const productsTable = settings.airtable_products_table?.trim() || '💻 Products';
   const view = settings.airtable_purchases_view?.trim() || 'Orders Current';
   const sinceDate = settings.airtable_purchases_since?.trim() || '2026-06-01';
+  const binCutoff = settings.airtable_purchases_bin_cutoff?.trim() || '2026-06-13';
 
   // 1. Products record-id → ASIN map (Orders links ASIN via record links).
   const productRecords = await fetchAllRecords(apiKey, baseId, productsTable, {
-    'fields[]': 'Asin',
+    'fields[]': ['Asin', 'Bin Location'],
   });
   const asinByRecordId = new Map<string, string>();
+  const binByRecordId = new Map<string, string>();
   for (const r of productRecords) {
     if (r.fields?.Asin) asinByRecordId.set(r.id, String(r.fields.Asin).trim());
+    if (r.fields?.['Bin Location']) binByRecordId.set(r.id, String(r.fields['Bin Location']).trim());
   }
 
   // 2. Orders from the working view only.
@@ -150,6 +161,13 @@ export async function syncAirtablePurchases(): Promise<PurchasesSyncResult> {
 
       // Legacy rows fully handled before this system existed — never import.
       if (!existing && airtableReceived >= qty) { skippedLegacy++; continue; }
+      // Bin rule: pre-cutoff orders whose product already has a bin were
+      // received+inspected under the old process (bins only get assigned
+      // after receive+inspect).
+      if (!existing && orderedAtRaw && orderedAtRaw < binCutoff) {
+        const links0: string[] = Array.isArray(f['ASIN']) ? f['ASIN'] : [];
+        if (links0.some((rid) => binByRecordId.has(rid))) { skippedLegacy++; continue; }
+      }
       // Lock rule: once FlipLedger marked it received/cancelled, Airtable
       // edits no longer flow in.
       if (existing && (existing.status === 'received' || existing.status === 'cancelled')) { skippedLocked++; continue; }
