@@ -84,6 +84,35 @@ export default function Dashboard() {
   const [opsPulse, setOpsPulse] = useState<OpsPulse | null>(null);
   const [dailySales, setDailySales] = useState<DailySales | null>(null);
   const [incomingStats, setIncomingStats] = useState<any | null>(null);
+  // Tier-1 dashboard modularity: saved card order + hidden set, persisted to
+  // settings.dashboard_layout. Defaults are filled in at render from the
+  // registry, so new cards added later show up automatically.
+  const [layout, setLayout] = useState<{ order: string[]; hidden: string[] }>({ order: [], hidden: [] });
+  const [customizing, setCustomizing] = useState(false);
+
+  const saveLayout = useCallback((next: { order: string[]; hidden: string[] }) => {
+    setLayout(next);
+    fetch('/api/data/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ dashboard_layout: JSON.stringify(next) }),
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch('/api/data/settings')
+      .then((r) => r.json())
+      .then((d) => {
+        const raw = d?.settings?.dashboard_layout;
+        if (raw) {
+          try {
+            const parsed = JSON.parse(raw);
+            setLayout({ order: parsed.order || [], hidden: parsed.hidden || [] });
+          } catch { /* ignore malformed */ }
+        }
+      })
+      .catch(() => {});
+  }, []);
   const [loading, setLoading] = useState(true);
   const nowForDashboard = new Date();
   const dashboardMonthStart = toLocalDateString(new Date(nowForDashboard.getFullYear(), nowForDashboard.getMonth(), 1));
@@ -313,19 +342,14 @@ export default function Dashboard() {
     <div className={`h-28 w-28 rounded-full border-[16px] ${color} border-r-bg-elevated`} />
   );
 
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
-        <div className="flex items-center gap-2">
-          <button onClick={fetchData} className="h-10 w-10 rounded-lg border border-border-default bg-bg-elevated text-accent hover:bg-bg-hover">↻</button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+  // ── Card registry — each entry is a self-contained dashboard tile ──────────
+  // span 1 = quarter-width stat tile; 'full' = full-width section.
+  const cardRegistry: { id: string; label: string; span: 1 | 'full'; node: React.ReactNode }[] = [
+    {
+      id: 'daily-sales', label: 'Daily Sales', span: 1, node: (
         <Link
           href="/bookkeep/fba-sales"
-          className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-positive/60 transition-colors"
+          className="block h-full rounded-lg border border-border-default bg-bg-surface p-5 hover:border-positive/60 transition-colors"
         >
           <div className="flex items-start justify-between">
             <div>
@@ -339,8 +363,10 @@ export default function Dashboard() {
           </div>
           <MiniBars bars={dailyBars} />
         </Link>
-
-        <Link href="/bookkeep/refunds" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-negative/60 transition-colors">
+      ) },
+    {
+      id: 'monthly-returns', label: 'Monthly Returns', span: 1, node: (
+        <Link href="/bookkeep/refunds" className="block h-full rounded-lg border border-border-default bg-bg-surface p-5 hover:border-negative/60 transition-colors">
           <div className="flex items-start justify-between">
             <div>
               <div className="text-sm font-semibold text-negative">Monthly Returns</div>
@@ -358,8 +384,10 @@ export default function Dashboard() {
             { label: 'May', value: Math.max(1, opsPulse?.returnsMonth.count || 0) },
           ]} color="bg-negative" />
         </Link>
-
-        <Link href="/mfn/orders" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-amazon/60 transition-colors">
+      ) },
+    {
+      id: 'open-mfn', label: 'Open MFN Orders', span: 1, node: (
+        <Link href="/mfn/orders" className="block h-full rounded-lg border border-border-default bg-bg-surface p-5 hover:border-amazon/60 transition-colors">
           <div className="flex items-start justify-between">
             <div>
               <div className="text-sm font-semibold text-amazon">Open MFN Orders</div>
@@ -378,8 +406,10 @@ export default function Dashboard() {
             </div>
           </div>
         </Link>
-
-        <Link href="/bookkeep/merchant-sales?preset=7d" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
+      ) },
+    {
+      id: 'mfn-channels', label: 'MFN Sales by Channels', span: 1, node: (
+        <Link href="/bookkeep/merchant-sales?preset=7d" className="block h-full rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
           <div className="flex items-start justify-between">
             <div>
               <div className="text-sm font-semibold text-accent">MFN Sales by Channels</div>
@@ -400,10 +430,13 @@ export default function Dashboard() {
             </div>
           </div>
         </Link>
-      </div>
-
-      {/* Purchases / Incoming strip — entered in Airtable, received in FlipLedger */}
-      {incomingStats && (
+      ) },
+    {
+      id: 'purchases', label: 'Purchases & Incoming', span: 'full', node: !incomingStats ? (
+        <Link href="/incoming" className="block rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors text-sm text-text-tertiary">
+          Purchases &amp; Incoming — no data yet. Sync from Airtable on the Incoming page.
+        </Link>
+      ) : (
         <Link href="/incoming" className="block rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-sm font-semibold text-text-secondary">Purchases &amp; Incoming</div>
@@ -426,10 +459,10 @@ export default function Dashboard() {
             ))}
           </div>
         </Link>
-      )}
-
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <Link href="/analyze/profitloss" className="rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
+      ) },
+    {
+      id: 'pnl', label: 'Monthly Profit & Loss', span: 'full', node: (
+        <Link href="/analyze/profitloss" className="block rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
           <div className="mb-4 flex items-start justify-between">
             <div>
               <div className="text-sm font-semibold text-accent">Monthly Profit & Loss</div>
@@ -465,6 +498,77 @@ export default function Dashboard() {
             </div>
           </div>
         </Link>
+      ) },
+  ];
+
+  // Resolve display order: saved order first (only ids that still exist), then
+  // any registry cards not in the saved order (newly added). Hidden removed.
+  const byId = new Map(cardRegistry.map((c) => [c.id, c]));
+  const orderedIds = [
+    ...layout.order.filter((id) => byId.has(id)),
+    ...cardRegistry.filter((c) => !layout.order.includes(c.id)).map((c) => c.id),
+  ];
+  const hiddenSet = new Set(layout.hidden);
+  const visibleCards = orderedIds.map((id) => byId.get(id)!).filter((c) => !hiddenSet.has(c.id));
+
+  function moveCard(id: string, dir: -1 | 1) {
+    const idx = orderedIds.indexOf(id);
+    const swap = idx + dir;
+    if (swap < 0 || swap >= orderedIds.length) return;
+    const next = [...orderedIds];
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    saveLayout({ order: next, hidden: layout.hidden });
+  }
+
+  function toggleHidden(id: string) {
+    const hidden = hiddenSet.has(id) ? layout.hidden.filter((h) => h !== id) : [...layout.hidden, id];
+    saveLayout({ order: orderedIds, hidden });
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setCustomizing((v) => !v)}
+            className={`h-10 rounded-lg border px-4 text-sm font-medium transition-colors ${customizing ? 'border-accent bg-accent/15 text-accent' : 'border-border-default bg-bg-elevated text-text-secondary hover:bg-bg-hover'}`}
+          >
+            {customizing ? 'Done' : 'Customize'}
+          </button>
+          <button onClick={fetchData} className="h-10 w-10 rounded-lg border border-border-default bg-bg-elevated text-accent hover:bg-bg-hover">↻</button>
+        </div>
+      </div>
+
+      {customizing && (
+        <div className="rounded-lg border border-accent/30 bg-accent/5 p-4">
+          <div className="mb-3 text-sm font-semibold text-text-secondary">Show, hide, and reorder cards</div>
+          <div className="space-y-2">
+            {orderedIds.map((id, i) => {
+              const card = byId.get(id)!;
+              const isHidden = hiddenSet.has(id);
+              return (
+                <div key={id} className="flex items-center gap-3 rounded-lg bg-bg-surface px-3 py-2">
+                  <button onClick={() => toggleHidden(id)} className={`text-sm ${isHidden ? 'text-text-tertiary' : 'text-positive'}`} title={isHidden ? 'Hidden — click to show' : 'Visible — click to hide'}>
+                    {isHidden ? '☐' : '☑'}
+                  </button>
+                  <span className={`flex-1 text-sm ${isHidden ? 'text-text-tertiary line-through' : 'text-text-primary'}`}>{card.label}</span>
+                  <span className="text-[11px] text-text-tertiary">{card.span === 'full' ? 'full width' : 'stat tile'}</span>
+                  <button onClick={() => moveCard(id, -1)} disabled={i === 0} className="h-7 w-7 rounded border border-border-default text-text-secondary hover:bg-bg-hover disabled:opacity-30">↑</button>
+                  <button onClick={() => moveCard(id, 1)} disabled={i === orderedIds.length - 1} className="h-7 w-7 rounded border border-border-default text-text-secondary hover:bg-bg-hover disabled:opacity-30">↓</button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {visibleCards.map((card) => (
+          <div key={card.id} className={card.span === 'full' ? 'md:col-span-2 xl:col-span-4' : ''}>
+            {card.node}
+          </div>
+        ))}
       </div>
     </div>
   );
