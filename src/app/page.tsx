@@ -89,6 +89,8 @@ export default function Dashboard() {
   // registry, so new cards added later show up automatically.
   const [layout, setLayout] = useState<{ order: string[]; hidden: string[] }>({ order: [], hidden: [] });
   const [customizing, setCustomizing] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   const saveLayout = useCallback((next: { order: string[]; hidden: string[] }) => {
     setLayout(next);
@@ -275,6 +277,57 @@ export default function Dashboard() {
 
   useEffect(() => {
     fetchData();
+  }, [fetchData]);
+
+  // Pull fresh data on demand instead of waiting for the hourly auto-sync.
+  // Kicks the Amazon full sync (orders incl. MFN, finances, inventory) +
+  // Airtable purchases ("what's been bought"), plus Walmart/eBay only if
+  // they've synced before. Polls until the marketplace runners go idle, then
+  // re-reads the dashboard. Respects the existing in-process overlap guards —
+  // a sync already running just gets polled, not re-fired.
+  const pullFreshData = useCallback(async () => {
+    setSyncing(true);
+    setSyncMsg('Starting sync…');
+    try {
+      const status = await fetch('/api/sync/status').then((r) => r.json()).catch(() => null);
+      const jobBy = (key: string) => status?.jobs?.find((j: any) => j.key === key);
+      const amazonRunning = status?.live?.amazon?.running;
+
+      // Fire the marketplace + purchases syncs (best-effort, non-blocking).
+      const fires: Promise<unknown>[] = [];
+      if (!amazonRunning) {
+        fires.push(fetch('/api/sync', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ lookbackDays: 14 }),
+        }).catch(() => {}));
+      }
+      fires.push(fetch('/api/sync/airtable-purchases', { method: 'POST' }).catch(() => {}));
+      // Only fire Walmart/eBay if they've run before (i.e. configured/in use).
+      if (jobBy('walmart_last_sync')?.lastAttemptAt && !status?.live?.walmart?.running) {
+        fires.push(fetch('/api/sync/walmart', { method: 'POST' }).catch(() => {}));
+      }
+      if (jobBy('ebay_last_sync')?.lastAttemptAt && !status?.live?.ebay?.running) {
+        fires.push(fetch('/api/sync/ebay', { method: 'POST' }).catch(() => {}));
+      }
+      await Promise.all(fires);
+      setSyncMsg('Syncing… orders, MFN, purchases');
+
+      // Poll until the marketplace runners are idle (cap ~4 min).
+      const start = Date.now();
+      while (Date.now() - start < 4 * 60 * 1000) {
+        await new Promise((r) => setTimeout(r, 4000));
+        const s = await fetch('/api/sync/status').then((r) => r.json()).catch(() => null);
+        const anyRunning = s?.live?.amazon?.running || s?.live?.walmart?.running || s?.live?.ebay?.running;
+        if (!anyRunning) break;
+      }
+
+      await fetchData();
+      setSyncMsg('Up to date');
+      setTimeout(() => setSyncMsg(null), 4000);
+    } catch {
+      setSyncMsg('Sync failed — check the Sync page');
+    }
+    setSyncing(false);
   }, [fetchData]);
 
   if (loading || !data) {
@@ -530,13 +583,23 @@ export default function Dashboard() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold tracking-tight">Dashboard</h1>
         <div className="flex items-center gap-2">
+          {syncMsg && <span className="text-xs text-text-tertiary mr-1">{syncMsg}</span>}
+          <button
+            onClick={pullFreshData}
+            disabled={syncing}
+            className="h-10 rounded-lg border border-accent bg-accent/15 px-4 text-sm font-medium text-accent hover:bg-accent/25 transition-colors disabled:opacity-60 flex items-center gap-2"
+            title="Sync orders, MFN, and purchases from Amazon + Airtable now"
+          >
+            <span className={syncing ? 'inline-block animate-spin' : ''}>⟳</span>
+            {syncing ? 'Pulling…' : 'Pull fresh data'}
+          </button>
           <button
             onClick={() => setCustomizing((v) => !v)}
             className={`h-10 rounded-lg border px-4 text-sm font-medium transition-colors ${customizing ? 'border-accent bg-accent/15 text-accent' : 'border-border-default bg-bg-elevated text-text-secondary hover:bg-bg-hover'}`}
           >
             {customizing ? 'Done' : 'Customize'}
           </button>
-          <button onClick={fetchData} className="h-10 w-10 rounded-lg border border-border-default bg-bg-elevated text-accent hover:bg-bg-hover">↻</button>
+          <button onClick={fetchData} disabled={syncing} title="Re-read the dashboard (no sync)" className="h-10 w-10 rounded-lg border border-border-default bg-bg-elevated text-accent hover:bg-bg-hover disabled:opacity-60">↻</button>
         </div>
       </div>
 
