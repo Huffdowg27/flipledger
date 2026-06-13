@@ -71,11 +71,13 @@ export async function syncOrders(
           const shippedAt = (status === 'Shipped' || status === 'PartiallyShipped') ? (order.LastUpdateDate || null) : null;
           // Delivery promise (Standard / Expedited / SecondDay / NextDay …); shown on /mfn/orders.
           const shipServiceLevel = order.ShipmentServiceLevelCategory || null;
+          // Fulfillment deadline — ship by this date to stay on time (MFN).
+          const latestShipDate = order.LatestShipDate || null;
 
           // Upsert order. Preserve shipped_at once set: COALESCE keeps existing value if not null.
           db.prepare(`
-            INSERT INTO orders (order_id, purchase_date, status, marketplace, fulfillment_channel, is_estimated, order_total, order_total_currency, ship_service_level, shipped_at, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO orders (order_id, purchase_date, status, marketplace, fulfillment_channel, is_estimated, order_total, order_total_currency, ship_service_level, latest_ship_date, shipped_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(order_id) DO UPDATE SET
               purchase_date = excluded.purchase_date,
               status = excluded.status,
@@ -84,8 +86,9 @@ export async function syncOrders(
               order_total = CASE WHEN excluded.order_total > 0 THEN excluded.order_total ELSE orders.order_total END,
               order_total_currency = COALESCE(excluded.order_total_currency, orders.order_total_currency),
               ship_service_level = COALESCE(excluded.ship_service_level, orders.ship_service_level),
+              latest_ship_date = COALESCE(excluded.latest_ship_date, orders.latest_ship_date),
               shipped_at = COALESCE(orders.shipped_at, excluded.shipped_at)
-          `).run(orderId, purchaseDate, status, 'amazon', channel, isEstimated, orderTotal, orderTotalCurrency, shipServiceLevel, shippedAt, now);
+          `).run(orderId, purchaseDate, status, 'amazon', channel, isEstimated, orderTotal, orderTotalCurrency, shipServiceLevel, latestShipDate, shippedAt, now);
 
           // Update sales tax state from shipping address
           const shipState = order.ShippingAddress?.StateOrRegion;

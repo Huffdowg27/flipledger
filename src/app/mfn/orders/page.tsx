@@ -11,6 +11,7 @@ interface MfnOrderRow {
   marketplace: string;
   orderTotal: number;
   shipServiceLevel: string | null;
+  latestShipDate: string | null;
   itemCount: number;
   quantity: number;
   sku: string | null;
@@ -124,6 +125,23 @@ function ageLabel(dateStr: string): string {
   if (days <= 0) return 'Today';
   if (days === 1) return '1 day';
   return `${days} days`;
+}
+
+/** "Ship by" deadline, color-coded by urgency. Overdue/today = red, tomorrow
+ *  = amber, later = muted. Label is relative ("Today", "Tomorrow", weekday). */
+function shipByLabel(dateStr: string): { label: string; tone: string } {
+  const due = new Date(dateStr);
+  const now = new Date();
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const days = Math.round((startOfDay(due).getTime() - startOfDay(now).getTime()) / 86400000);
+  let label: string;
+  if (days < 0) label = `${Math.abs(days)}d overdue`;
+  else if (days === 0) label = 'today';
+  else if (days === 1) label = 'tomorrow';
+  else if (days <= 6) label = due.toLocaleDateString('en-US', { weekday: 'short' });
+  else label = due.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const tone = days <= 0 ? 'text-negative font-semibold' : days === 1 ? 'text-warning' : 'text-text-tertiary';
+  return { label, tone };
 }
 
 function withinDateFilter(dateStr: string, filter: DateFilter): boolean {
@@ -360,14 +378,22 @@ export default function MfnOrdersPage() {
                   <div>Ordered: <span className="font-mono text-text-primary">{o.quantity ?? 0}</span></div>
                 </div>
 
-                {/* Shipping — Amazon ship-service level (delivery promise) */}
-                <div>
+                {/* Shipping — Amazon ship-service level + ship-by deadline */}
+                <div className="space-y-1">
                   {(() => {
                     const { label, tone } = shipLevelBadge(o.shipServiceLevel);
                     return (
                       <StatusBadge tone={tone} size="xs" className="uppercase tracking-wide">
                         {label}
                       </StatusBadge>
+                    );
+                  })()}
+                  {o.latestShipDate && o.status !== 'Shipped' && o.status !== 'Canceled' && (() => {
+                    const due = shipByLabel(o.latestShipDate);
+                    return (
+                      <div className={`text-[11px] ${due.tone}`} title={`Ship by ${new Date(o.latestShipDate).toLocaleString()}`}>
+                        Ship by {due.label}
+                      </div>
                     );
                   })()}
                 </div>

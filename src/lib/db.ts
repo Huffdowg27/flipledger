@@ -729,6 +729,10 @@ export function initializeDatabase() {
     // Anticipated economics from the Airtable purchase row (per unit).
     `ALTER TABLE incoming_purchases ADD COLUMN sales_price_cents INTEGER`,
     `ALTER TABLE incoming_purchases ADD COLUMN profit_cents INTEGER`,
+    // MFN fulfillment deadline from the Orders API (LatestShipDate) — the date
+    // by which a merchant-fulfilled order must ship to stay on time. Shown on
+    // /mfn/orders so the operator sees "ship by" alongside the service level.
+    `ALTER TABLE orders ADD COLUMN latest_ship_date TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN bin_location TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN condition TEXT`,
     `ALTER TABLE inventory_ledger ADD COLUMN quantity_received INTEGER`,

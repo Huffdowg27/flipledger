@@ -54,6 +54,7 @@ export async function GET(request: NextRequest) {
         o.marketplace   AS marketplace,
         o.order_total   AS orderTotal,
         o.ship_service_level AS shipServiceLevel,
+        o.latest_ship_date AS latestShipDate,
         (SELECT COUNT(*)        FROM order_items x WHERE x.order_id = o.order_id) AS itemCount,
         (SELECT SUM(x.quantity) FROM order_items x WHERE x.order_id = o.order_id) AS quantity,
         -- Pending orders carry an opaque 'PENDING' order_item; fall back to the
