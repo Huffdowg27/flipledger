@@ -262,10 +262,28 @@ export default function InventoryValuationPage() {
         marketplace={marketplace}
         onMarketplaceChange={setMarketplace} onExport={handleExport} />
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <StatCard label="Total Units" value={totals?.totalUnits || 0} format="number" />
-        <StatCard label="Total COGS Value" value={totals?.totalCogsValue || 0} format="currency" accentColor="amazon" />
-        <StatCard label="Expected Revenue" value={totals?.totalExpectedRevenue || 0} format="currency" />
-        <StatCard label="Expected Profit" value={totals?.totalExpectedProfit || 0} format="currency" accentColor={(totals?.totalExpectedProfit || 0) >= 0 ? 'positive' : 'negative'} />
+        {([
+          { label: 'Total Units', key: 'totalUnits', format: 'number' as const, accent: undefined },
+          { label: 'Total COGS Value', key: 'totalCogsValue', format: 'currency' as const, accent: 'amazon' as const },
+          { label: 'Expected Revenue', key: 'totalExpectedRevenue', format: 'currency' as const, accent: undefined },
+          { label: 'Expected Profit', key: 'totalExpectedProfit', format: 'currency' as const, accent: ((totals?.totalExpectedProfit || 0) >= 0 ? 'positive' : 'negative') as 'positive' | 'negative' },
+        ]).map((m) => {
+          const fmt = (v: number) => m.format === 'number' ? formatNumber(v) : formatCurrency(v);
+          const fba = totals?.fba?.[m.key] || 0;
+          const fbm = totals?.fbm?.[m.key] || 0;
+          return (
+            <div key={m.key}>
+              <StatCard label={m.label} value={totals?.[m.key] || 0} format={m.format} accentColor={m.accent} />
+              {totals && (
+                <div className="mt-1.5 flex items-center gap-3 px-1 text-[11px] text-text-tertiary">
+                  <span>FBA <span className="font-mono text-text-secondary">{fmt(fba)}</span></span>
+                  <span className="text-border-strong">·</span>
+                  <span>FBM <span className="font-mono text-text-secondary">{fmt(fbm)}</span></span>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
       <div className="flex justify-end mb-3">
         <button onClick={() => setShowAddMfn(true)}

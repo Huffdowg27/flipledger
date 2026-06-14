@@ -43,8 +43,13 @@ export async function GET(request: NextRequest) {
         li.walmart_item_id as walmartItemId,
         COALESCE(il_sku.buy_price, il_asin.buy_price, 0) as cogsPerUnit,
         COALESCE(il_sku.buy_price, il_asin.buy_price, 0) * (li.fulfillable_qty + li.inbound_qty) as totalCogsValue,
+        -- Fulfillment channel from the merchant listings report (authoritative):
+        -- DEFAULT = merchant-fulfilled (FBM); AMAZON* = FBA. Unmatched rows are
+        -- FBA-inventory-sync items with no MFN listing → treated as FBA.
+        CASE WHEN UPPER(COALESCE(ml.fulfillment_channel, '')) = 'DEFAULT' THEN 'FBM' ELSE 'FBA' END as channel,
         li.last_updated
       FROM live_inventory li
+      LEFT JOIN merchant_listings ml ON ml.sku = li.sku AND ml.marketplace = 'amazon'
       LEFT JOIN (
         SELECT sku, buy_price FROM inventory_ledger
         WHERE sku IS NOT NULL AND sku != ''
@@ -152,6 +157,7 @@ export async function GET(request: NextRequest) {
         reservedFcProcessing: row.reservedFcProcessing,
         cogsPerUnit: row.cogsPerUnit,
         totalCogsValue: row.totalCogsValue,
+        channel: row.channel as 'FBA' | 'FBM',
         listPrice,
         feeRate: Math.round(feeRate * 1000) / 10, // as percentage
         estimatedFees,
@@ -163,21 +169,21 @@ export async function GET(request: NextRequest) {
       };
     });
 
-    const totalUnits = items.reduce((s, i) => s + i.quantityOnHand, 0);
-    const totalCogsValue = items.reduce((s, i) => s + i.totalCogsValue, 0);
-    const totalExpectedRevenue = items.reduce((s, i) => s + i.expectedRevenue, 0);
-    const totalExpectedProfit = items.reduce((s, i) => s + i.expectedProfit, 0);
+    const subtotal = (rows: typeof items) => ({
+      totalUnits: rows.reduce((s, i) => s + i.quantityOnHand, 0),
+      totalCogsValue: rows.reduce((s, i) => s + i.totalCogsValue, 0),
+      totalExpectedRevenue: rows.reduce((s, i) => s + i.expectedRevenue, 0),
+      totalExpectedProfit: rows.reduce((s, i) => s + i.expectedProfit, 0),
+    });
+    const totals = subtotal(items);
+    const fba = subtotal(items.filter((i) => i.channel === 'FBA'));
+    const fbm = subtotal(items.filter((i) => i.channel === 'FBM'));
 
     db.close();
 
     return NextResponse.json({
       items,
-      totals: {
-        totalUnits,
-        totalCogsValue,
-        totalExpectedRevenue,
-        totalExpectedProfit,
-      },
+      totals: { ...totals, fba, fbm },
     });
   } catch (error) {
     db.close();
