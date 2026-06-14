@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { formatCurrency, centsToDollars, formatNumber } from '@/lib/formatters';
 
@@ -25,6 +25,49 @@ interface DashboardData {
 function toLocalDateString(date: Date): string {
   const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
   return local.toISOString().split('T')[0];
+}
+
+// Start/end (YYYY-MM-DD) for "last N days" through today, local time.
+function lastNDays(n: number): { start: string; end: string } {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(start.getDate() - (n - 1));
+  return { start: toLocalDateString(start), end: toLocalDateString(end) };
+}
+
+// Self-fetching metric tile for the addable-report catalog. Fetches its own
+// URL and renders one headline number (+ optional sub line); links to the
+// full report. Each metric+period is its own tile, so no per-tile config.
+function MetricTile({
+  title, href, fetchUrl, pick, accent = 'text-text-primary',
+}: {
+  title: string;
+  href: string;
+  fetchUrl: string;
+  pick: (json: any) => { value: string; sub?: string };
+  accent?: string;
+}) {
+  const [out, setOut] = useState<{ value: string; sub?: string } | null>(null);
+  const [err, setErr] = useState(false);
+  // pick is defined inline in the registry (new identity each render); keep it
+  // in a ref so the fetch effect only re-runs when the URL changes.
+  const pickRef = useRef(pick);
+  pickRef.current = pick;
+  useEffect(() => {
+    let live = true;
+    fetch(fetchUrl)
+      .then((r) => r.json())
+      .then((j) => { if (live) setOut(pickRef.current(j)); })
+      .catch(() => { if (live) setErr(true); });
+    return () => { live = false; };
+  }, [fetchUrl]);
+  return (
+    <Link href={href} className="block h-full rounded-lg border border-border-default bg-bg-surface p-5 hover:border-accent/60 transition-colors">
+      <div className="text-sm font-semibold text-text-secondary">{title}</div>
+      <div className={`mt-2 text-2xl font-bold font-mono ${accent}`}>{err ? '—' : out ? out.value : '…'}</div>
+      {out?.sub && <div className="mt-1 text-xs text-text-tertiary">{out.sub}</div>}
+    </Link>
+  );
 }
 
 function relativeTime(value?: string | null): string {
@@ -89,6 +132,7 @@ export default function Dashboard() {
   // registry, so new cards added later show up automatically.
   const [layout, setLayout] = useState<{ order: string[]; hidden: string[] }>({ order: [], hidden: [] });
   const [customizing, setCustomizing] = useState(false);
+  const [dragId, setDragId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
@@ -429,7 +473,9 @@ export default function Dashboard() {
 
   // ── Card registry — each entry is a self-contained dashboard tile ──────────
   // span 1 = quarter-width stat tile; 'full' = full-width section.
-  const cardRegistry: { id: string; label: string; span: 1 | 'full'; node: React.ReactNode }[] = [
+  const pl7 = lastNDays(7), pl14 = lastNDays(14), pl30 = lastNDays(30);
+  const plUrl = (r: { start: string; end: string }) => `/api/data/profitloss?startDate=${r.start}&endDate=${r.end}&dateBasis=purchase&summaryOnly=1`;
+  const cardRegistry: { id: string; label: string; span: 1 | 'full'; defaultHidden?: boolean; node: React.ReactNode }[] = [
     {
       id: 'daily-sales', label: 'Daily Sales', span: 1, node: (
         <Link
@@ -585,30 +631,65 @@ export default function Dashboard() {
           </div>
         </Link>
       ) },
+
+    // ── Addable metric tiles (hidden by default; pick them via "Add a card") ──
+    { id: 'm-pnl-7d', label: 'Net Profit · last 7 days', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Net Profit · 7d" href="/analyze/profitloss" accent="text-positive" fetchUrl={plUrl(pl7)}
+        pick={(j) => ({ value: compactCurrency(j.netProfit || 0), sub: `${compactCurrency(j.income?.total || 0)} sales` })} /> ) },
+    { id: 'm-pnl-14d', label: 'Net Profit · last 14 days', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Net Profit · 14d" href="/analyze/profitloss" accent="text-positive" fetchUrl={plUrl(pl14)}
+        pick={(j) => ({ value: compactCurrency(j.netProfit || 0), sub: `${compactCurrency(j.income?.total || 0)} sales` })} /> ) },
+    { id: 'm-pnl-30d', label: 'Net Profit · last 30 days', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Net Profit · 30d" href="/analyze/profitloss" accent="text-positive" fetchUrl={plUrl(pl30)}
+        pick={(j) => ({ value: compactCurrency(j.netProfit || 0), sub: `${compactCurrency(j.income?.total || 0)} sales` })} /> ) },
+    { id: 'm-sales-30d', label: 'Sales · last 30 days', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Sales · 30d" href="/analyze/profitloss" fetchUrl={plUrl(pl30)}
+        pick={(j) => ({ value: compactCurrency(j.income?.total || 0), sub: `${formatNumber(j.unitSummary?.units || 0)} units` })} /> ) },
+    { id: 'm-units-30d', label: 'Units Sold · last 30 days', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Units Sold · 30d" href="/analyze/profitloss" fetchUrl={plUrl(pl30)}
+        pick={(j) => ({ value: formatNumber(j.unitSummary?.units || 0), sub: `${formatNumber(j.unitSummary?.orders || 0)} orders` })} /> ) },
+    { id: 'm-mfn-active', label: 'Active Merchant Listings', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Active Merchant Listings" href="/analyze/merchant-inventory" accent="text-amazon" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.mfnActive || 0), sub: `${formatNumber(j.mfnInactive || 0)} inactive` })} /> ) },
+    { id: 'm-fba-active', label: 'FBA Listings In Stock', span: 1, defaultHidden: true, node: (
+      <MetricTile title="FBA Listings In Stock" href="/inventory" accent="text-amazon" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.fbaActiveSkus || 0), sub: `${formatNumber(j.fbaUnits || 0)} units on hand` })} /> ) },
   ];
 
-  // Resolve display order: saved order first (only ids that still exist), then
-  // any registry cards not in the saved order (newly added). Hidden removed.
+  // Resolve display order. A card is shown when it's in the saved order and not
+  // hidden. Cards never configured auto-append ONLY if not defaultHidden — so
+  // metric tiles stay off until explicitly added, while new rich cards appear.
   const byId = new Map(cardRegistry.map((c) => [c.id, c]));
+  const inOrder = new Set(layout.order);
   const orderedIds = [
     ...layout.order.filter((id) => byId.has(id)),
-    ...cardRegistry.filter((c) => !layout.order.includes(c.id)).map((c) => c.id),
+    ...cardRegistry.filter((c) => !inOrder.has(c.id) && !c.defaultHidden).map((c) => c.id),
   ];
   const hiddenSet = new Set(layout.hidden);
   const visibleCards = orderedIds.map((id) => byId.get(id)!).filter((c) => !hiddenSet.has(c.id));
+  // Anything not currently visible is addable (defaultHidden tiles + removed cards).
+  const visibleIds = new Set(visibleCards.map((c) => c.id));
+  const addableCards = cardRegistry.filter((c) => !visibleIds.has(c.id));
 
-  function moveCard(id: string, dir: -1 | 1) {
-    const idx = orderedIds.indexOf(id);
-    const swap = idx + dir;
-    if (swap < 0 || swap >= orderedIds.length) return;
-    const next = [...orderedIds];
-    [next[idx], next[swap]] = [next[swap], next[idx]];
-    saveLayout({ order: next, hidden: layout.hidden });
+  // Add a card: ensure it's in the order (appended) and not hidden.
+  function addCard(id: string) {
+    const order = orderedIds.includes(id) ? orderedIds : [...orderedIds, id];
+    saveLayout({ order, hidden: layout.hidden.filter((h) => h !== id) });
   }
 
-  function toggleHidden(id: string) {
-    const hidden = hiddenSet.has(id) ? layout.hidden.filter((h) => h !== id) : [...layout.hidden, id];
-    saveLayout({ order: orderedIds, hidden });
+  // Remove a visible card → hide it (it returns to the Add catalog).
+  function removeCard(id: string) {
+    saveLayout({ order: orderedIds, hidden: [...new Set([...layout.hidden, id])] });
+  }
+
+  // Drag-and-drop reorder over the visible cards. Drops the dragged card into
+  // the target's slot.
+  function reorder(dragId: string, targetId: string) {
+    if (dragId === targetId) return;
+    const next = orderedIds.filter((id) => id !== dragId);
+    const at = next.indexOf(targetId);
+    next.splice(at < 0 ? next.length : at, 0, dragId);
+    saveLayout({ order: next, hidden: layout.hidden });
   }
 
   return (
@@ -638,31 +719,50 @@ export default function Dashboard() {
 
       {customizing && (
         <div className="rounded-lg border border-accent/30 bg-accent/5 p-4">
-          <div className="mb-3 text-sm font-semibold text-text-secondary">Show, hide, and reorder cards</div>
-          <div className="space-y-2">
-            {orderedIds.map((id, i) => {
-              const card = byId.get(id)!;
-              const isHidden = hiddenSet.has(id);
-              return (
-                <div key={id} className="flex items-center gap-3 rounded-lg bg-bg-surface px-3 py-2">
-                  <button onClick={() => toggleHidden(id)} className={`text-sm ${isHidden ? 'text-text-tertiary' : 'text-positive'}`} title={isHidden ? 'Hidden — click to show' : 'Visible — click to hide'}>
-                    {isHidden ? '☐' : '☑'}
-                  </button>
-                  <span className={`flex-1 text-sm ${isHidden ? 'text-text-tertiary line-through' : 'text-text-primary'}`}>{card.label}</span>
-                  <span className="text-[11px] text-text-tertiary">{card.span === 'full' ? 'full width' : 'stat tile'}</span>
-                  <button onClick={() => moveCard(id, -1)} disabled={i === 0} className="h-7 w-7 rounded border border-border-default text-text-secondary hover:bg-bg-hover disabled:opacity-30">↑</button>
-                  <button onClick={() => moveCard(id, 1)} disabled={i === orderedIds.length - 1} className="h-7 w-7 rounded border border-border-default text-text-secondary hover:bg-bg-hover disabled:opacity-30">↓</button>
-                </div>
-              );
-            })}
-          </div>
+          <div className="mb-2 text-sm font-semibold text-text-secondary">Customize dashboard</div>
+          <p className="text-[11px] text-text-tertiary mb-3">Drag any card to reorder. Click ✕ on a card to remove it. Add report tiles below.</p>
+          {addableCards.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {addableCards.map((card) => (
+                <button
+                  key={card.id}
+                  onClick={() => addCard(card.id)}
+                  className="flex items-center gap-1.5 rounded-lg border border-border-default bg-bg-surface px-3 py-1.5 text-xs text-text-secondary hover:border-accent hover:text-accent transition-colors"
+                >
+                  <span className="text-accent">+</span> {card.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-text-tertiary">All available cards are on the dashboard.</p>
+          )}
         </div>
       )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
         {visibleCards.map((card) => (
-          <div key={card.id} className={card.span === 'full' ? 'md:col-span-2 xl:col-span-4' : ''}>
-            {card.node}
+          <div
+            key={card.id}
+            draggable={customizing}
+            onDragStart={customizing ? () => setDragId(card.id) : undefined}
+            onDragOver={customizing ? (e) => e.preventDefault() : undefined}
+            onDrop={customizing ? () => { if (dragId) reorder(dragId, card.id); setDragId(null); } : undefined}
+            className={`${card.span === 'full' ? 'md:col-span-2 xl:col-span-4' : ''} ${
+              customizing ? 'relative cursor-grab rounded-lg ring-2 ring-dashed ring-accent/40' : ''
+            } ${customizing && dragId === card.id ? 'opacity-40' : ''}`}
+          >
+            {customizing && (
+              <button
+                onClick={() => removeCard(card.id)}
+                title="Remove from dashboard"
+                className="absolute -right-2 -top-2 z-10 grid h-6 w-6 place-items-center rounded-full border border-border-default bg-bg-elevated text-text-secondary hover:border-negative hover:text-negative shadow"
+              >
+                ✕
+              </button>
+            )}
+            <div className={customizing ? 'pointer-events-none select-none' : ''}>
+              {card.node}
+            </div>
           </div>
         ))}
       </div>
