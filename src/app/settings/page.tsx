@@ -13,6 +13,7 @@ interface SettingsData {
   extensionApiKey: string;
   veeqo_api_key?: string;
   airtable_api_key?: string;
+  profit_target_monthly?: string;
 }
 
 interface SyncResult {
@@ -58,6 +59,7 @@ export default function SettingsPage() {
     extensionApiKey: '',
     veeqo_api_key: '',
     airtable_api_key: '',
+    profit_target_monthly: '',
   });
   const [veeqoTesting, setVeeqoTesting] = useState(false);
   const [veeqoSyncing, setVeeqoSyncing] = useState(false);
@@ -373,6 +375,24 @@ export default function SettingsPage() {
 
       {/* Veeqo Shipping Costs */}
       <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+        <h2 className="text-md font-medium text-text-primary mb-1">Profit Target</h2>
+        <p className="text-xs text-text-tertiary mb-4">
+          Monthly anticipated-profit goal for purchases. The dashboard derives the day
+          and week from it and shows ahead/behind pace (pro-rated by where you are in the
+          month) plus an end-of-month projection. Leave blank to hide it.
+        </p>
+        <div className="mb-6 max-w-xs">
+          <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">Monthly Profit Target ($)</label>
+          <input
+            type="number"
+            min="0"
+            value={settings.profit_target_monthly || ''}
+            onChange={e => setSettings(s => ({ ...s, profit_target_monthly: e.target.value }))}
+            placeholder="e.g. 6000"
+            className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+          />
+        </div>
+
         <h2 className="text-md font-medium text-text-primary mb-1">Airtable Purchases</h2>
         <p className="text-xs text-text-tertiary mb-4">
           Syncs your 💳 Orders table into the Incoming page hourly (on-order lots,

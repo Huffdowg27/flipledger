@@ -98,6 +98,12 @@ export async function GET() {
     const week = new Date(today); week.setDate(week.getDate() - week.getDay());
     const month = new Date(today.getFullYear(), today.getMonth(), 1);
 
+    // Profit targets (dollars in settings → cents). 0/blank = unset.
+    const targetCents = (key: string) => {
+      const v = parseFloat((db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as any)?.value || '');
+      return Number.isFinite(v) && v > 0 ? Math.round(v * 100) : 0;
+    };
+
     const openIssues = issues.filter((i) => i.status === 'open');
     const stats = {
       purchasedToday: purchasedSince(today.toISOString().slice(0, 10)),
@@ -110,6 +116,8 @@ export async function GET() {
       openIssuesCents: sum(openIssues, (i) => i.quantity * (i.unitCostCents || 0)),
       openIssuesCount: openIssues.length,
       overdueDays,
+      // Single monthly profit target — the dashboard derives day/week from it.
+      profitTargetMonthlyCents: targetCents('profit_target_monthly'),
     };
 
     return NextResponse.json({ open, received, issues, stats });

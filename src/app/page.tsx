@@ -395,6 +395,38 @@ export default function Dashboard() {
     <div className={`h-28 w-28 rounded-full border-[16px] ${color} border-r-bg-elevated`} />
   );
 
+  // ── Profit-target pace ────────────────────────────────────────────────────
+  // One monthly target; day and week derived from it. Week/month pace is
+  // pro-rated by how far into the period we are, so "ahead/behind" reflects
+  // expected-to-date, not the full-period goal. Returns a small line per card.
+  function pace(period: 'today' | 'week' | 'month', actualCents: number): { text: string; tone: string } | null {
+    const monthly = incomingStats?.profitTargetMonthlyCents || 0;
+    if (!monthly) return null;
+    const now = new Date();
+    const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const dailyTarget = monthly / daysInMonth;
+    const fmtShort = (c: number) => formatCurrency(Math.round(c));
+
+    if (period === 'today') {
+      const pct = dailyTarget > 0 ? Math.round((actualCents / dailyTarget) * 100) : 0;
+      return { text: `${pct}% of ${fmtShort(dailyTarget)}/day`, tone: actualCents >= dailyTarget ? 'text-positive' : 'text-text-tertiary' };
+    }
+
+    // Elapsed fraction of the period (today counts as in-progress).
+    const elapsed = period === 'week'
+      ? (now.getDay() + 1) / 7
+      : now.getDate() / daysInMonth;
+    const periodTarget = period === 'week' ? monthly * 7 / daysInMonth : monthly;
+    const expectedToDate = periodTarget * elapsed;
+    const projected = elapsed > 0 ? actualCents / elapsed : 0;
+    const delta = actualCents - expectedToDate;
+    const ahead = delta >= 0;
+    return {
+      text: `${ahead ? 'ahead' : 'behind'} ${fmtShort(Math.abs(delta))} · on pace ${fmtShort(projected)} of ${fmtShort(periodTarget)}`,
+      tone: ahead ? 'text-positive' : 'text-warning',
+    };
+  }
+
   // ── Card registry — each entry is a self-contained dashboard tile ──────────
   // span 1 = quarter-width stat tile; 'full' = full-width section.
   const cardRegistry: { id: string; label: string; span: 1 | 'full'; node: React.ReactNode }[] = [
@@ -497,9 +529,9 @@ export default function Dashboard() {
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3">
             {[
-              { label: 'Bought today', main: formatCurrency(incomingStats.purchasedToday.cents), sub: `${incomingStats.purchasedToday.units} units · profit est. ${formatCurrency(incomingStats.purchasedToday.profitCents)}` },
-              { label: 'This week', main: formatCurrency(incomingStats.purchasedWeek.cents), sub: `${incomingStats.purchasedWeek.units} units · profit est. ${formatCurrency(incomingStats.purchasedWeek.profitCents)}` },
-              { label: 'This month', main: formatCurrency(incomingStats.purchasedMonth.cents), sub: `${incomingStats.purchasedMonth.units} units · profit est. ${formatCurrency(incomingStats.purchasedMonth.profitCents)}` },
+              { label: 'Bought today', main: formatCurrency(incomingStats.purchasedToday.cents), sub: `${incomingStats.purchasedToday.units} units · profit est. ${formatCurrency(incomingStats.purchasedToday.profitCents)}`, pace: pace('today', incomingStats.purchasedToday.profitCents) },
+              { label: 'This week', main: formatCurrency(incomingStats.purchasedWeek.cents), sub: `${incomingStats.purchasedWeek.units} units · profit est. ${formatCurrency(incomingStats.purchasedWeek.profitCents)}`, pace: pace('week', incomingStats.purchasedWeek.profitCents) },
+              { label: 'This month', main: formatCurrency(incomingStats.purchasedMonth.cents), sub: `${incomingStats.purchasedMonth.units} units · profit est. ${formatCurrency(incomingStats.purchasedMonth.profitCents)}`, pace: pace('month', incomingStats.purchasedMonth.profitCents) },
               { label: 'On order', main: formatCurrency(incomingStats.onOrderCents), sub: `${incomingStats.onOrderUnits} units incoming` },
               { label: `Over ${incomingStats.overdueDays} days`, main: String(incomingStats.overdueCount), sub: `${formatCurrency(incomingStats.overdueCents)} at risk`, alert: incomingStats.overdueCount > 0 },
               { label: 'Open issues', main: String(incomingStats.openIssuesCount), sub: `${formatCurrency(incomingStats.openIssuesCents)} unresolved`, alert: incomingStats.openIssuesCount > 0 },
@@ -508,6 +540,7 @@ export default function Dashboard() {
                 <div className="text-[11px] text-text-tertiary uppercase tracking-wider mb-1">{c.label}</div>
                 <div className={`text-xl font-bold font-mono ${c.alert ? 'text-amber-400' : 'text-text-primary'}`}>{c.main}</div>
                 <div className="text-[11px] text-text-tertiary mt-0.5">{c.sub}</div>
+                {c.pace && <div className={`text-[11px] mt-0.5 ${c.pace.tone}`}>{c.pace.text}</div>}
               </div>
             ))}
           </div>
