@@ -392,6 +392,17 @@ export default function SettingsPage() {
             className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
           />
         </div>
+        <div className="flex items-center gap-3 mb-6">
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+          >
+            <Save size={14} />
+            {saving ? 'Saving...' : 'Save Target'}
+          </button>
+          {saved && <span className="text-xs text-positive">Saved ✓</span>}
+        </div>
 
         <h2 className="text-md font-medium text-text-primary mb-1">Airtable Purchases</h2>
         <p className="text-xs text-text-tertiary mb-4">
