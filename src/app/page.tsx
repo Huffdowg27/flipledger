@@ -130,13 +130,16 @@ export default function Dashboard() {
   // Tier-1 dashboard modularity: saved card order + hidden set, persisted to
   // settings.dashboard_layout. Defaults are filled in at render from the
   // registry, so new cards added later show up automatically.
-  const [layout, setLayout] = useState<{ order: string[]; hidden: string[] }>({ order: [], hidden: [] });
+  // Dashboard layout: card order, hidden set, and per-card width (columns:
+  // 1, 2, or 4=full). Persisted to settings.dashboard_layout.
+  type DashLayout = { order: string[]; hidden: string[]; sizes: Record<string, number> };
+  const [layout, setLayout] = useState<DashLayout>({ order: [], hidden: [], sizes: {} });
   const [customizing, setCustomizing] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
-  const saveLayout = useCallback((next: { order: string[]; hidden: string[] }) => {
+  const saveLayout = useCallback((next: DashLayout) => {
     setLayout(next);
     fetch('/api/data/settings', {
       method: 'POST',
@@ -153,7 +156,7 @@ export default function Dashboard() {
         if (raw) {
           try {
             const parsed = JSON.parse(raw);
-            setLayout({ order: parsed.order || [], hidden: parsed.hidden || [] });
+            setLayout({ order: parsed.order || [], hidden: parsed.hidden || [], sizes: parsed.sizes || {} });
           } catch { /* ignore malformed */ }
         }
       })
@@ -648,9 +651,18 @@ export default function Dashboard() {
     { id: 'm-units-30d', label: 'Units Sold · last 30 days', span: 1, defaultHidden: true, node: (
       <MetricTile title="Units Sold · 30d" href="/analyze/profitloss" fetchUrl={plUrl(pl30)}
         pick={(j) => ({ value: formatNumber(j.unitSummary?.units || 0), sub: `${formatNumber(j.unitSummary?.orders || 0)} orders` })} /> ) },
-    { id: 'm-mfn-active', label: 'Active Merchant Listings', span: 1, defaultHidden: true, node: (
-      <MetricTile title="Active Merchant Listings" href="/analyze/merchant-inventory" accent="text-amazon" fetchUrl="/api/dashboard/metrics"
-        pick={(j) => ({ value: formatNumber(j.mfnActive || 0), sub: `${formatNumber(j.mfnInactive || 0)} inactive` })} /> ) },
+    { id: 'm-mfn-live', label: 'Merchant: Live on Amazon', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Live on Amazon" href="/analyze/merchant-inventory" accent="text-positive" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.mfnLive || 0), sub: 'active & in stock' })} /> ) },
+    { id: 'm-mfn-oos', label: 'Merchant: Out of Stock', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Merchant Out of Stock" href="/analyze/merchant-inventory" accent="text-warning" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.mfnOos || 0), sub: 'active listing, 0 qty' })} /> ) },
+    { id: 'm-mfn-notlisted', label: 'Merchant: Not Listed', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Not Listed Yet" href="/analyze/merchant-inventory" accent="text-text-primary" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.mfnNotListed || 0), sub: 'local stock, no Amazon listing' })} /> ) },
+    { id: 'm-mfn-inactive', label: 'Merchant: Inactive', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Merchant Inactive" href="/analyze/merchant-inventory" accent="text-text-tertiary" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.mfnInactive || 0), sub: 'inactive / incomplete' })} /> ) },
     { id: 'm-fba-active', label: 'FBA Listings In Stock', span: 1, defaultHidden: true, node: (
       <MetricTile title="FBA Listings In Stock" href="/inventory" accent="text-amazon" fetchUrl="/api/dashboard/metrics"
         pick={(j) => ({ value: formatNumber(j.fbaActiveSkus || 0), sub: `${formatNumber(j.fbaUnits || 0)} units on hand` })} /> ) },
@@ -674,12 +686,12 @@ export default function Dashboard() {
   // Add a card: ensure it's in the order (appended) and not hidden.
   function addCard(id: string) {
     const order = orderedIds.includes(id) ? orderedIds : [...orderedIds, id];
-    saveLayout({ order, hidden: layout.hidden.filter((h) => h !== id) });
+    saveLayout({ ...layout, order, hidden: layout.hidden.filter((h) => h !== id) });
   }
 
   // Remove a visible card → hide it (it returns to the Add catalog).
   function removeCard(id: string) {
-    saveLayout({ order: orderedIds, hidden: [...new Set([...layout.hidden, id])] });
+    saveLayout({ ...layout, order: orderedIds, hidden: [...new Set([...layout.hidden, id])] });
   }
 
   // Drag-and-drop reorder over the visible cards. Drops the dragged card into
@@ -689,8 +701,24 @@ export default function Dashboard() {
     const next = orderedIds.filter((id) => id !== dragId);
     const at = next.indexOf(targetId);
     next.splice(at < 0 ? next.length : at, 0, dragId);
-    saveLayout({ order: next, hidden: layout.hidden });
+    saveLayout({ ...layout, order: next });
   }
+
+  // Effective width (columns) for a card: saved size, else registry default.
+  function widthOf(card: { id: string; span: 1 | 'full' }): 1 | 2 | 4 {
+    const saved = layout.sizes[card.id];
+    if (saved === 1 || saved === 2 || saved === 4) return saved;
+    return card.span === 'full' ? 4 : 1;
+  }
+
+  // Cycle width 1 → 2 → 4 → 1 (resize).
+  function cycleSize(card: { id: string; span: 1 | 'full' }) {
+    const cur = widthOf(card);
+    const next = cur === 1 ? 2 : cur === 2 ? 4 : 1;
+    saveLayout({ ...layout, order: orderedIds, sizes: { ...layout.sizes, [card.id]: next } });
+  }
+
+  const spanClass = (w: 1 | 2 | 4) => (w === 4 ? 'md:col-span-2 xl:col-span-4' : w === 2 ? 'md:col-span-2' : '');
 
   return (
     <div className="space-y-4">
@@ -740,32 +768,50 @@ export default function Dashboard() {
       )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {visibleCards.map((card) => (
-          <div
-            key={card.id}
-            draggable={customizing}
-            onDragStart={customizing ? () => setDragId(card.id) : undefined}
-            onDragOver={customizing ? (e) => e.preventDefault() : undefined}
-            onDrop={customizing ? () => { if (dragId) reorder(dragId, card.id); setDragId(null); } : undefined}
-            className={`${card.span === 'full' ? 'md:col-span-2 xl:col-span-4' : ''} ${
-              customizing ? 'relative cursor-grab rounded-lg ring-2 ring-dashed ring-accent/40' : ''
-            } ${customizing && dragId === card.id ? 'opacity-40' : ''}`}
-          >
-            {customizing && (
-              <button
-                onClick={() => removeCard(card.id)}
-                title="Remove from dashboard"
-                className="absolute -right-2 -top-2 z-10 grid h-6 w-6 place-items-center rounded-full border border-border-default bg-bg-elevated text-text-secondary hover:border-negative hover:text-negative shadow"
-              >
-                ✕
-              </button>
-            )}
-            <div className={customizing ? 'pointer-events-none select-none' : ''}>
-              {card.node}
+        {visibleCards.map((card) => {
+          const w = widthOf(card);
+          return (
+            <div
+              key={card.id}
+              draggable={customizing}
+              onDragStart={customizing ? (e) => { setDragId(card.id); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', card.id); } : undefined}
+              onDragOver={customizing ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; } : undefined}
+              onDrop={customizing ? (e) => { e.preventDefault(); if (dragId) reorder(dragId, card.id); setDragId(null); } : undefined}
+              onDragEnd={customizing ? () => setDragId(null) : undefined}
+              className={`${spanClass(w)} ${
+                customizing ? 'relative cursor-grab rounded-lg ring-2 ring-dashed ring-accent/40' : ''
+              } ${customizing && dragId === card.id ? 'opacity-40' : ''}`}
+            >
+              {customizing && (
+                <div className="absolute -right-2 -top-2 z-10 flex items-center gap-1">
+                  <button
+                    onClick={() => cycleSize(card)}
+                    title={`Width: ${w === 4 ? 'full' : w + ' col'} — click to resize`}
+                    className="h-6 rounded-full border border-border-default bg-bg-elevated px-2 text-[10px] font-semibold text-text-secondary hover:border-accent hover:text-accent shadow"
+                  >
+                    {w === 4 ? 'Full' : `${w}×`}
+                  </button>
+                  <button
+                    onClick={() => removeCard(card.id)}
+                    title="Remove from dashboard"
+                    className="grid h-6 w-6 place-items-center rounded-full border border-border-default bg-bg-elevated text-text-secondary hover:border-negative hover:text-negative shadow"
+                  >
+                    ✕
+                  </button>
+                </div>
+              )}
+              <div className={customizing ? 'pointer-events-none select-none' : ''}>
+                {card.node}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+      {customizing && (
+        <p className="text-[11px] text-text-tertiary">
+          Drag cards to reorder · the width chip (1× / 2× / Full) resizes · ✕ removes. Card height fits its content.
+        </p>
+      )}
     </div>
   );
 
