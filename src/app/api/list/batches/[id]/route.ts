@@ -236,6 +236,10 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
 
   const db = getDb();
   const affectedSkus = new Set<string>();
+  // Thrown inside the transaction to abort the WHOLE delete (fail closed) when
+  // a created lot has already had units consumed by FIFO — never corrupt real
+  // inventory to satisfy a delete.
+  const LOT_CONSUMED = 'LOT_CONSUMED_FIFO_ALREADY_RAN';
   try {
     // Allow deleting batches that haven't been successfully sent to Amazon.
     // Draft: never sent. Failed: send attempt didn't complete. Both are safe
@@ -247,13 +251,72 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
       return NextResponse.json({ error: `Cannot delete batch in status: ${batch.status}` }, { status: 400 });
     }
 
-    // Roll back every item's inventory_ledger contribution, then delete.
+    // Roll back each item's inventory contribution using the SAME lot-aware
+    // logic as the item-level DELETE (items/[itemId]/route.ts), then delete the
+    // batch and its associated rows — all in one transaction.
+    //
+    // Branch per item on created_lot + inventory_ledger_id:
+    //   - created_lot false: the lot was a pre-existing real lot the POST only
+    //     replenished against (REPLENISH_EXISTING). The POST never grew it, so
+    //     deleting the batch must NOT touch inventory_ledger.
+    //   - created_lot true + inventory_ledger_id present: roll back ONLY that
+    //     linked lot. If FIFO already consumed from it, fail closed (409).
+    //   - inventory_ledger_id NULL (legacy rows): isolated SKU-based fallback
+    //     with Math.max guards, preserving pre-bridge behavior.
     const cascade = db.transaction(() => {
-      const items = db.prepare('SELECT sku, quantity FROM listing_batch_items WHERE batch_id = ?').all(batchId) as any[];
+      const items = db.prepare(`
+        SELECT id, sku, quantity, listing_mode, inventory_ledger_id, created_lot
+        FROM listing_batch_items WHERE batch_id = ?
+      `).all(batchId) as Array<{
+        id: number;
+        sku: string;
+        quantity: number;
+        listing_mode: string | null;
+        inventory_ledger_id: number | null;
+        created_lot: number | null;
+      }>;
+
       for (const item of items) {
-        affectedSkus.add(item.sku);
-        const ledger = db.prepare('SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE sku = ?').get(item.sku) as any;
-        if (ledger) {
+        const mode = item.listing_mode || 'CREATE_NEW';
+        // Pre-column rows have created_lot NULL — for those, CREATE_NEW was the
+        // only mode that inserted a lot.
+        const createdLot = item.created_lot != null
+          ? item.created_lot === 1
+          : mode !== 'REPLENISH_EXISTING';
+
+        if (!createdLot) {
+          // Pre-existing real inventory. Touch nothing.
+          continue;
+        }
+
+        if (item.inventory_ledger_id != null) {
+          // Created lot with an explicit link (current path) — roll back only it.
+          const ledger = db.prepare(
+            'SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE id = ?'
+          ).get(item.inventory_ledger_id) as
+            { id: number; quantity: number; quantity_remaining: number } | undefined;
+          if (!ledger) continue;
+          if (ledger.quantity < item.quantity || ledger.quantity_remaining < item.quantity) {
+            // FIFO has already consumed units from this lot; rolling back would
+            // go negative or contradict COGS attributed to orders. Fail closed.
+            throw new Error(LOT_CONSUMED);
+          }
+          const newQty = ledger.quantity - item.quantity;
+          const newRemaining = ledger.quantity_remaining - item.quantity;
+          if (newQty === 0) {
+            db.prepare('DELETE FROM inventory_ledger WHERE id = ?').run(ledger.id);
+          } else {
+            db.prepare('UPDATE inventory_ledger SET quantity = ?, quantity_remaining = ? WHERE id = ?')
+              .run(newQty, newRemaining, ledger.id);
+          }
+          affectedSkus.add(item.sku);
+        } else {
+          // Legacy fallback (isolated + documented): batch item predates the
+          // inventory_ledger_id column. Decrement by SKU with Math.max guards.
+          const ledger = db.prepare(
+            'SELECT id, quantity, quantity_remaining FROM inventory_ledger WHERE sku = ?'
+          ).get(item.sku) as { id: number; quantity: number; quantity_remaining: number } | undefined;
+          if (!ledger) continue;
           const newQty = Math.max(0, ledger.quantity - item.quantity);
           const newRemaining = Math.max(0, ledger.quantity_remaining - item.quantity);
           if (newQty === 0) {
@@ -262,16 +325,37 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
             db.prepare('UPDATE inventory_ledger SET quantity = ?, quantity_remaining = ? WHERE id = ?')
               .run(newQty, newRemaining, ledger.id);
           }
+          affectedSkus.add(item.sku);
         }
       }
+
+      // Delete the batch and its associated rows. This connection does not
+      // enable foreign_keys, so ON DELETE CASCADE won't fire — remove children
+      // explicitly, child-first, to avoid orphaned box/pack-group rows.
+      db.prepare('DELETE FROM listing_batch_box_items WHERE box_id IN (SELECT id FROM listing_batch_boxes WHERE batch_id = ?)').run(batchId);
+      db.prepare('DELETE FROM listing_batch_boxes WHERE batch_id = ?').run(batchId);
+      db.prepare('DELETE FROM listing_batch_pack_group_items WHERE pack_group_id IN (SELECT id FROM listing_batch_pack_groups WHERE batch_id = ?)').run(batchId);
+      db.prepare('DELETE FROM listing_batch_pack_groups WHERE batch_id = ?').run(batchId);
       db.prepare('DELETE FROM listing_batch_items WHERE batch_id = ?').run(batchId);
       db.prepare('DELETE FROM listing_batches WHERE id = ?').run(batchId);
     });
 
-    cascade();
+    try {
+      cascade();
+    } catch (txErr) {
+      db.close();
+      const msg = txErr instanceof Error ? txErr.message : String(txErr);
+      if (msg === LOT_CONSUMED) {
+        return NextResponse.json({
+          error: 'Cannot delete this batch: one of its inventory lots has already had units consumed by recorded sales. Resolve those lots via the inventory-lots admin path first.',
+        }, { status: 409 });
+      }
+      return NextResponse.json({ error: msg }, { status: 500 });
+    }
+
     db.close();
 
-    // Re-run FIFO for every affected SKU
+    // Re-run FIFO only for SKUs whose ledger rows actually changed.
     for (const sku of affectedSkus) {
       try { recalculateFIFO({ sku }); } catch { /* best effort */ }
     }
