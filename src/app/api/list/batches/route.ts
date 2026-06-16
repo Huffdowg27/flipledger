@@ -61,7 +61,8 @@ export async function GET() {
         COALESCE(fba.skuCount, mfn.skuCount, 0) as skuCount,
         COALESCE(fba.expectedRevenue, mfn.expectedRevenue, 0) as expectedRevenue,
         COALESCE(fba.totalCost, mfn.totalCost, 0) as totalCost,
-        COALESCE(fba.estimatedFees, 0) as estimatedFees
+        COALESCE(fba.estimatedFees, 0) as estimatedFees,
+        COALESCE(fba.estimatedShip, 0) as estimatedShip
       FROM listing_batches b
       LEFT JOIN (
         SELECT
@@ -70,7 +71,8 @@ export async function GET() {
           COUNT(DISTINCT id) as skuCount,
           SUM(list_price_cents * quantity) as expectedRevenue,
           SUM(buy_price_cents * quantity) as totalCost,
-          SUM(estimated_fee_cents * quantity) as estimatedFees
+          SUM(estimated_fee_cents * quantity) as estimatedFees,
+          SUM(estimated_ship_cents * quantity) as estimatedShip
         FROM listing_batch_items
         GROUP BY batch_id
       ) fba ON fba.batch_id = b.id

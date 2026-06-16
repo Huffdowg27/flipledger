@@ -3,7 +3,8 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
-import { ArrowLeft, Archive, Package, Layers, Boxes, TrendingUp } from 'lucide-react';
+import { calculateProfit, calculateROI, calculateMargin } from '@/lib/calculations';
+import { ArrowLeft, Archive } from 'lucide-react';
 
 interface BatchRow {
   id: number;
@@ -20,11 +21,21 @@ interface BatchRow {
   expectedRevenue: number;
   totalCost: number;
   estimatedFees: number;
+  estimatedShip: number;
 }
 
 function fmtDate(iso: string | null): string {
   if (!iso) return '—';
   return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function Metric({ label, value, valueClass = 'text-text-primary' }: { label: string; value: string; valueClass?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <dt className="text-text-tertiary">{label}</dt>
+      <dd className={`font-mono ${valueClass}`}>{value}</dd>
+    </div>
+  );
 }
 
 export default function BatchHistoryPage() {
@@ -78,7 +89,13 @@ export default function BatchHistoryPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
           {closed.map((b) => {
-            const estProfit = b.expectedRevenue - b.totalCost - b.estimatedFees;
+            // Estimated net for the batch — Revenue − Cost − Fees − Shipping,
+            // through the canonical profit math (incl. shipping, which the old
+            // card silently dropped). ROI is over cost, margin over revenue.
+            const netProfit = calculateProfit(b.expectedRevenue, b.totalCost, b.estimatedFees, b.estimatedShip);
+            const netROI = calculateROI(netProfit, b.totalCost);
+            const netMargin = calculateMargin(netProfit, b.expectedRevenue);
+            const profitClass = netProfit >= 0 ? 'text-positive' : 'text-negative';
             return (
               <Link
                 key={b.id}
@@ -89,7 +106,7 @@ export default function BatchHistoryPage() {
                   <div className="min-w-0">
                     <div className="text-sm font-medium text-text-primary truncate">{b.name}</div>
                     <div className="text-[11px] text-text-tertiary mt-0.5">
-                      {b.channel} · closed {fmtDate(b.closedAt || b.updatedAt)}
+                      {b.channel} · {b.skuCount} SKUs · closed {fmtDate(b.closedAt || b.updatedAt)}
                     </div>
                   </div>
                   <span className="inline-flex items-center px-2 py-0.5 rounded border text-[10px] font-semibold uppercase tracking-wider bg-text-tertiary/10 text-text-tertiary border-text-tertiary/20 shrink-0">
@@ -97,27 +114,17 @@ export default function BatchHistoryPage() {
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  <div className="flex items-center gap-1.5 text-text-secondary">
-                    <Layers size={13} className="text-text-tertiary" />
-                    <span className="font-mono">{b.skuCount}</span> SKUs
-                  </div>
-                  <div className="flex items-center gap-1.5 text-text-secondary">
-                    <Boxes size={13} className="text-text-tertiary" />
-                    <span className="font-mono">{b.totalUnits}</span> units
-                  </div>
-                  <div className="flex items-center gap-1.5 text-text-secondary">
-                    <Package size={13} className="text-text-tertiary" />
-                    <span className="font-mono">{formatCurrency(b.expectedRevenue)}</span>
-                  </div>
-                  <div className="flex items-center gap-1.5 text-text-secondary">
-                    <TrendingUp size={13} className={estProfit >= 0 ? 'text-positive' : 'text-negative'} />
-                    <span className={`font-mono ${estProfit >= 0 ? 'text-positive' : 'text-negative'}`}>
-                      {formatCurrency(estProfit)}
-                    </span>
-                    <span className="text-text-tertiary">est.</span>
-                  </div>
-                </div>
+                <dl className="space-y-1.5 text-xs">
+                  <Metric label="Quantity" value={`${b.totalUnits} units`} />
+                  <Metric label="Revenue" value={formatCurrency(b.expectedRevenue)} />
+                  <Metric label="Cost" value={formatCurrency(b.totalCost)} />
+                  <Metric label="Shipping / Fees" value={`${formatCurrency(b.estimatedShip)} / ${formatCurrency(b.estimatedFees)}`} />
+                  <div className="border-t border-border-subtle/60 my-1.5" />
+                  <Metric label="Net Profit" value={formatCurrency(netProfit)} valueClass={`font-semibold ${profitClass}`} />
+                  <Metric label="Net ROI" value={`${netROI.toFixed(1)}%`} valueClass={profitClass} />
+                  <Metric label="Net Margin" value={`${netMargin.toFixed(1)}%`} valueClass={profitClass} />
+                </dl>
+                <p className="text-[10px] text-text-tertiary mt-2">Estimated at list price</p>
               </Link>
             );
           })}

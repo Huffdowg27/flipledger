@@ -2203,42 +2203,44 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
               </span>
             )}
           </div>
-          {/* KPI line — right */}
+          {/* KPI line — right.
+              This bar sits on a fixed dark surface, so it uses fixed slate
+              colors (NOT theme tokens like text-text-primary, which flip to
+              near-black in light mode and vanish here). Profit metrics
+              (Net/ROI/Margin) all share one sign-based color for consistency. */}
           <div className="shrink-0 text-right">
-            <div className="flex items-center gap-x-4 text-xs text-text-secondary flex-wrap justify-end">
-              <span className="text-text-tertiary">Qty <span className="text-text-primary font-mono text-base">{summary.totalQty}</span></span>
-              <span className="text-text-tertiary">Rev <span className="text-text-primary font-mono text-base">{formatCurrency(summary.totalListCents)}</span></span>
-              <span className="text-text-tertiary">Cost <span className="text-text-primary font-mono text-base">{formatCurrency(summary.totalCostCents)}</span></span>
-              <span className="text-text-tertiary">Ship <span className="text-text-primary font-mono text-base">{formatCurrency(summary.totalShipCents)}</span></span>
-              <span className="text-text-tertiary">
-                Fees <span className="font-mono text-text-primary text-base">{formatCurrency(summary.totalFeeCents)}</span>
-              </span>
-              <span className="text-text-tertiary">
+            <div className="flex items-center gap-x-4 text-xs flex-wrap justify-end">
+              <span className="text-slate-400">Qty <span className="text-slate-100 font-mono text-base">{summary.totalQty}</span></span>
+              <span className="text-slate-400">Rev <span className="text-slate-100 font-mono text-base">{formatCurrency(summary.totalListCents)}</span></span>
+              <span className="text-slate-400">Cost <span className="text-slate-100 font-mono text-base">{formatCurrency(summary.totalCostCents)}</span></span>
+              <span className="text-slate-400">Ship <span className="text-slate-100 font-mono text-base">{formatCurrency(summary.totalShipCents)}</span></span>
+              <span className="text-slate-400">Fees <span className="text-slate-100 font-mono text-base">{formatCurrency(summary.totalFeeCents)}</span></span>
+              <span className="text-slate-400">
                 Net <span className={`font-mono font-semibold text-base ${
                   summary.profitIncomplete
-                    ? 'text-text-secondary'
+                    ? 'text-slate-300'
                     : summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'
                 }`}>
                   {summary.profitIncomplete ? '~' : ''}{formatCurrency(summary.totalNetCents)}
                 </span>
               </span>
               {summary.roiPct != null && !summary.profitIncomplete && (
-                <span className="text-text-tertiary">
-                  ROI <span className={`font-mono ${summary.roiPct > 0 ? 'text-green-400/90' : 'text-red-400/90'}`}>
+                <span className="text-slate-400">
+                  ROI <span className={`font-mono ${summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {summary.roiPct.toFixed(1)}%
                   </span>
                 </span>
               )}
               {summary.marginPct != null && !summary.profitIncomplete && (
-                <span className="text-text-tertiary">
-                  Margin <span className="font-mono text-text-secondary">
+                <span className="text-slate-400">
+                  Margin <span className={`font-mono ${summary.totalNetCents > 0 ? 'text-green-400' : 'text-red-400'}`}>
                     {summary.marginPct.toFixed(1)}%
                   </span>
                 </span>
               )}
             </div>
             {summary.profitIncomplete && (
-              <div className="text-[10px] text-text-tertiary/60 mt-1 italic">
+              <div className="text-[10px] text-slate-500 mt-1 italic">
                 {summary.priceOrCostIncomplete
                   ? 'Estimate — some items missing price or cost.'
                   : 'Estimate — Amazon fee not cached. ROI/margin hidden.'}

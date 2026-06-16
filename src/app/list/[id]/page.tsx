@@ -302,12 +302,21 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   const [batch, setBatch] = useState<Batch | null>(null);
   const [items, setItems] = useState<BatchItem[]>([]);
   const [loading, setLoading] = useState(true);
+  // Display order for the items table: newest first, so a freshly scanned item
+  // appears at the top. The underlying `items` array keeps its natural order so
+  // boxing / allocation logic is unaffected.
+  const displayItems = useMemo(() => [...items].sort((a, b) => b.id - a.id), [items]);
 
   // Scan form state
   const [query, setQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [scanned, setScanned] = useState<CatalogResult | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  // Barcode scanners type into whatever input is focused. After adding an item
+  // the form re-renders and focus is lost — the next scan's keystrokes then land
+  // in a row's quantity field. Keep this ref on the scan box and refocus it after
+  // every add so scanning always targets the scan box.
+  const scanInputRef = useRef<HTMLInputElement>(null);
 
   // Item entry state
   const [sku, setSku] = useState('');
@@ -1272,6 +1281,9 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
         setSelectedExistingSku(null);
         setListingMode('CREATE_NEW');
         await fetchBatch();
+        // Return focus to the scan box so the next barcode scan doesn't land in
+        // a row's quantity field. rAF waits for the post-fetch re-render.
+        requestAnimationFrame(() => scanInputRef.current?.focus());
       } else {
         alert(`Failed to add item: ${data.error}`);
       }
@@ -1734,6 +1746,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
               <div className="relative flex-1">
                 <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
                 <input
+                  ref={scanInputRef}
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="B0CNJ7G8CP or 045496597818"
@@ -2284,7 +2297,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                 </tr>
               </thead>
               <tbody>
-                {items.map((item) => {
+                {displayItems.map((item) => {
                   const isEditing = editingItemId === item.id;
                   // Use either committed values or in-flight edit values for the math.
                   const editQty = isEditing ? (parseInt(editForm.quantity) || 0) : item.quantity;
