@@ -233,7 +233,10 @@ export default function LabelsPage() {
 
   function handlePrint() {
     if (specs.length === 0) return;
-    const encoded = encodeSpecs(specs);
+    // Base64 contains '+' and '/'. A raw '+' in a query string decodes to a
+    // space server-side, corrupting the payload (→ "Invalid label data", the
+    // labels never print). Must URI-encode it — same as the batch print path.
+    const encoded = encodeURIComponent(encodeSpecs(specs));
     window.open(`/api/labels/print?d=${encoded}`, '_blank', 'noopener');
   }
 
