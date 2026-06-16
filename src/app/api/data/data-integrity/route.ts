@@ -60,12 +60,12 @@ export async function GET() {
       SELECT oi.asin, oi.sku,
              COALESCE(p.name, oi.asin) as productName,
              COUNT(*) items, SUM(oi.quantity) units, SUM(oi.total_price) revenueCents,
-             MAX(o.purchase_date) lastSold
+             MIN(o.purchase_date) firstSold, MAX(o.purchase_date) lastSold
       FROM order_items oi JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN products p ON p.asin = oi.asin
       WHERE (oi.cogs_per_unit IS NULL OR oi.cogs_per_unit = 0)
         AND ${NOT_CANCELED} AND ${REAL_ASIN}
-      GROUP BY oi.asin ORDER BY revenueCents DESC LIMIT 50
+      GROUP BY oi.asin ORDER BY revenueCents DESC LIMIT 200
     `).all();
     checks.push({
       id: 'zero_cogs_sales',
