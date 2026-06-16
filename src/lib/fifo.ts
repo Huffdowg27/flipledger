@@ -83,6 +83,27 @@ export function recalculateFIFO(options: {
   };
 
   try {
+    // Safety guard: the safe default keeps infinite-lot treatment ON. But if a
+    // runtime has deliberately disabled it (FIFO_IL_FINITE=true) while il:
+    // import-snapshot lots still exist, recalculating in finite mode would
+    // deplete those lots to zero and silently destroy thousands in COGS.
+    // Refuse loudly rather than corrupt the books — accuracy is the product.
+    if (!FIFO_IL_INFINITE) {
+      const ilLotCount = (db.prepare(`
+        SELECT COUNT(*) AS n FROM inventory_ledger
+        WHERE notes LIKE 'il:%' AND sku NOT LIKE 'amzn.gr.%' AND buy_price > 0
+      `).get() as { n: number }).n;
+      if (ilLotCount > 0) {
+        const msg = `FIFO recalc REFUSED: FIFO_IL_FINITE=true but ${ilLotCount} il: `
+          + `import-snapshot lot(s) exist. Recalculating in finite mode would silently `
+          + `zero their COGS. Unset FIFO_IL_FINITE to proceed.`;
+        console.error(`[fifo] ${msg}`);
+        result.errors.push(msg);
+        db.close();
+        return result;
+      }
+    }
+
     // Determine which SKUs to process
     let skusToProcess: { sku: string; asin: string }[] = [];
 
