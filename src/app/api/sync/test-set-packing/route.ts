@@ -11,16 +11,26 @@ interface SPAPICredentials {
 }
 
 /**
- * GET /api/sync/test-set-packing?batchId=16
+ * POST /api/sync/test-set-packing?batchId=16
  *
- * Diagnostic for the 403 on setPackingInformation. Reads the batch's
- * inboundPlanId, packingOptionId, pack groups, boxes and box items from the
- * DB, builds the same body /pack would build, and fires PUT setPackingInformation
- * directly with verbose logging. Returns the raw HTTP status, body, and a
- * second GET against the inbound plan so we can see whether the same token
- * has read access for the same plan id (proving auth vs body issue).
+ * LOCAL/DEV DIAGNOSTIC ONLY. Performs a live SP-API write (PUT
+ * setPackingInformation), so it is gated two ways:
+ *   1. Disabled unless FLIPLEDGER_ENABLE_SPAPI_DIAGNOSTICS=true (404 otherwise),
+ *      so it can never be reached on a normal/production instance.
+ *   2. POST, not GET — a write must not be triggerable by a browser navigation,
+ *      link prefetch, or crawler.
+ * It deliberately does NOT echo any access-token material.
+ *
+ * Reads the batch's inboundPlanId, packingOptionId, pack groups, boxes and box
+ * items from the DB, builds the same body /pack would build, and fires PUT
+ * setPackingInformation, plus a GET against the inbound plan so we can tell
+ * whether the same token has read access (auth vs body issue).
  */
-export async function GET(req: NextRequest) {
+export async function POST(req: NextRequest) {
+  if (process.env.FLIPLEDGER_ENABLE_SPAPI_DIAGNOSTICS !== 'true') {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
   const { searchParams } = new URL(req.url);
   const batchId = parseInt(searchParams.get('batchId') || '');
   if (!batchId) return NextResponse.json({ error: 'Pass ?batchId=N' }, { status: 400 });
@@ -130,7 +140,6 @@ export async function GET(req: NextRequest) {
 
   return NextResponse.json({
     batch: { id: batchId, channel: batch.channel, status: batch.status, inboundPlanId: batch.inboundPlanId, packingOptionId: batch.packingOptionId },
-    tokenPreview: `${token.slice(0, 12)}…${token.slice(-6)} (len=${token.length})`,
     endpoint,
     planRead: {
       status: planRead.status,
