@@ -20,6 +20,7 @@ initializeDatabase();
 
 const DB_PATH = path.join(DB_DIR, 'flipledger.db');
 const sqlite = new Database(DB_PATH);
+sqlite.pragma('busy_timeout = 15000');
 sqlite.pragma('journal_mode = WAL');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────

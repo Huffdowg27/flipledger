@@ -22,6 +22,7 @@ const norm = (s: unknown) => String(s ?? '').trim().toUpperCase();
 
 function getDb(readonly = false) {
   const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'), { readonly });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

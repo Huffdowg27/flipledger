@@ -6,6 +6,7 @@ import path from 'path';
 function getCredentials() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   db.close();
@@ -105,6 +106,7 @@ export async function GET() {
 
     // Store per-ASIN storage fees
     const db = new Database(dbPath);
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
 
     // Create storage_fees table if not exists

@@ -31,6 +31,7 @@ import type { SPAPICredentials } from '@/lib/sp-api/types';
 function getAmazonCredentials(): SPAPICredentials | null {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   try {
@@ -52,6 +53,7 @@ function getAmazonCredentials(): SPAPICredentials | null {
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   return db;

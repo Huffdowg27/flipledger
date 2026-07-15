@@ -15,6 +15,7 @@ export async function GET(request: NextRequest) {
 
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   const clientId = (db.prepare("SELECT value FROM settings WHERE key = 'ebay_client_id'").get() as any)?.value;

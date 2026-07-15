@@ -15,6 +15,7 @@ import path from 'path';
 
 function getCredentials() {
   const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'), { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   db.close();

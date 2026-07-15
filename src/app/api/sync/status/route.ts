@@ -31,6 +31,7 @@ function readAllSettings(): Record<string, string> {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
   try {
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     const out: Record<string, string> = {};

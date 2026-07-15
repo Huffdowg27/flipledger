@@ -9,6 +9,7 @@ import { recognizedCogsExpr, sellableReturnJoin } from '@/lib/cogs-reversal';
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   // Derive the sourcing supplier from a SKU in SQL (the suppliers table is unused;
   // supplier is encoded in the SKU). Lets groupBy=supplier reuse all the existing math.

@@ -29,6 +29,7 @@ const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 function getDb(readonly = false) {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

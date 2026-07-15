@@ -175,6 +175,7 @@ export async function POST(request: NextRequest) {
   }
 
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   try {

@@ -186,6 +186,7 @@ export async function POST() {
 
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   const now = new Date().toISOString();

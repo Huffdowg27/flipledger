@@ -65,6 +65,7 @@ function json(data: unknown, init: ResponseInit = {}) {
 
 function getDb(readonly = true) {
   const db = new Database(DB_PATH, { readonly });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

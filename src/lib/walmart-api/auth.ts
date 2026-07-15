@@ -21,6 +21,7 @@ let tokenExpiry: number = 0;
 export function getWalmartCredentials(): WalmartCredentials | null {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   try {

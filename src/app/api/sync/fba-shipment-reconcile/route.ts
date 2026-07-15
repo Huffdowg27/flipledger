@@ -15,6 +15,7 @@ import type { SPAPICredentials } from '@/lib/sp-api/types';
 function getCredentials(): SPAPICredentials | null {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   db.close();
@@ -38,6 +39,7 @@ export async function POST() {
   // Update last-sync marker so auto-sync doesn't re-run immediately
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   db.prepare(`
     INSERT INTO settings (key, value) VALUES ('fba_shipment_reconcile_last_sync', ?)

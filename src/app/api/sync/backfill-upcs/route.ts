@@ -19,6 +19,7 @@ import type { SPAPICredentials } from '@/lib/sp-api/types';
 
 function getCredentials(): SPAPICredentials {
   const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'), { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   db.close();
@@ -39,6 +40,7 @@ export async function POST(request: NextRequest) {
 
   if (dryRun) {
     const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'), { readonly: true });
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
     try {
       const eligible = (db.prepare(`SELECT COUNT(*) AS n FROM (${UPC_ELIGIBLE_SQL})`).get() as { n: number }).n;

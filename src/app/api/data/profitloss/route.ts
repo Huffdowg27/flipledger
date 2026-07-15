@@ -13,6 +13,7 @@ import { localDayRangeToUtcBounds } from '@/lib/local-day-boundaries';
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

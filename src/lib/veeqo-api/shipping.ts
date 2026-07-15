@@ -20,6 +20,7 @@ const VEEQO_BASE = 'https://api.veeqo.com';
 function getDb(readonly = false) {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

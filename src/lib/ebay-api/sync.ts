@@ -60,6 +60,7 @@ export async function runEbaySync(
     // Update last sync timestamp
     const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
     const db = new Database(dbPath);
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
     db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('ebay_last_sync', ?)").run(new Date().toISOString());
 

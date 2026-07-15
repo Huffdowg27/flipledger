@@ -18,6 +18,7 @@ function getCredentials(): SPAPICredentials | null {
   try {
     const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
     const db = new Database(dbPath, { readonly: true });
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     db.close();
@@ -38,6 +39,7 @@ function getCredentials(): SPAPICredentials | null {
 function setLastSyncTime(value: string) {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   db.prepare(`
     INSERT INTO settings (key, value) VALUES ('merchant_listings_last_sync', ?)

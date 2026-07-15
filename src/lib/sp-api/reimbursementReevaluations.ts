@@ -20,6 +20,7 @@ const REIMBURSEMENT_DISPUTE_WINDOW_DAYS = 365; // ~12 months Amazon dispute wind
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

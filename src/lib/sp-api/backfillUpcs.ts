@@ -46,6 +46,7 @@ export async function backfillUpcs(
   const delayMs = Math.max(opts.delayMs ?? 300, 0);
 
   const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'));
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   const result: BackfillUpcsResult = { eligible: 0, attempted: 0, found: 0, missing: 0, failed: 0, errors: [] };

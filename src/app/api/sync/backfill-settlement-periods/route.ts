@@ -15,6 +15,7 @@ import path from 'path';
 function getCredentials() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   db.close();
@@ -31,6 +32,7 @@ function getCredentials() {
 function getStoredPeriods() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare(
     'SELECT settlement_id, marketplace, start_date, end_date, deposit_date FROM settlement_periods ORDER BY end_date DESC'

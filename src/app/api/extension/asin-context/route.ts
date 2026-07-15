@@ -42,6 +42,7 @@ function getDb() {
   // Resolved per-call (not module scope) so the path always tracks the
   // current working directory — required by the fixture-based tests.
   const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'), { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }

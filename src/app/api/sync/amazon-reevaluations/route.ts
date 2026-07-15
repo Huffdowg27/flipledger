@@ -9,6 +9,7 @@ export async function POST() {
 
     const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
     const db = new Database(dbPath);
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
     db.prepare(`
       INSERT INTO settings (key, value) VALUES ('amazon_reevaluations_last_sync', ?)

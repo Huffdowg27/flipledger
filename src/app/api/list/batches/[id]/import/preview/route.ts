@@ -16,6 +16,7 @@ import { parseBuyListCsv, type ColumnMapping } from '@/lib/imports/airtable-buyl
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   return db;

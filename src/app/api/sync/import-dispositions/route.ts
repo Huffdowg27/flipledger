@@ -175,6 +175,7 @@ export async function POST() {
   }
 
   const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'));
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   // Ensure the table exists even if initializeDatabase() hasn't run in this process.

@@ -14,6 +14,7 @@ import type { SPAPICredentials } from '@/lib/sp-api/types';
 function getCredentials(): SPAPICredentials | null {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
   db.close();
@@ -46,6 +47,7 @@ export async function POST(req: NextRequest) {
 
     const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
     const db = new Database(dbPath);
+    db.pragma('busy_timeout = 15000');
     db.pragma('journal_mode = WAL');
     db.prepare(`
       INSERT INTO settings (key, value) VALUES ('reimbursements_report_last_sync', ?)
