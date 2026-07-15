@@ -7,6 +7,7 @@ import PageHeader from '@/components/ui/PageHeader';
 import { type DateRange } from '@/components/ui/DateRangePicker';
 import { useFilters } from '@/lib/useFilters';
 import DataTable from '@/components/tables/DataTable';
+import { IdentifierChip } from '@/components/ui/IdentifierLinks';
 import { formatCurrency, formatPercent, formatNumber } from '@/lib/formatters';
 
 interface ValuationRow {
@@ -14,6 +15,7 @@ interface ValuationRow {
   sku: string;
   productName: string;
   category: string;
+  channel: 'FBA' | 'MFN';
   quantityOnHand: number;
   cogsPerUnit: number;
   totalCogsValue: number;
@@ -68,16 +70,22 @@ export default function InventoryValuationPage() {
                 r.productName || r.asin
               )}
             </div>
-            <div className="text-xs text-text-tertiary font-mono">
-              {isAmazon && r.asin ? (
-                <a href={`https://www.amazon.com/dp/${r.asin}`} target="_blank" rel="noopener noreferrer" className="hover:text-accent">{r.asin}</a>
-              ) : r.asin}{' | '}{r.sku}
+            <div className="flex gap-2 text-xs text-text-tertiary font-mono">
+              <IdentifierChip label="ASIN" value={r.asin} kind={isAmazon ? 'asin' : 'text'} />
+              <IdentifierChip label="SKU" value={r.sku} kind="sku" />
             </div>
           </div>
         );
       }, size: 280,
     },
     { id: 'category', header: 'Category', accessorKey: 'category', cell: ({ getValue }) => <span className="text-sm text-text-secondary">{getValue() as string || '—'}</span>, size: 130 },
+    {
+      id: 'channel', header: 'Channel', accessorKey: 'channel',
+      cell: ({ getValue }) => {
+        const channel = getValue() as ValuationRow['channel'];
+        return <span className={`text-xs font-medium px-2 py-0.5 rounded ${channel === 'FBA' ? 'bg-amazon/10 text-amazon' : 'bg-accent/10 text-accent'}`}>{channel}</span>;
+      }, size: 80,
+    },
     {
       id: 'salesRank', header: 'BSR', accessorKey: 'salesRank',
       cell: ({ row }) => {
@@ -270,7 +278,7 @@ export default function InventoryValuationPage() {
         ]).map((m) => {
           const fmt = (v: number) => m.format === 'number' ? formatNumber(v) : formatCurrency(v);
           const fba = totals?.fba?.[m.key] || 0;
-          const fbm = totals?.fbm?.[m.key] || 0;
+          const mfn = totals?.mfn?.[m.key] || 0;
           return (
             <div key={m.key}>
               <StatCard label={m.label} value={totals?.[m.key] || 0} format={m.format} accentColor={m.accent} />
@@ -278,7 +286,7 @@ export default function InventoryValuationPage() {
                 <div className="mt-1.5 flex items-center gap-3 px-1 text-[11px] text-text-tertiary">
                   <span>FBA <span className="font-mono text-text-secondary">{fmt(fba)}</span></span>
                   <span className="text-border-strong">·</span>
-                  <span>FBM <span className="font-mono text-text-secondary">{fmt(fbm)}</span></span>
+                  <span>MFN <span className="font-mono text-text-secondary">{fmt(mfn)}</span></span>
                 </div>
               )}
             </div>

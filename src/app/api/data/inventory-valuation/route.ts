@@ -1,27 +1,54 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { parseMarketplaceFilter } from '@/lib/request-filters';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
   return db;
 }
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
+  }
+  const marketplace = marketplaceResult.marketplace;
+  const marketplaceClause = marketplace ? 'AND li.marketplace = ?' : '';
+
   const db = getDb();
-
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND li.marketplace = '${marketplace}'` : '';
-
   try {
-    // Use live_inventory (from API sync) joined to inventory_ledger (for COGS).
-    // Join on SKU first (MSKU → MSKU, exact match). Fall back to ASIN only when
-    // the live_inventory row has no SKU. Avoid the OR join pattern which fans out
-    // when an ASIN has multiple lots in inventory_ledger.
+    // FBA comes from live_inventory. MFN comes from merchant_listings only when
+    // the SKU is absent from live_inventory, then values the local open lots.
+    // This keeps a SKU in exactly one population.
     const rows = db.prepare(`
+      WITH
+      fba_skus AS (
+        SELECT DISTINCT sku
+        FROM live_inventory
+        WHERE sku IS NOT NULL AND sku != ''
+      ),
+      open_lots AS (
+        SELECT
+          sku,
+          MAX(asin) as asin,
+          SUM(quantity_remaining) as quantityOnHand,
+          SUM(quantity_remaining * buy_price) as totalCogsValue,
+          CASE
+            WHEN SUM(quantity_remaining) > 0
+            THEN ROUND(SUM(quantity_remaining * buy_price) * 1.0 / SUM(quantity_remaining))
+            ELSE 0
+          END as cogsPerUnit
+        FROM inventory_ledger
+        WHERE sku IS NOT NULL
+          AND sku != ''
+          AND quantity_remaining > 0
+        GROUP BY sku
+      )
       SELECT
         li.asin,
         li.sku,
@@ -41,15 +68,14 @@ export async function GET(request: NextRequest) {
         COALESCE(li.reserved_fc_processing, 0) as reservedFcProcessing,
         COALESCE(li.list_price, 0) as customListPrice,
         li.walmart_item_id as walmartItemId,
-        COALESCE(il_sku.buy_price, il_asin.buy_price, 0) as cogsPerUnit,
-        COALESCE(il_sku.buy_price, il_asin.buy_price, 0) * (li.fulfillable_qty + li.inbound_qty) as totalCogsValue,
-        -- Fulfillment channel from the merchant listings report (authoritative):
-        -- DEFAULT = merchant-fulfilled (FBM); AMAZON* = FBA. Unmatched rows are
-        -- FBA-inventory-sync items with no MFN listing → treated as FBA.
-        CASE WHEN UPPER(COALESCE(ml.fulfillment_channel, '')) = 'DEFAULT' THEN 'FBM' ELSE 'FBA' END as channel,
+        CASE WHEN li.sku LIKE 'amzn.gr.%' THEN 0
+          ELSE COALESCE(il_sku.buy_price, il_asin.buy_price, 0) END as cogsPerUnit,
+        CASE WHEN li.sku LIKE 'amzn.gr.%' THEN 0
+          ELSE COALESCE(il_sku.buy_price, il_asin.buy_price, 0) * (li.fulfillable_qty + li.inbound_qty)
+        END as totalCogsValue,
+        'FBA' as channel,
         li.last_updated
       FROM live_inventory li
-      LEFT JOIN merchant_listings ml ON ml.sku = li.sku AND ml.marketplace = 'amazon'
       LEFT JOIN (
         SELECT sku, buy_price FROM inventory_ledger
         WHERE sku IS NOT NULL AND sku != ''
@@ -61,9 +87,41 @@ export async function GET(request: NextRequest) {
         GROUP BY asin
       ) il_asin ON il_asin.asin = li.asin AND (li.sku IS NULL OR li.sku = '')
       LEFT JOIN products p ON li.asin = p.asin
-      WHERE li.total_qty > 0 ${MF}
+      WHERE li.total_qty > 0 ${marketplaceClause}
+      UNION ALL
+      SELECT
+        ml.asin,
+        ml.sku,
+        ml.marketplace,
+        COALESCE(p.name, ml.product_name, ml.asin) as productName,
+        COALESCE(p.category, 'Uncategorized') as category,
+        ol.quantityOnHand,
+        0 as inboundQty,
+        0 as reservedQty,
+        0 as unfulfillableQty,
+        ol.quantityOnHand as totalQty,
+        0 as inboundWorking,
+        0 as inboundShipped,
+        0 as inboundReceiving,
+        0 as reservedCustomerOrder,
+        0 as reservedFcTransfer,
+        0 as reservedFcProcessing,
+        COALESCE(ml.list_price_cents, 0) as customListPrice,
+        NULL as walmartItemId,
+        CASE WHEN ml.sku LIKE 'amzn.gr.%' THEN 0 ELSE ol.cogsPerUnit END as cogsPerUnit,
+        CASE WHEN ml.sku LIKE 'amzn.gr.%' THEN 0 ELSE ol.totalCogsValue END as totalCogsValue,
+        'MFN' as channel,
+        ml.last_synced as last_updated
+      FROM merchant_listings ml
+      JOIN open_lots ol ON ol.sku = ml.sku
+      LEFT JOIN fba_skus fs ON fs.sku = ml.sku
+      LEFT JOIN products p ON ml.asin = p.asin
+      WHERE ml.marketplace = 'amazon'
+        AND fs.sku IS NULL
+        AND UPPER(COALESCE(ml.fulfillment_channel, 'DEFAULT')) = 'DEFAULT'
+        ${marketplace ? 'AND ml.marketplace = ?' : ''}
       ORDER BY totalCogsValue DESC
-    `).all() as any[];
+    `).all(...(marketplace ? [marketplace, marketplace] : [])) as any[];
 
     // Get average sale price AND fee rate per ASIN
     // For single-item orders: use order-level fees directly
@@ -157,7 +215,7 @@ export async function GET(request: NextRequest) {
         reservedFcProcessing: row.reservedFcProcessing,
         cogsPerUnit: row.cogsPerUnit,
         totalCogsValue: row.totalCogsValue,
-        channel: row.channel as 'FBA' | 'FBM',
+        channel: row.channel as 'FBA' | 'MFN',
         listPrice,
         feeRate: Math.round(feeRate * 1000) / 10, // as percentage
         estimatedFees,
@@ -177,13 +235,13 @@ export async function GET(request: NextRequest) {
     });
     const totals = subtotal(items);
     const fba = subtotal(items.filter((i) => i.channel === 'FBA'));
-    const fbm = subtotal(items.filter((i) => i.channel === 'FBM'));
+    const mfn = subtotal(items.filter((i) => i.channel === 'MFN'));
 
     db.close();
 
     return NextResponse.json({
       items,
-      totals: { ...totals, fba, fbm },
+      totals: { ...totals, fba, mfn },
     });
   } catch (error) {
     db.close();
@@ -202,6 +260,7 @@ export async function POST(request: NextRequest) {
 
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
+  db.pragma('busy_timeout = 15000');
   db.pragma('journal_mode = WAL');
 
   try {

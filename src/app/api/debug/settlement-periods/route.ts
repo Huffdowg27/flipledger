@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { requireDiagnosticRoute } from '@/lib/diagnostic-routes';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -8,6 +9,9 @@ function getDb() {
 }
 
 export async function GET(request: Request) {
+  const disabled = requireDiagnosticRoute();
+  if (disabled) return disabled;
+
   const { searchParams } = new URL(request.url);
   const testStart = searchParams.get('requestedStart') ?? '2026-04-11';
 

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -11,22 +12,36 @@ function getDb() {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const db = getDb();
 
-  let startDate = searchParams.get('startDate');
-  let endDate = searchParams.get('endDate');
-  if (!startDate) {
-    const days = parseInt(searchParams.get('days') || '30');
+  const rawStartDate = searchParams.get('startDate');
+  const rawEndDate = searchParams.get('endDate');
+  if (
+    (rawStartDate !== null && !isIsoCalendarDate(rawStartDate))
+    || (rawEndDate !== null && !isIsoCalendarDate(rawEndDate))
+    || (rawStartDate !== null && rawEndDate !== null && rawStartDate > rawEndDate)
+  ) return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  let startDate: string;
+  if (rawStartDate) startDate = rawStartDate;
+  else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays) || Number(rawDays) < 1 || Number(rawDays) > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    const days = Number(rawDays);
     startDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
   }
-  if (!endDate) {
-    endDate = new Date().toISOString().split('T')[0];
-  }
+  const endDate = rawEndDate || new Date().toISOString().split('T')[0];
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND marketplace = '${marketplace}'` : '';
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
+  }
+  const marketplace = marketplaceResult.marketplace;
+  const marketplaceClause = marketplace ? 'AND marketplace = ?' : '';
+  const shipmentParams = marketplace ? [startDate, endDateNext, marketplace] : [startDate, endDateNext];
 
+  const db = getDb();
   try {
     const shipments = db.prepare(`
       SELECT
@@ -41,9 +56,9 @@ export async function GET(request: NextRequest) {
         status,
         marketplace
       FROM inbound_shipments
-      WHERE date_shipped >= ? AND date_shipped < ? ${MF}
+      WHERE date_shipped >= ? AND date_shipped < ? ${marketplaceClause}
       ORDER BY date_shipped DESC
-    `).all(startDate, endDateNext) as any[];
+    `).all(...shipmentParams) as any[];
 
     const getItems = db.prepare(`
       SELECT isi.asin, isi.sku, isi.quantity, COALESCE(p.name, isi.asin) as productName

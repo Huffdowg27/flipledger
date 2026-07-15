@@ -111,6 +111,9 @@ const LISTING_SELECT = `
     il.condition,
     il.quantity_received,
     il.quantity_remaining,
+    il.quantity                                  AS lot_quantity,
+    (SELECT COUNT(*) FROM receiving_issues ri
+      WHERE ri.inventory_ledger_id = il.id AND ri.status = 'open') AS open_issue_count,
     il.received_at,
     il.inspected_at,
     il.merchant_shipping_group_name,
@@ -145,6 +148,60 @@ const LISTING_ORDER = `
 type DbRow = Record<string, unknown>;
 
 const CATALOG_IMAGE_LOOKUP_LIMIT = 15;
+
+interface IncomingPurchaseCandidate {
+  id: number;
+  order_ref: string | null;
+  order_source: string | null;
+  asin: string | null;
+  sku: string | null;
+  quantity: number;
+  quantity_received: number;
+  unit_cost_cents: number;
+  ordered_at: string | null;
+  status: string;
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return !!db.prepare(`
+    SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(table);
+}
+
+function attachOpenIncomingPurchases(db: Database.Database, rows: DbRow[]): DbRow[] {
+  if (rows.length === 0 || !tableExists(db, 'incoming_purchases')) return rows;
+  const asins = Array.from(new Set(
+    rows
+      .map(row => String(row.asin ?? '').trim())
+      .filter(asin => asin.length > 0),
+  ));
+  if (asins.length === 0) return rows;
+
+  const placeholders = asins.map(() => '?').join(',');
+  const candidates = db.prepare(`
+    SELECT
+      id, order_ref, order_source, asin, sku, quantity, quantity_received,
+      unit_cost_cents, ordered_at, status
+    FROM incoming_purchases
+    WHERE status IN ('on_order', 'partial')
+      AND quantity > quantity_received
+      AND asin IN (${placeholders})
+    ORDER BY ordered_at ASC, id ASC
+  `).all(...asins) as IncomingPurchaseCandidate[];
+  const byAsin = new Map<string, IncomingPurchaseCandidate[]>();
+  for (const candidate of candidates) {
+    const key = String(candidate.asin ?? '').trim();
+    if (!key) continue;
+    const list = byAsin.get(key) ?? [];
+    list.push(candidate);
+    byAsin.set(key, list);
+  }
+  return rows.map(row => ({
+    ...row,
+    open_incoming_purchases: byAsin.get(String(row.asin ?? '').trim()) ?? [],
+  }));
+}
 
 function rowImageUrl(row: DbRow): string | null {
   return typeof row.image_url === 'string' && row.image_url.trim()
@@ -350,7 +407,8 @@ export async function GET(request: NextRequest) {
 
       cacheCatalogImages(rows, catalogImageByAsin);
 
-      const results = rows.map(row => ({
+      const rowsWithIncoming = attachOpenIncomingPurchases(db, rows);
+      const results = rowsWithIncoming.map(row => ({
         ...row,
         // Prefer DB image; fall back to catalog image returned for this barcode
         image_url: (row.image_url as string | null) || catalogImageByAsin.get(String(row.asin)) || null,
@@ -386,6 +444,7 @@ export async function GET(request: NextRequest) {
         )
       ${LISTING_ORDER}
     `).all(exactAsin, skuLike, titleLike) as DbRow[];
+    rows = attachOpenIncomingPurchases(db, rows);
   } catch (error) {
     console.error('[mfn-search] error:', error);
     return NextResponse.json({ error: 'Search failed' }, { status: 500 });

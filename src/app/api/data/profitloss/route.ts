@@ -1,6 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { recognizedCogsExpr, sellableReturnJoin } from '@/lib/cogs-reversal';
+import {
+  orderFeeAllocationCtes,
+  productNameExpr,
+} from '@/lib/order-fee-allocation';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
+import { HISTORY_CUTOVER } from '@/lib/accounting-cutover';
+import { localDayRangeToUtcBounds } from '@/lib/local-day-boundaries';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -11,9 +19,18 @@ function getDb() {
 
 // Subquery to get each order's date — cash basis (posted_date) or accrual (purchase_date)
 const ORDER_POSTED_DATE = `(
-  SELECT order_id, MIN(posted_date) as posted_date
-  FROM financial_events WHERE event_type = 'ShipmentEvent' AND order_id IS NOT NULL
-  GROUP BY order_id
+  SELECT scoped.order_id, scoped.posted_date
+  FROM financial_events scoped INDEXED BY idx_financial_events_posted
+  WHERE scoped.event_type = 'ShipmentEvent'
+    AND scoped.order_id IS NOT NULL
+    AND scoped.id = (
+      SELECT earliest.id
+      FROM financial_events earliest
+      WHERE earliest.event_type = 'ShipmentEvent'
+        AND earliest.order_id = scoped.order_id
+      ORDER BY earliest.posted_date, earliest.id
+      LIMIT 1
+    )
 )`;
 
 const ORDER_PURCHASE_DATE = `(
@@ -22,26 +39,113 @@ const ORDER_PURCHASE_DATE = `(
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const db = getDb();
 
-  let startDate = searchParams.get('startDate');
-  let endDate = searchParams.get('endDate');
-  if (!startDate) {
-    const days = parseInt(searchParams.get('days') || '30');
+  const rawStartDate = searchParams.get('startDate');
+  const rawEndDate = searchParams.get('endDate');
+  if (
+    (rawStartDate !== null && !isIsoCalendarDate(rawStartDate))
+    || (rawEndDate !== null && !isIsoCalendarDate(rawEndDate))
+    || (rawStartDate !== null && rawEndDate !== null && rawStartDate > rawEndDate)
+  ) {
+    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  }
+
+  let startDate: string;
+  if (rawStartDate) {
+    startDate = rawStartDate;
+  } else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays)) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    const days = Number(rawDays);
+    if (!Number.isSafeInteger(days) || days < 1 || days > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
     startDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
   }
-  if (!endDate) {
-    endDate = new Date().toISOString().split('T')[0];
+
+  const endDate = rawEndDate || new Date().toISOString().split('T')[0];
+
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
   }
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
+  const marketplace = marketplaceResult.marketplace;
+
   const dateBasis = searchParams.get('dateBasis') || 'posted';
+  if (!['posted', 'purchase', 'reconciled'].includes(dateBasis)) {
+    return NextResponse.json({ error: 'Invalid date basis' }, { status: 400 });
+  }
+
   const summaryOnly = searchParams.get('summaryOnly') === '1';
+  const MF_ORDER = marketplace ? 'AND o.marketplace = ?' : '';
+  const MF_INCOME = marketplace ? 'AND inc.marketplace = ?' : '';
+  const MF_EVENT = marketplace ? 'AND fe.marketplace = ?' : '';
+  const MF_REFUND = marketplace ? 'AND r.marketplace = ?' : '';
+  const MF_REIMBURSEMENT = marketplace ? 'AND rb.marketplace = ?' : '';
+  const MF_TAX = marketplace ? 'AND st.marketplace = ?' : '';
+  const withMarketplace = (...values: string[]): string[] => (
+    marketplace ? [...values, marketplace] : values
+  );
+
+  // ── Fulfillment-channel filter (FBA vs merchant-fulfilled) ──────────────
+  // A channel view shows ORDER-LEVEL economics only (sales, COGS, order fees,
+  // refunds, MFN shipping). Business-wide costs that can't be attributed to a
+  // single order — ads, storage, subscription, reimbursements, the pre-2026
+  // historical segment, manual expenses — are EXCLUDED when a channel is set
+  // (they belong to the "All channels" view). This matches the way Sellerboard
+  // splits its per-channel table and keeps every channel number tied to the
+  // same recognized-COGS engine as the All view.
+  //
+  // 'fba'/'mfn' is a closed server-side enum, so the fragment is a constant
+  // literal (never user text) — it does NOT consume a bound parameter and so
+  // never disturbs the positional withMarketplace(...) argument order.
+  // INVARIANT: channel === null ⇒ CF_ORDER/CF_REFUND are '' ⇒ output is
+  // byte-identical to the all-channels P&L.
+  const channelParam = searchParams.get('channel');
+  if (channelParam !== null && channelParam !== 'fba' && channelParam !== 'mfn') {
+    return NextResponse.json({ error: 'Invalid channel' }, { status: 400 });
+  }
+  const channel = channelParam as 'fba' | 'mfn' | null;
+  const channelView = channel !== null;
+
+  // ── Local-day bucketing (opt-in) ────────────────────────────────────────
+  // Stored dates are UTC timestamps (e.g. 2026-07-02T00:23:39Z). Comparing them
+  // to a local YYYY-MM-DD boundary buckets by UTC day, so an order placed
+  // 5-11pm Pacific spills into the next day — which is why the dashboard "Today"
+  // card disagreed with Amazon Seller Central (Pacific). When localDays=1,
+  // convert the requested local-day boundaries to UTC instants in JS and keep
+  // the indexed timestamp columns raw in WHERE. Wrapping those columns with
+  // datetime(..., 'localtime') forced a full scan for every snapshot query.
+  // Only the daily display grouping still converts timestamps to local time.
+  // Date-only columns are never shifted.
+  const localDays = searchParams.get('localDays') === '1';
+  const dayBucket = (col: string) => (
+    localDays ? `datetime(${col}, 'localtime')` : col
+  );
+  const CF_ORDER =
+    channel === 'fba' ? "AND o.fulfillment_channel NOT IN ('MFN', 'Seller')"
+    : channel === 'mfn' ? "AND o.fulfillment_channel IN ('MFN', 'Seller')"
+    : '';
+  const CF_REFUND =
+    channel === 'fba'
+      ? "AND EXISTS (SELECT 1 FROM orders och WHERE och.order_id = r.order_id AND och.fulfillment_channel NOT IN ('MFN', 'Seller'))"
+      : channel === 'mfn'
+      ? "AND EXISTS (SELECT 1 FROM orders och WHERE och.order_id = r.order_id AND och.fulfillment_channel IN ('MFN', 'Seller'))"
+      : '';
+
   // 'reconciled' uses posted_date basis but requires real fee rows (financial_event_id != 0),
   // excluding estimated fees written by estimateAndBackfillFees() for unreconciled orders.
   const DATE_SUB = dateBasis === 'purchase' ? ORDER_PURCHASE_DATE : ORDER_POSTED_DATE;
   const REAL_FEES_ONLY = dateBasis === 'reconciled' ? 'AND fd.financial_event_id != 0' : '';
+  // Operating/purchase basis represents placed-order performance, so canceled
+  // orders are excluded from every order-derived metric. Settled and Accounting
+  // retain their existing ShipmentEvent-gated populations, preserving the
+  // audited posted-basis baseline.
+  const OPERATING_ORDER_FILTER = dateBasis === 'purchase'
+    ? "AND o.status NOT IN ('Canceled', 'Cancelled')"
+    : '';
 
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
@@ -59,13 +163,20 @@ export async function GET(request: NextRequest) {
   // (~$25K of expenses missing vs IL). The imported transaction reports have
   // them complete through 2025-12-31, so the report era owns everything
   // before 2026.
-  const HISTORY_CUTOVER = '2026-01-01';
   // Historical data is Amazon-only — skip the segment when filtering to
   // another marketplace. User-entered tables (expenses, other_income) are not
   // marketplace syncs and keep the full requested range.
   const histActive = startDate < HISTORY_CUTOVER && (!marketplace || marketplace === 'amazon');
   const histEnd = endDateNext < HISTORY_CUTOVER ? endDateNext : HISTORY_CUTOVER;
   const syncedStart = startDate < HISTORY_CUTOVER ? HISTORY_CUTOVER : startDate;
+  const timestampRange = localDays
+    ? localDayRangeToUtcBounds(syncedStart, endDateNext)
+    : { startUtc: syncedStart, endUtc: endDateNext };
+  const withTimestampRange = () => withMarketplace(
+    timestampRange.startUtc,
+    timestampRange.endUtc,
+  );
+  const db = getDb();
 
   try {
     // Income (by posted_date — cash basis)
@@ -74,8 +185,8 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(syncedStart, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+    `).get(...withTimestampRange()) as any;
 
     // MFN shipping credits (income — seller charges buyer for shipping)
     const mfnShippingCredits = db.prepare(`
@@ -83,8 +194,9 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel IN ('MFN', 'Seller')
-    `).get(syncedStart, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+        AND o.fulfillment_channel IN ('MFN', 'Seller')
+    `).get(...withTimestampRange()) as any;
 
     // FBA/WFS shipping credits (Amazon/Walmart charges buyer, passes to seller)
     const fbaShippingCredits = db.prepare(`
@@ -92,8 +204,9 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel NOT IN ('MFN', 'Seller')
-    `).get(syncedStart, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+        AND o.fulfillment_channel NOT IN ('MFN', 'Seller')
+    `).get(...withTimestampRange()) as any;
 
     // FBA shipping credits ARE income: Amazon's settlement shows
     // ShippingCharge credit − free-shipping promo − ShippingChargeback = 0,
@@ -107,29 +220,76 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(syncedStart, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+    `).get(...withTimestampRange()) as any;
 
-    const otherIncomeTotal = db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total FROM other_income WHERE date >= ? AND date < ? ${MF_R}
-    `).get(startDate, endDateNext) as any;
+    // other_income is business-wide (not per-order) → excluded from channel views.
+    const otherIncomeTotal = channelView ? { total: 0 } : db.prepare(`
+      SELECT COALESCE(SUM(inc.amount), 0) as total
+      FROM other_income inc
+      WHERE inc.date >= ? AND inc.date < ? ${MF_INCOME}
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
-    // COGS (FIFO) — exclude items returned as SELLABLE (unit is back in inventory;
-    // COGS will be charged again when it resells, matching IL's return methodology)
+    // COGS (FIFO) — two exclusions, both matching IL:
+    //  1. items returned as SELLABLE (unit is back in inventory; COGS will be
+    //     charged again when it resells). QUANTITY-AWARE: reverse only the
+    //     confirmed-returned units, not the whole order line (a multi-unit order
+    //     with a partial sellable return keeps COGS on the units sold for good).
+    //  2. amzn.gr.* (Amazon-graded) resales → $0. A regraded SKU is the second
+    //     life of a unit whose buy cost was already expensed on its first sale;
+    //     the customer return that produced the regrade was not sellable, so
+    //     that COGS was never reversed. FL would otherwise re-expense the cost
+    //     embedded in the regrade SKU (a double-count). IL carries every
+    //     amzn.gr unit at $0 — we match it. (See historical era: IL's own
+    //     export already books these at $0.)
+    // Both exclusions live in the shared recognizedCogsExpr fragment so the
+    // summary and sales-detail lines can never diverge.
     const cogsTotal = db.prepare(`
+      SELECT COALESCE(SUM(${recognizedCogsExpr('oi')}), 0) as total
+      FROM order_items oi
+      JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
+      JOIN orders o ON oi.order_id = o.order_id
+      ${sellableReturnJoin('oi')}
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+    `).get(...withTimestampRange()) as any;
+
+    // Gross COGS (synced era): FIFO COGS of all sold units BEFORE any return
+    // adjustment (no sellable-return exclusion, no restock reversal). Lets the
+    // Profit First report apply Jamie's own return-rate factor — replaces the
+    // "Gross COGS from IL" manual input so we don't depend on InventoryLab.
+    let cogsGrossTotal = (db.prepare(`
       SELECT COALESCE(SUM(
-        CASE WHEN sr.order_id IS NULL THEN oi.cogs_per_unit * oi.quantity ELSE 0 END
+        CASE WHEN oi.sku NOT LIKE 'amzn.gr%' THEN oi.cogs_per_unit * oi.quantity ELSE 0 END
       ), 0) as total
       FROM order_items oi
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
-      LEFT JOIN (
-        SELECT DISTINCT order_id, COALESCE(sku,'') as sku
-        FROM refunds
-        WHERE disposition = 'SELLABLE' AND item_returned = 1 AND marketplace = 'amazon'
-      ) sr ON oi.order_id = sr.order_id AND COALESCE(oi.sku,'') = sr.sku
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(syncedStart, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+    `).get(...withTimestampRange()) as any).total;
+
+    // ── Disposition adjustments (synced era, ≥ 2026) ───────────────────────
+    // Twin of the historical_dispositions write-offs, fed from InventoryLab's
+    // Disposition Management export (table: dispositions). Two levers, both
+    // bucketed by the disposition date (matching IL's report dating):
+    //   buy_cost_adj > 0  → MFN Return sellable: unit restocked → REVERSE COGS
+    //   buy_cost_adj < 0  → Removal/Liquidate/Disposal unsellable → WRITE-OFF
+    // Amazon-only; skip when filtered to another marketplace. No overlap with
+    // the SELLABLE customer-refund reversal above (verified: MFN-return order
+    // ids never appear as disposition='SELLABLE' refunds).
+    // Dispositions (removals/write-offs/restocks) are inventory-level, not
+    // per-order → business-wide, excluded from channel views.
+    const dispActive = (!marketplace || marketplace === 'amazon') && !channelView;
+    const dispRestockReversal = dispActive ? (db.prepare(`
+      SELECT COALESCE(SUM(buy_cost_adj), 0) as total FROM dispositions
+      WHERE buy_cost_adj > 0 AND disp_date >= ? AND disp_date < ?
+    `).get(syncedStart, endDateNext) as any).total : 0;
+    const dispWriteoff = dispActive ? (db.prepare(`
+      SELECT COALESCE(SUM(-buy_cost_adj), 0) as total FROM dispositions
+      WHERE buy_cost_adj < 0 AND disp_date >= ? AND disp_date < ?
+    `).get(syncedStart, endDateNext) as any).total : 0;
+    // Restocked units' COGS reverses (they're back in sellable inventory and
+    // will be charged COGS again on resale). Reduce the COGS line.
+    cogsTotal.total -= dispRestockReversal;
 
     // Order-linked fees (by order's posted_date)
     // Use -SUM(amount) instead of SUM(ABS(amount)) so the fee total stays sign-correct.
@@ -149,20 +309,21 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON fd.order_id = o.order_id
       LEFT JOIN financial_events src ON fd.financial_event_id = src.id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
-        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
         AND NOT (src.event_type = 'RefundEvent' AND fd.amount > 0)
         ${REAL_FEES_ONLY}
       GROUP BY fd.fee_category, fd.fee_type
-    `).all(syncedStart, endDateNext) as any[];
+    `).all(...withTimestampRange()) as any[];
 
     // Non-order fees (service fees like storage, inbound shipping, subscriptions)
     // These are marketplace-specific — filter by marketplace when one is selected
-    const serviceFeeFilter = marketplace ? `AND fe.marketplace = '${marketplace}'` : '';
     // Exclude ServiceFeeEvent rows for fee types that also appear in SettlementServiceFee.
     // ServiceFeeEvent is re-inserted every sync day (new posted_date bypasses unique constraint),
     // creating N duplicate rows. SettlementServiceFee posts once and is canonical.
     // Safe-to-keep ServiceFeeEvent-only types: FBAInboundConvenienceFee, ReCommerceGradingAndListingCharge.
-    const serviceFees = db.prepare(`
+    // Non-order service fees (storage, subscription, inbound, ads) have no order
+    // to attribute to a channel → business-wide, excluded from channel views.
+    const serviceFees = channelView ? [] : db.prepare(`
       SELECT
         COALESCE(fd.fee_category, 'Other Fees') as category,
         fd.fee_type,
@@ -172,7 +333,7 @@ export async function GET(request: NextRequest) {
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ?
         AND date(fd.posted_date) < ?
-        ${serviceFeeFilter}
+        ${MF_EVENT}
         AND NOT (
           fe.event_type = 'ServiceFeeEvent'
           AND fd.fee_type IN (
@@ -185,19 +346,20 @@ export async function GET(request: NextRequest) {
           )
         )
       GROUP BY fd.fee_category, fd.fee_type
-    `).all(syncedStart, endDateNext) as any[];
+    `).all(...withMarketplace(syncedStart, endDateNext)) as any[];
 
     const feesByCategory = [...orderFees, ...serviceFees]
       .sort((a, b) => (a.category || '').localeCompare(b.category || '') || b.total - a.total);
 
-    // Other expenses — only include when viewing All Marketplaces (they're business-wide, not marketplace-specific)
-    const expensesByCategory = marketplace ? [] : db.prepare(`
+    // Other expenses — business-wide (not marketplace- or channel-specific), so
+    // only included in the All view.
+    const expensesByCategory = (marketplace || channelView) ? [] : db.prepare(`
       SELECT category, COALESCE(SUM(amount), 0) as total
       FROM expenses WHERE date >= ? AND date < ?
       GROUP BY category ORDER BY total DESC
     `).all(startDate, endDateNext) as any[];
 
-    const totalExpenses = marketplace ? { total: 0 } : db.prepare(`
+    const totalExpenses = (marketplace || channelView) ? { total: 0 } : db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total FROM expenses WHERE date >= ? AND date < ?
     `).get(startDate, endDateNext) as any;
 
@@ -207,8 +369,9 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF} AND o.fulfillment_channel = 'MFN'
-    `).get(syncedStart, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+        AND o.fulfillment_channel = 'MFN'
+    `).get(...withTimestampRange()) as any;
 
     // Refunds — for Walmart, only count refunds that have a corresponding
     // WalmartRefundEvent in the recon report (i.e., Walmart has actually
@@ -220,7 +383,7 @@ export async function GET(request: NextRequest) {
       SELECT COALESCE(SUM(refund_amount), 0) as total, COALESCE(SUM(fee_clawback), 0) as clawback,
              COALESCE(SUM(restocking_fee), 0) as restocking
       FROM refunds r
-      WHERE r.refund_date >= ? AND r.refund_date < ? ${MF_R.replace(/marketplace/g, 'r.marketplace')}
+      WHERE r.refund_date >= ? AND r.refund_date < ? ${MF_REFUND} ${CF_REFUND}
         AND (
           r.marketplace != 'walmart'
           OR EXISTS (
@@ -230,26 +393,36 @@ export async function GET(request: NextRequest) {
               AND json_extract(fe.raw_data, '$."Amount Type"') = 'Product Price'
           )
         )
-    `).get(syncedStart, endDateNext) as any;
+    `).get(...withTimestampRange()) as any;
 
-    // Reimbursements — exclude SETTLEMENT- rows (duplicates of ADJ- rows from settlement report re-import)
-    const reimbTotal = db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
-        AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
-    `).get(syncedStart, endDateNext) as any;
+    // Reimbursements (lost/damaged inventory credits) are business-wide, not
+    // per-order → excluded from channel views. Exclude SETTLEMENT- rows
+    // (duplicates of ADJ- rows from settlement report re-import).
+    const reimbTotal = channelView ? { total: 0 } : db.prepare(`
+      SELECT COALESCE(SUM(rb.amount), 0) as total
+      FROM reimbursements rb
+      WHERE rb.reimbursement_date >= ? AND rb.reimbursement_date < ? ${MF_REIMBURSEMENT}
+        AND rb.reimbursement_id NOT LIKE 'SETTLEMENT-%'
+    `).get(...withMarketplace(syncedStart, endDateNext)) as any;
 
     // Sales tax — stored as negative (Amazon reports withheld tax as a deduction);
     // negate so the P&L surfaces tax collected/remitted as a positive figure.
-    const taxTotal = db.prepare(`
-      SELECT COALESCE(SUM(-tax_collected), 0) as collected, COALESCE(SUM(-marketplace_facilitator_tax), 0) as facilitator
-      FROM sales_tax WHERE posted_date >= ? AND posted_date < ? ${MF_R}
-    `).get(syncedStart, endDateNext) as any;
+    // sales_tax has no order/channel identity. Like other unassignable
+    // business-wide values, it belongs only to the All-channel response.
+    const taxTotal: { collected: number; facilitator: number } = channelView
+      ? { collected: 0, facilitator: 0 }
+      : db.prepare(`
+      SELECT COALESCE(SUM(-st.tax_collected), 0) as collected,
+             COALESCE(SUM(-st.marketplace_facilitator_tax), 0) as facilitator
+      FROM sales_tax st
+      WHERE st.posted_date >= ? AND st.posted_date < ? ${MF_TAX}
+    `).get(...withTimestampRange()) as { collected: number; facilitator: number };
 
     // ── Historical segment (< HISTORY_CUTOVER) ─────────────────────────
     // Settlement-truth buckets from Amazon's Date Range Transaction Reports
     // plus per-order InventoryLab buy costs. Transfer / loan / debt rows are
     // cash movements, not P&L, and are excluded.
-    if (histActive) {
+    if (histActive && !channelView) {
       const h = db.prepare(`
         SELECT
           COALESCE(SUM(CASE WHEN type='Order' THEN product_sales + gift_wrap_credits END), 0) AS sales,
@@ -312,6 +485,7 @@ export async function GET(request: NextRequest) {
       promoRebates.total += h.promo;
       otherIncomeTotal.total += h.liquidations;
       cogsTotal.total += hCogs;
+      cogsGrossTotal += hCogsGross;
       refundTotal.total += h.refunds;
       refundTotal.clawback += h.clawback;
       reimbTotal.total += h.reimb;
@@ -345,8 +519,18 @@ export async function GET(request: NextRequest) {
     const totalIncome = salesIncome.total + shippingCredits.total + fbaShippingCredits.total
       + promoRebates.total + refundTotal.restocking + otherIncomeTotal.total;
     const totalFees = Object.values(feeHierarchy).reduce((sum: number, cat: any) => sum + cat.total, 0);
-    const totalAllExpenses = cogsTotal.total + totalFees + shippingCosts.total + totalExpenses.total;
+    const totalAllExpenses = cogsTotal.total + totalFees + shippingCosts.total + totalExpenses.total + dispWriteoff;
     const netProfit = totalIncome - totalAllExpenses - refundTotal.total + refundTotal.clawback + reimbTotal.total;
+
+    // Dashboard Operating sales mirrors Sellerboard's gross order total
+    // (including customer-paid shipping/tax). Keep it separate from recognized
+    // P&L fields so the accounting math remains internally consistent.
+    const operatingSales = dateBasis === 'purchase' ? (db.prepare(`
+      SELECT COALESCE(SUM(o.order_total), 0) as total
+      FROM orders o
+      WHERE o.purchase_date >= ? AND o.purchase_date < ?
+        ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+    `).get(...withTimestampRange()) as { total: number }).total : null;
 
     const unitSummary = summaryOnly ? db.prepare(`
       SELECT
@@ -355,53 +539,68 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(syncedStart, endDateNext) as any : null;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+    `).get(...withTimestampRange()) as { orders: number; units: number } : null;
 
     const dailySummary = summaryOnly ? db.prepare(`
       SELECT
-        substr(fe.posted_date, 1, 10) as day,
+        substr(${dayBucket('fe.posted_date')}, 1, 10) as day,
         COALESCE(SUM(oi.total_price), 0) as revenue,
         0 as profit
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-      GROUP BY substr(fe.posted_date, 1, 10)
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
+      GROUP BY substr(${dayBucket('fe.posted_date')}, 1, 10)
       ORDER BY day
-    `).all(syncedStart, endDateNext) as any[] : [];
+    `).all(...withTimestampRange()) as any[] : [];
+
+    const refundSummary = summaryOnly ? db.prepare(`
+      SELECT COUNT(*) as count, COALESCE(SUM(r.quantity), 0) as units
+      FROM refunds r
+      WHERE r.refund_date >= ? AND r.refund_date < ? ${MF_REFUND} ${CF_REFUND}
+        AND (
+          r.marketplace != 'walmart'
+          OR EXISTS (
+            SELECT 1 FROM financial_events fe
+            WHERE fe.event_type = 'WalmartRefundEvent'
+              AND fe.order_id = r.order_id
+              AND json_extract(fe.raw_data, '$."Amount Type"') = 'Product Price'
+          )
+        )
+    `).get(...withTimestampRange()) as { count: number; units: number } : null;
 
     // Sales detail — individual products sold in the period, with per-order fees
     const salesDetail = summaryOnly ? [] : db.prepare(`
+      WITH ${orderFeeAllocationCtes({
+        realFeesOnly: dateBasis === 'reconciled',
+      })}
       SELECT
         oi.order_id,
         o.marketplace,
         o.fulfillment_channel,
-        COALESCE(p.name, oi.asin) as product_name,
+        ${productNameExpr('oi', 'o')} as product_name,
         oi.asin,
         oi.sku,
         oi.quantity,
         oi.total_price as revenue,
-        oi.cogs_per_unit * oi.quantity as cogs,
-        COALESCE(order_fees.total_fees, 0) as fees,
+        -- Quantity-aware SELLABLE-return reversal + amzn.gr $0, identical to the
+        -- summary COGS line (shared fragment).
+        ${recognizedCogsExpr('oi')} as cogs,
+        COALESCE(aof.allocated_fee, 0) as fees,
         oi.shipping_cost as shippingCost,
-        oi.total_price - (oi.cogs_per_unit * oi.quantity) + COALESCE(order_fees.total_fees, 0) - COALESCE(oi.shipping_cost, 0) as net_profit,
+        oi.total_price - (${recognizedCogsExpr('oi')}) + COALESCE(aof.allocated_fee, 0) - COALESCE(oi.shipping_cost, 0) as net_profit,
         fe.posted_date,
         o.purchase_date
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
       JOIN ${DATE_SUB} fe ON oi.order_id = fe.order_id
-      LEFT JOIN products p ON p.asin IN (oi.asin, oi.sku)
-      LEFT JOIN (
-        SELECT order_id, SUM(amount) as total_fees
-        FROM fee_details
-        WHERE order_id IS NOT NULL AND order_id != ''
-        GROUP BY order_id
-      ) order_fees ON oi.order_id = order_fees.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      ${sellableReturnJoin('oi')}
+      LEFT JOIN allocated_order_fees aof ON aof.id = oi.id
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER} ${CF_ORDER} ${OPERATING_ORDER_FILTER}
       ORDER BY fe.posted_date DESC
       LIMIT 500
-    `).all(syncedStart, endDateNext) as any[];
+    `).all(...withTimestampRange()) as any[];
 
     // Refund detail for the period.
     //
@@ -444,7 +643,7 @@ export async function GET(request: NextRequest) {
       LEFT JOIN products p  ON p.asin = r.asin AND r.asin != ''
       LEFT JOIN products p2 ON p2.asin = r.sku
       LEFT JOIN products p3 ON p3.sku  = r.sku
-      WHERE r.refund_date >= ? AND r.refund_date < ? ${marketplace ? `AND r.marketplace = '${marketplace}'` : ''}
+      WHERE r.refund_date >= ? AND r.refund_date < ? ${MF_REFUND} ${CF_REFUND}
         AND (
           r.marketplace != 'walmart'
           OR EXISTS (
@@ -457,7 +656,7 @@ export async function GET(request: NextRequest) {
       GROUP BY r.id
       ORDER BY r.refund_date DESC
       LIMIT 200
-    `).all(syncedStart, endDateNext) as any[];
+    `).all(...withTimestampRange()) as any[];
 
     db.close();
 
@@ -474,10 +673,13 @@ export async function GET(request: NextRequest) {
       },
       expenses: {
         cogs: cogsTotal.total,
+        cogsGross: cogsGrossTotal,
         feeHierarchy,
         shippingCosts: shippingCosts.total,
         otherExpenses: totalExpenses.total,
         otherExpensesByCategory: expensesByCategory,
+        inventoryWriteoff: dispWriteoff,
+        dispositionRestockReversal: dispRestockReversal,
         totalFees,
         total: totalAllExpenses,
       },
@@ -493,9 +695,13 @@ export async function GET(request: NextRequest) {
       },
       netProfit,
       margin: totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0,
+      operatingSales,
       dateBasis,
+      channel,
+      localDays,
       unitSummary,
       dailySummary,
+      refundSummary,
       salesDetail,
       refundDetail,
     });

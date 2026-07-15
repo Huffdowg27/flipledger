@@ -18,6 +18,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { recalculateFIFO } from '@/lib/fifo';
+import { isAmazonGradedSku } from '@/lib/sku-cogs';
 
 const IMPORTS_DIR = path.join(process.cwd(), 'imports');
 const FALLBACK_DATE = '2020-01-01';
@@ -88,7 +89,7 @@ interface LotAccumulator {
 function processFile(
   content: string,
   lots: Map<string, LotAccumulator>,
-  stats: { rows: number; skippedNoCost: number; skippedBadRow: number }
+  stats: { rows: number; skippedNoCost: number; skippedBadRow: number; skippedGraded: number }
 ) {
   const lines = content.split('\n');
   if (lines.length < 2) return;
@@ -121,6 +122,7 @@ function processFile(
     const qty      = parseInt(cols[idxQty]?.trim() || '1') || 1;
 
     if (!asin || !msku) { stats.skippedBadRow++; continue; }
+    if (isAmazonGradedSku(msku)) { stats.skippedGraded++; continue; }
 
     const buyCostTotal = parseBuyCost(rawCost);
     if (buyCostTotal === null) { stats.skippedNoCost++; continue; }
@@ -166,12 +168,18 @@ export async function POST() {
   }
 
   const lots = new Map<string, LotAccumulator>();
-  const fileStats: { file: string; rows: number; skippedNoCost: number; skippedBadRow: number }[] = [];
+  const fileStats: {
+    file: string;
+    rows: number;
+    skippedNoCost: number;
+    skippedBadRow: number;
+    skippedGraded: number;
+  }[] = [];
 
   for (const file of csvFiles) {
     const filePath = path.join(IMPORTS_DIR, file);
     const content = fs.readFileSync(filePath, 'utf-8').replace(/^﻿/, '');
-    const stats = { rows: 0, skippedNoCost: 0, skippedBadRow: 0 };
+    const stats = { rows: 0, skippedNoCost: 0, skippedBadRow: 0, skippedGraded: 0 };
     processFile(content, lots, stats);
     fileStats.push({ file, ...stats });
   }

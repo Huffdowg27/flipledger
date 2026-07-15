@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
-import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download, Send, Loader2, Package } from 'lucide-react';
+import { Search, Printer, X, Check, CheckCircle2, RefreshCw, Copy, Download, Loader2, Package } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,80 +150,6 @@ function openPrintWindow(specs: LabelSpec[]) {
 //   'DEFAULT MFN USE THIS ONE'
 // Verify it in Seller Central before uploading any CSV.
 const DEFAULT_MFN_SHIPPING_TEMPLATE = 'DEFAULT MFN USE THIS ONE';
-
-function exportActivationCsv(rows: MerchantRow[]) {
-  const readyRows = rows.filter(r => getReceiveStatus(r) === 'ready');
-  if (readyRows.length === 0) {
-    alert('No Ready rows to export.\n\nItems must be received, inspected, binned, and priced before export.');
-    return;
-  }
-
-  const warnings: string[] = [];
-
-  if (!DEFAULT_MFN_SHIPPING_TEMPLATE) {
-    warnings.push('DEFAULT_MFN_SHIPPING_TEMPLATE is blank — merchant-shipping-group-name column will be empty. Verify the shipping template name in Seller Central before uploading.');
-  }
-
-  const csvLines: string[] = [
-    // Column names match Amazon Inventory Loader flat file format exactly.
-    // merchant-shipping-group-name sets the MFN shipping template per row.
-    // handling-time is left blank to use the account-level default.
-    ['sku', 'price', 'quantity', 'condition', 'handling-time', 'merchant-shipping-group-name'].join(','),
-  ];
-
-  for (const row of readyRows) {
-    if (!row.sku) {
-      warnings.push(`Row ${row.row_key}: no MSKU — skipped`);
-      continue;
-    }
-
-    // Use the price the user explicitly set during receiving first
-    const priceCents = row.il_list_price_cents ?? row.amazon_list_price_cents ?? row.parsed_list_price_cents;
-    const priceStr   = priceCents != null ? (priceCents / 100).toFixed(2) : '';
-    if (!priceStr) warnings.push(`${row.sku}: no list price set — price column will be blank`);
-
-    // Prefer count from physical receive over ledger remaining
-    const qty = (row.quantity_received ?? 0) > 0
-      ? row.quantity_received!
-      : (row.quantity_remaining ?? 0);
-    if (qty <= 0) {
-      warnings.push(`${row.sku}: quantity is 0 or missing — skipped`);
-      continue;
-    }
-
-    const condition      = (row.condition || '').replace(/"/g, '""');
-    const sku            = row.sku.replace(/"/g, '""');
-    const shippingGroup  = DEFAULT_MFN_SHIPPING_TEMPLATE.replace(/"/g, '""');
-
-    csvLines.push([
-      `"${sku}"`,
-      priceStr,
-      String(qty),
-      `"${condition}"`,
-      '',               // handling-time: blank = use account default
-      `"${shippingGroup}"`,
-    ].join(','));
-  }
-
-  if (warnings.length > 0) {
-    alert(`Export warnings:\n\n${warnings.join('\n')}\n\nCSV will still download for rows without errors.`);
-  }
-  if (csvLines.length <= 1) {
-    alert('No valid rows to export after validation.');
-    return;
-  }
-
-  const csv  = csvLines.join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href     = url;
-  a.download = `flipledger-activation-${new Date().toISOString().slice(0, 10)}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -971,9 +897,27 @@ export default function MerchantInventoryPage() {
   const oosCount       = useMemo(() => listedRows.filter(r => r.live_state === 'oos').length,      [listedRows]);
   const inactiveCount  = useMemo(() => listedRows.filter(r => r.live_state === 'inactive').length, [listedRows]);
   const localOnlyCount = localOnlyRows.length;
-  const readyCount     = useMemo(() =>
-    [...listedRows, ...localOnlyRows].filter(r => getReceiveStatus(r) === 'ready').length,
-  [listedRows, localOnlyRows]);
+  // Per-tile units + inventory cost (open local lots at buy price, integer cents)
+  const tileStats = useMemo(() => {
+    const mk = () => ({ units: 0, costCents: 0 });
+    const acc: Record<string, { units: number; costCents: number }> = {
+      all: mk(), live: mk(), oos: mk(), inactive: mk(), local_only: mk(),
+    };
+    const add = (key: string, r: MerchantRow) => {
+      const q = r.quantity_remaining ?? 0;
+      if (q <= 0) return;
+      acc[key].units += q;
+      acc[key].costCents += q * (r.buy_price ?? 0);
+    };
+    for (const r of listedRows) {
+      add('all', r);
+      if (r.live_state === 'active') add('live', r);
+      else if (r.live_state === 'oos') add('oos', r);
+      else if (r.live_state === 'inactive') add('inactive', r);
+    }
+    for (const r of localOnlyRows) add('local_only', r);
+    return acc;
+  }, [listedRows, localOnlyRows]);
 
   // Display rows based on active filter.
   // null = All Amazon listings (the broadest view).
@@ -1022,12 +966,6 @@ export default function MerchantInventoryPage() {
 
   // Rows available for activation export: selection-scoped when rows are selected,
   // otherwise all displayed rows when the Ready filter is active.
-  const readyForExport = useMemo(() => {
-    if (selected.size > 0) return selectedRows.filter(r => getReceiveStatus(r) === 'ready');
-    if (filterView === 'ready') return displayRows;
-    return [];
-  }, [selected, selectedRows, filterView, displayRows]);
-
   // Stock action — determines the Action column button for each row.
   // Rules:
   //   no il_id        → null (no local lot, can't edit)
@@ -1137,25 +1075,6 @@ export default function MerchantInventoryPage() {
               <p className="text-[10px] text-text-tertiary">Not yet synced</p>
             )}
           </div>
-          {readyForExport.length > 0 && (
-            <a
-              href="/mfn/batch"
-              className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-blue-500/50 text-blue-400 text-sm font-medium hover:bg-blue-500/10 transition-colors"
-              title="Preview & push moved to MFN Batch Receive"
-            >
-              <Send size={14} />
-              Preview &amp; Push moved to MFN Batch Receive →
-            </a>
-          )}
-          {readyForExport.length > 0 && (
-            <button
-              onClick={() => exportActivationCsv(readyForExport)}
-              className="flex items-center gap-1.5 h-9 px-3 rounded-md border border-green-500/50 text-green-400 text-sm font-medium hover:bg-green-500/10 transition-colors"
-            >
-              <Download size={14} />
-              Export Activation CSV ({readyForExport.length})
-            </button>
-          )}
           {selected.size > 0 && (
             <button
               onClick={() => setShowPrintModal(true)}
@@ -1198,14 +1117,13 @@ export default function MerchantInventoryPage() {
 
       {/* Filter / stat cards — clicking selects the filter; clicking again returns to Live */}
       {hasData && (
-        <div className="grid grid-cols-6 gap-2.5 mb-6">
+        <div className="grid grid-cols-5 gap-2.5 mb-6">
           {([
             { id: null         as FilterView, label: 'All Listings',      count: listedRows.length, activeColor: 'border-text-tertiary/40 bg-bg-elevated shadow-sm',  numColor: 'text-text-primary'   },
             { id: 'live'       as FilterView, label: 'Live on Amazon',    count: liveCount,          activeColor: 'border-green-500 bg-green-500/10 shadow-sm',        numColor: 'text-green-400'      },
             { id: 'oos'        as FilterView, label: 'OOS',               count: oosCount,           activeColor: 'border-amber-500 bg-amber-500/10 shadow-sm',        numColor: 'text-amber-400'      },
             { id: 'inactive'   as FilterView, label: 'Inactive',          count: inactiveCount,      activeColor: 'border-red-500 bg-red-500/10 shadow-sm',            numColor: 'text-red-400'        },
             { id: 'local_only' as FilterView, label: 'Local Not Listed',  count: localOnlyCount,     activeColor: 'border-border-default bg-bg-elevated shadow-sm',    numColor: 'text-text-secondary' },
-            { id: 'ready'      as FilterView, label: 'Ready to Activate', count: readyCount,         activeColor: 'border-green-500 bg-green-500/10 shadow-sm',        numColor: 'text-green-400'      },
           ] as const).map(card => {
             const isActive = filterView === card.id;
             return (
@@ -1220,8 +1138,16 @@ export default function MerchantInventoryPage() {
               >
                 <div className="text-[10px] uppercase tracking-widest text-text-tertiary mb-1 truncate">{card.label}</div>
                 <div className={`text-2xl font-semibold font-mono ${isActive ? card.numColor : 'text-text-primary'}`}>
-                  {lastSynced || card.id === 'local_only' || card.id === 'ready' || card.id === null ? card.count : '—'}
+                  {lastSynced || card.id === 'local_only' || card.id === null ? card.count : '—'}
                 </div>
+                {(() => {
+                  const s = tileStats[card.id === null ? 'all' : card.id];
+                  return s && (s.units > 0 || s.costCents > 0) ? (
+                    <div className="text-[10px] font-mono text-text-tertiary mt-0.5 truncate">
+                      {s.units.toLocaleString()} units · {'$' + Math.round(s.costCents / 100).toLocaleString('en-US')}
+                    </div>
+                  ) : null;
+                })()}
                 {isActive && (
                   <div className="text-[10px] text-text-tertiary mt-1">active</div>
                 )}
@@ -1239,24 +1165,7 @@ export default function MerchantInventoryPage() {
             <span className="font-medium text-text-primary">Out of Stock on Amazon</span>{' '}
             — these listings are Active but Amazon quantity is 0.
             Click <span className="font-medium text-amber-400">Restock</span> to enter received quantity, bin location, condition, and list price.
-            Once all fields are set, the row moves to <span className="font-medium text-text-primary">Ready to Activate</span>.
-          </span>
-        </div>
-      )}
-
-      {/* Activation workflow banner — shown only in Ready filter */}
-      {filterView === 'ready' && !loading && (
-        <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 bg-bg-elevated border border-border-subtle rounded-lg text-xs text-text-secondary">
-          <Download size={13} className="text-green-400 shrink-0 mt-0.5" />
-          <span>
-            <span className="font-medium text-text-primary">Ready to Activate</span>{' '}
-            means received, inspected, binned, and priced locally —{' '}
-            <span className="text-text-tertiary">Seller Central has not been updated yet.</span>{' '}
-            Select rows and click{' '}
-            <span className="font-medium text-green-400">Export Activation CSV</span>{' '}
-            to generate a file you upload to Seller Central. The CSV sets{' '}
-            quantity, price, handling time, and shipping template per row.
-            Verify the shipping template name matches your Seller Central account before uploading.
+            Once all fields are set, push it live from <span className="font-medium text-text-primary">MFN Batch Receive</span>.
           </span>
         </div>
       )}

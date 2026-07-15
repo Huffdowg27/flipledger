@@ -1,0 +1,554 @@
+{
+  "scripts/backfill-refund-amounts.js": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "scripts/import-history.js": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/analyze/asin-profitability/page.tsx": {
+    "errorCount": 2,
+    "warningCount": 5
+  },
+  "src/app/analyze/category-profitability/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/analyze/data-integrity/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 0
+  },
+  "src/app/analyze/dispositions/page.tsx": {
+    "errorCount": 1,
+    "warningCount": 1
+  },
+  "src/app/analyze/inventory-valuation/page.tsx": {
+    "errorCount": 12,
+    "warningCount": 2
+  },
+  "src/app/analyze/merchant-inventory/page.tsx": {
+    "errorCount": 0,
+    "warningCount": 5
+  },
+  "src/app/analyze/profit-first/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 2
+  },
+  "src/app/analyze/profitability/page.tsx": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/analyze/profitloss/page.tsx": {
+    "errorCount": 2,
+    "warningCount": 5
+  },
+  "src/app/analyze/removals/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 3
+  },
+  "src/app/analyze/salestax/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 3
+  },
+  "src/app/analyze/sku-profitability/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/analyze/supplier-profitability/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/api/dashboard/metrics/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/amazon-dispute-candidates/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/amazon-reevaluations/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/cash-balance/route.ts": {
+    "errorCount": 0,
+    "warningCount": 1
+  },
+  "src/app/api/data/dashboard/route.ts": {
+    "errorCount": 27,
+    "warningCount": 2
+  },
+  "src/app/api/data/dispositions/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/data/ebay-sales/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/fba-inventory/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/fba-sales/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/in-flight-orders/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/inbound-shipping/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/data/inventory-valuation/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/data/manual-sale/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/merchant-inventory/activation-push/route.ts": {
+    "errorCount": 0,
+    "warningCount": 0
+  },
+  "src/app/api/data/merchant-sales/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/mfn-orders/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/other-expenses/route.ts": {
+    "errorCount": 1,
+    "warningCount": 2
+  },
+  "src/app/api/data/other-income/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/products/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/profitability/route.ts": {
+    "errorCount": 11,
+    "warningCount": 0
+  },
+  "src/app/api/data/profitloss/route.ts": {
+    "errorCount": 24,
+    "warningCount": 0
+  },
+  "src/app/api/data/refunds/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/reimbursement-candidates/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/reimbursements/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/data/salestax/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/data/tax-report/route.ts": {
+    "errorCount": 41,
+    "warningCount": 1
+  },
+  "src/app/api/data/walmart-dispute-candidates/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/data/wfs-sales/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/debug/cogs-gap/route.ts": {
+    "errorCount": 10,
+    "warningCount": 1
+  },
+  "src/app/api/debug/fee-double-count/route.ts": {
+    "errorCount": 18,
+    "warningCount": 0
+  },
+  "src/app/api/debug/recon/route.ts": {
+    "errorCount": 17,
+    "warningCount": 0
+  },
+  "src/app/api/debug/sales-gap/route.ts": {
+    "errorCount": 16,
+    "warningCount": 2
+  },
+  "src/app/api/debug/settlement-periods/route.ts": {
+    "errorCount": 4,
+    "warningCount": 0
+  },
+  "src/app/api/ebay-auth/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/incoming/[id]/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/incoming/route.ts": {
+    "errorCount": 9,
+    "warningCount": 0
+  },
+  "src/app/api/issues/[id]/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/boxes/route.ts": {
+    "errorCount": 4,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/content-update/route.ts": {
+    "errorCount": 7,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/fnsku-labels/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/initialize-boxing/route.ts": {
+    "errorCount": 6,
+    "warningCount": 1
+  },
+  "src/app/api/list/batches/[id]/items/[itemId]/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/labels/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/pack/route.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/placement/route.ts": {
+    "errorCount": 15,
+    "warningCount": 2
+  },
+  "src/app/api/list/batches/[id]/route.ts": {
+    "errorCount": 6,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/send/route.ts": {
+    "errorCount": 9,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/shipments/route.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/status/route.ts": {
+    "errorCount": 7,
+    "warningCount": 0
+  },
+  "src/app/api/list/batches/[id]/transportation/route.ts": {
+    "errorCount": 19,
+    "warningCount": 0
+  },
+  "src/app/api/list/catalog/existing-skus/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/list/catalog/search/route.ts": {
+    "errorCount": 6,
+    "warningCount": 0
+  },
+  "src/app/api/print/printers/route.ts": {
+    "errorCount": 0,
+    "warningCount": 1
+  },
+  "src/app/api/replen-catcher/replens/[id]/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/replen-catcher/stream/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/check-settlement/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/import-dispositions/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/inbound-items/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/order-events/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/order-status/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/shipping-templates/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/storage-fees/route.ts": {
+    "errorCount": 0,
+    "warningCount": 2
+  },
+  "src/app/api/sync/test-download/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/api/sync/test-reports/route.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/bookkeep/amazon-disputes/page.tsx": {
+    "errorCount": 10,
+    "warningCount": 0
+  },
+  "src/app/bookkeep/claims-to-file/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/app/bookkeep/ebay-sales/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/bookkeep/fba-sales/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/bookkeep/inbound-shipping/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 3
+  },
+  "src/app/bookkeep/merchant-sales/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/bookkeep/other-expenses/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 2
+  },
+  "src/app/bookkeep/other-income/page.tsx": {
+    "errorCount": 3,
+    "warningCount": 2
+  },
+  "src/app/bookkeep/refunds/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 2
+  },
+  "src/app/bookkeep/reimbursement-reevaluations/page.tsx": {
+    "errorCount": 7,
+    "warningCount": 0
+  },
+  "src/app/bookkeep/reimbursements/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 3
+  },
+  "src/app/bookkeep/walmart-disputes/page.tsx": {
+    "errorCount": 1,
+    "warningCount": 1
+  },
+  "src/app/bookkeep/wfs-sales/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 2
+  },
+  "src/app/incoming/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 2
+  },
+  "src/app/inventory/page.tsx": {
+    "errorCount": 4,
+    "warningCount": 3
+  },
+  "src/app/list/[id]/page.tsx": {
+    "errorCount": 41,
+    "warningCount": 5
+  },
+  "src/app/list/history/page.tsx": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/list/page.tsx": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/mfn/orders/page.tsx": {
+    "errorCount": 0,
+    "warningCount": 2
+  },
+  "src/app/page.tsx": {
+    "errorCount": 23,
+    "warningCount": 0
+  },
+  "src/app/products/page.tsx": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/app/replen-catcher/settings/page.tsx": {
+    "errorCount": 0,
+    "warningCount": 1
+  },
+  "src/app/tax-report/page.tsx": {
+    "errorCount": 2,
+    "warningCount": 1
+  },
+  "src/components/layout/Sidebar.tsx": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/components/mfn/MfnBatchReceiveWorkflow.tsx": {
+    "errorCount": 0,
+    "warningCount": 6
+  },
+  "src/components/tables/DataTable.tsx": {
+    "errorCount": 1,
+    "warningCount": 2
+  },
+  "src/lib/airtable/purchases.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/lib/ebay-api/auth.ts": {
+    "errorCount": 5,
+    "warningCount": 0
+  },
+  "src/lib/ebay-api/finances.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/ebay-api/orders.ts": {
+    "errorCount": 6,
+    "warningCount": 1
+  },
+  "src/lib/ebay-api/sync.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/lib/imports/inventorylab-fbm.ts": {
+    "errorCount": 0,
+    "warningCount": 1
+  },
+  "src/lib/print.ts": {
+    "errorCount": 0,
+    "warningCount": 1
+  },
+  "src/lib/replen-catcher/ebay-browse-auth.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/replen-catcher/feeds/browse.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/lib/replen-catcher/keepa.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/replen-catcher/poller.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/lib/seed.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/lib/shipping-estimate.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/catalog.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/fee-estimator.ts": {
+    "errorCount": 6,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/feesEstimate.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/finances.ts": {
+    "errorCount": 23,
+    "warningCount": 1
+  },
+  "src/lib/sp-api/inboundPlansV2.ts": {
+    "errorCount": 14,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/inventory.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/listingsItems.ts": {
+    "errorCount": 7,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/orders.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/reconcileFbaShipments.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/reconcileOrderItems.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/lib/sp-api/shippingTemplates.ts": {
+    "errorCount": 2,
+    "warningCount": 0
+  },
+  "src/lib/veeqo-api/bins.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "src/lib/veeqo-api/shipping.ts": {
+    "errorCount": 7,
+    "warningCount": 0
+  },
+  "src/lib/walmart-api/auth.ts": {
+    "errorCount": 4,
+    "warningCount": 0
+  },
+  "src/lib/walmart-api/inventory.ts": {
+    "errorCount": 6,
+    "warningCount": 0
+  },
+  "src/lib/walmart-api/orders.ts": {
+    "errorCount": 6,
+    "warningCount": 1
+  },
+  "src/lib/walmart-api/recon.ts": {
+    "errorCount": 2,
+    "warningCount": 2
+  },
+  "src/lib/walmart-api/returns.ts": {
+    "errorCount": 3,
+    "warningCount": 0
+  },
+  "src/lib/walmart-api/sync.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  },
+  "tests/cogs-reversal.test.ts": {
+    "errorCount": 1,
+    "warningCount": 0
+  }
+}

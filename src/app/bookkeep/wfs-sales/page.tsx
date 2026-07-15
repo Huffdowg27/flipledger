@@ -7,6 +7,7 @@ import PageHeader from '@/components/ui/PageHeader';
 import { type DateRange } from '@/components/ui/DateRangePicker';
 import { useFilters } from '@/lib/useFilters';
 import DataTable from '@/components/tables/DataTable';
+import { IdentifierChip, OrderReference } from '@/components/ui/IdentifierLinks';
 import { formatCurrency, formatPercent, formatDate } from '@/lib/formatters';
 
 interface SaleRow {
@@ -56,8 +57,12 @@ export default function FBASalesPage() {
       id: 'order', header: 'Order Details', accessorFn: (row) => row.productName || row.orderId,
       cell: ({ row }) => (
         <div className="min-w-[200px]">
-          <div className="text-sm font-mono text-accent">{row.original.orderId}</div>
+          <OrderReference orderId={row.original.orderId} marketplace="walmart" className="text-sm font-mono" />
           <div className="text-sm text-text-secondary truncate max-w-[250px]">{row.original.productName || row.original.asin}</div>
+          <div className="mt-0.5 flex gap-2 text-xs font-mono text-text-tertiary">
+            <IdentifierChip label="ASIN" value={row.original.asin} kind="asin" />
+            <IdentifierChip label="SKU" value={row.original.sku} kind="sku" />
+          </div>
           {row.original.quantity > 1 && <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-bg-active text-xs font-mono text-text-secondary mt-0.5">{row.original.quantity}</span>}
         </div>
       ), size: 280,

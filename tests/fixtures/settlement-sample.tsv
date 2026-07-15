@@ -1,0 +1,13 @@
+settlement-id	settlement-start-date	settlement-end-date	deposit-date	marketplace-name	transaction-type	order-id	amount-type	amount-description	amount	posted-date	sku
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Order	111-TEST-0001	Principal	Principal	25.00	2024-06-20	SKU-A
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Order	111-TEST-0001	ItemFees	Commission	-3.75	2024-06-20	SKU-A
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Order	111-TEST-0001	ItemFees	FBAPerUnitFulfillmentFee	-3.22	2024-06-20	SKU-A
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Order	111-TEST-0001	ItemWithheldTax	MarketplaceFacilitatorTax-Principal	-2.06	2024-06-20	SKU-A
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Refund	111-TEST-0002	Principal	Principal	-12.00	2024-06-21	SKU-B
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Refund	111-TEST-0002	ItemFees	RefundCommission	-0.30	2024-06-21	SKU-B
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	other-transaction		other-transaction	Shipping label purchase	-4.18	2024-06-22	
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	other-transaction		other-transaction	Storage Fee	-1.50	2024-06-25	
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	other-transaction		other-transaction	Storage Fee	-1.50	2024-06-25	
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	other-transaction		other-transaction	Current Reserve Amount	-50.00	2024-06-29	
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	other-transaction		other-transaction	Previous Reserve Amount Balance	50.00	2024-06-29	
+SETTLE-TEST-001	2024-06-15 00:00:00 UTC	2024-06-29 23:59:59 UTC	2024-07-01 12:00:00 UTC	Amazon.com	Order	111-TEST-0003	Principal	Principal	40.00	2024-06-28	SKU-C

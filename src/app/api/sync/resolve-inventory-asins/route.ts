@@ -16,6 +16,7 @@ import path from 'path';
 import fs from 'fs';
 import { getListing, getSellerId } from '@/lib/sp-api/listingsItems';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import { isAmazonGradedSku } from '@/lib/sku-cogs';
 
 const IMPORTS_DIR = path.join(process.cwd(), 'imports');
 
@@ -208,7 +209,7 @@ export async function POST(request: Request) {
         notFound++;
       } else {
         const qty = row.onHand + row.inbound;
-        if (row.costCents > 0) {
+        if (row.costCents > 0 && !isAmazonGradedSku(row.msku)) {
           insertLedger.run(asin, row.msku, row.costCents, qty, qty, now.slice(0, 10), `il:${row.msku}`, now);
         }
         upsertLive.run(asin, row.msku, row.onHand, row.inbound, now);

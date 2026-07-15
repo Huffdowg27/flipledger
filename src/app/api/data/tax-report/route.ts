@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { recognizedCogsExpr, sellableReturnJoin } from '@/lib/cogs-reversal';
+import { parseMarketplaceFilter } from '@/lib/request-filters';
+import { buildTaxSchedule } from '@/lib/tax-schedule';
+import { HISTORY_CUTOVER } from '@/lib/accounting-cutover';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -11,8 +15,20 @@ function getDb() {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const year = parseInt(searchParams.get('year') || String(new Date().getFullYear() - 1));
-  const marketplace = searchParams.get('marketplace'); // future: filter by marketplace
+  const rawYear = searchParams.get('year') || String(new Date().getFullYear() - 1);
+  if (!/^\d{4}$/.test(rawYear)) {
+    return NextResponse.json({ error: 'Invalid year' }, { status: 400 });
+  }
+  const year = Number(rawYear);
+  if (!Number.isSafeInteger(year) || year < 2000 || year > 2100) {
+    return NextResponse.json({ error: 'Invalid year' }, { status: 400 });
+  }
+
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
+  }
+  const marketplace = marketplaceResult.marketplace;
 
   const db = getDb();
   const startDate = `${year}-01-01`;
@@ -24,7 +40,13 @@ export async function GET(request: NextRequest) {
 
   // Optional marketplace filter
   const mktFilter = marketplace ? 'AND o.marketplace = ?' : '';
+  const activeOrderFilter = `AND o.status NOT IN ('Canceled', 'Cancelled')`;
   const mktParams = marketplace ? [marketplace] : [];
+  const refundMktFilter = marketplace ? 'AND r.marketplace = ?' : '';
+  const reimbursementMktFilter = marketplace ? 'AND rb.marketplace = ?' : '';
+  const incomeMktFilter = marketplace ? 'AND inc.marketplace = ?' : '';
+  const eventMktFilter = marketplace ? 'AND fe.marketplace = ?' : '';
+  const taxMktFilter = marketplace ? 'AND st.marketplace = ?' : '';
 
   // ── Historical years (< 2026) ──────────────────────────────────────
   // Pre-cutover years come entirely from the imported Amazon Date Range
@@ -32,7 +54,7 @@ export async function GET(request: NextRequest) {
   // the cutover rationale: settlement-sourced fees are unreachable >90 days
   // back, so synced tables are structurally incomplete before 2026).
   // Historical data is Amazon-only; a year is all-historical or all-synced.
-  if (year < 2026) {
+  if (startDate < HISTORY_CUTOVER) {
     try {
       const o = db.prepare(`
         SELECT
@@ -201,6 +223,10 @@ export async function GET(request: NextRequest) {
           beginningInventory, purchases: purchases.total,
           inboundShipping: inboundShipping.total,
           costOfGoodsSold: cogsSoldTotal, endingInventory,
+          calculationMethod: 'historical-fifo',
+          saleCogsBeforeDispositionAdjustments: hGross,
+          dispositionRestockReversal: Math.round(RETURN_RESTOCK_RATE * hReversal),
+          inventoryWriteoff: hWriteoffs,
         },
         perMarketplace,
         amazonFees: allFees,
@@ -240,34 +266,43 @@ export async function GET(request: NextRequest) {
         COALESCE(SUM(oi.quantity), 0) as unitsSold
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter}
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter} ${activeOrderFilter}
     `).get(startDate, endDate, ...mktParams) as any;
 
     // Returns and allowances (refunds)
     const refundTotals = db.prepare(`
       SELECT
-        COALESCE(SUM(refund_amount), 0) as totalRefunds,
-        COALESCE(SUM(fee_clawback), 0) as totalClawbacks,
-        COALESCE(SUM(COALESCE(restocking_fee, 0)), 0) as totalRestocking,
+        COALESCE(SUM(r.refund_amount), 0) as totalRefunds,
+        COALESCE(SUM(r.fee_clawback), 0) as totalClawbacks,
+        COALESCE(SUM(COALESCE(r.restocking_fee, 0)), 0) as totalRestocking,
         COUNT(*) as refundCount
-      FROM refunds
-      WHERE refund_date >= ? AND refund_date < ?
-    `).get(startDate, endDate) as any;
+      FROM refunds r
+      WHERE r.refund_date >= ? AND r.refund_date < ? ${refundMktFilter}
+        AND (
+          r.marketplace != 'walmart'
+          OR EXISTS (
+            SELECT 1 FROM financial_events fe
+            WHERE fe.event_type = 'WalmartRefundEvent'
+              AND fe.order_id = r.order_id
+              AND json_extract(fe.raw_data, '$."Amount Type"') = 'Product Price'
+          )
+        )
+    `).get(startDate, endDate, ...mktParams) as any;
 
     // Other income (reimbursements + other_income table)
     // Exclude SETTLEMENT- rows (duplicates of ADJ- rows from settlement report re-import).
     const reimbursements = db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total, COUNT(*) as count
-      FROM reimbursements
-      WHERE reimbursement_date >= ? AND reimbursement_date < ?
-        AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
-    `).get(startDate, endDate) as any;
+      SELECT COALESCE(SUM(rb.amount), 0) as total, COUNT(*) as count
+      FROM reimbursements rb
+      WHERE rb.reimbursement_date >= ? AND rb.reimbursement_date < ? ${reimbursementMktFilter}
+        AND rb.reimbursement_id NOT LIKE 'SETTLEMENT-%'
+    `).get(startDate, endDate, ...mktParams) as any;
 
     const otherIncomeData = db.prepare(`
-      SELECT COALESCE(SUM(amount), 0) as total
-      FROM other_income
-      WHERE date >= ? AND date < ?
-    `).get(startDate, endDate) as any;
+      SELECT COALESCE(SUM(inc.amount), 0) as total
+      FROM other_income inc
+      WHERE inc.date >= ? AND inc.date < ? ${incomeMktFilter}
+    `).get(startDate, endDate, ...mktParams) as any;
 
     // ═══ INCOME BY MONTH ═════════════════════════════════════════════
 
@@ -280,20 +315,35 @@ export async function GET(request: NextRequest) {
         COALESCE(SUM(oi.quantity), 0) as unitsSold
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter}
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter} ${activeOrderFilter}
       GROUP BY strftime('%Y-%m', o.purchase_date)
       ORDER BY month
     `).all(startDate, endDate, ...mktParams) as any[];
 
     // ═══ COGS (FIFO) ═════════════════════════════════════════════════
 
-    // Cost of goods sold (from pre-calculated FIFO cogs_per_unit)
+    // Recognized COGS mirrors P&L: quantity-aware confirmed sellable returns
+    // reverse only returned units, and amzn.gr resales carry zero second-life cost.
     const cogsSold = db.prepare(`
-      SELECT COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0) as total
+      SELECT COALESCE(SUM(${recognizedCogsExpr('oi')}), 0) as total
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter}
+      ${sellableReturnJoin('oi')}
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter} ${activeOrderFilter}
     `).get(startDate, endDate, ...mktParams) as any;
+
+    const dispositionsActive = !marketplace || marketplace === 'amazon';
+    const dispositionRestockReversal = dispositionsActive ? (db.prepare(`
+      SELECT COALESCE(SUM(buy_cost_adj), 0) as total
+      FROM dispositions
+      WHERE buy_cost_adj > 0 AND disp_date >= ? AND disp_date < ?
+    `).get(startDate, endDate) as any).total : 0;
+    const inventoryWriteoff = dispositionsActive ? (db.prepare(`
+      SELECT COALESCE(SUM(-buy_cost_adj), 0) as total
+      FROM dispositions
+      WHERE buy_cost_adj < 0 AND disp_date >= ? AND disp_date < ?
+    `).get(startDate, endDate) as any).total : 0;
+    const recognizedCogs = cogsSold.total - dispositionRestockReversal;
 
     // Purchases during the year (new inventory bought)
     const purchases = db.prepare(`
@@ -340,29 +390,46 @@ export async function GET(request: NextRequest) {
       SELECT
         COALESCE(fd.fee_category, 'Other Fees') as category,
         fd.fee_type as feeType,
-        COALESCE(SUM(ABS(fd.amount)), 0) as total,
+        o.marketplace,
+        COALESCE(-SUM(fd.amount), 0) as total,
         COUNT(*) as count
       FROM fee_details fd
       JOIN orders o ON fd.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter}
-      GROUP BY fd.fee_category, fd.fee_type
+      LEFT JOIN financial_events src ON fd.financial_event_id = src.id
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter} ${activeOrderFilter}
+        AND NOT (src.event_type = 'RefundEvent' AND fd.amount > 0)
+      GROUP BY o.marketplace, fd.fee_category, fd.fee_type
       ORDER BY fd.fee_category, total DESC
     `).all(startDate, endDate, ...mktParams) as any[];
 
-    // Service fees (by effective_date for proper month allocation)
+    // Non-order service fees use the same canonical-source exclusions as P&L.
     const serviceFees = db.prepare(`
       SELECT
-        COALESCE(fee_category, 'Other Fees') as category,
-        fee_type as feeType,
-        COALESCE(SUM(ABS(amount)), 0) as total,
+        COALESCE(fd.fee_category, 'Other Fees') as category,
+        fd.fee_type as feeType,
+        fe.marketplace,
+        COALESCE(-SUM(fd.amount), 0) as total,
         COUNT(*) as count
-      FROM fee_details
-      WHERE (order_id IS NULL OR order_id = '')
-        AND date(posted_date) >= ?
-        AND date(posted_date) < ?
-      GROUP BY fee_category, fee_type
-      ORDER BY fee_category, total DESC
-    `).all(startDate, endDate) as any[];
+      FROM fee_details fd
+      JOIN financial_events fe ON fd.financial_event_id = fe.id
+      WHERE (fd.order_id IS NULL OR fd.order_id = '')
+        AND date(fd.posted_date) >= ?
+        AND date(fd.posted_date) < ?
+        ${eventMktFilter}
+        AND NOT (
+          fe.event_type = 'ServiceFeeEvent'
+          AND fd.fee_type IN (
+            'FBAStorageFee',
+            'FBALongTermStorageFee',
+            'FBARemovalFee',
+            'Subscription',
+            'FBACustomerReturnPerUnitFee',
+            'FBAInboundTransportationFee'
+          )
+        )
+      GROUP BY fe.marketplace, fd.fee_category, fd.fee_type
+      ORDER BY fd.fee_category, total DESC
+    `).all(startDate, endDate, ...mktParams) as any[];
 
     // Combine and build hierarchy
     const allFees = [...orderFees, ...serviceFees];
@@ -374,10 +441,10 @@ export async function GET(request: NextRequest) {
 
     // Promotional rebates
     const promos = db.prepare(`
-      SELECT COALESCE(SUM(ABS(COALESCE(oi.promotional_rebate, 0))), 0) as total
+      SELECT COALESCE(-SUM(COALESCE(oi.promotional_rebate, 0)), 0) as total
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter}
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter} ${activeOrderFilter}
     `).get(startDate, endDate, ...mktParams) as any;
 
     // MFN shipping costs
@@ -385,7 +452,7 @@ export async function GET(request: NextRequest) {
       SELECT COALESCE(SUM(COALESCE(oi.shipping_cost, 0)), 0) as total
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter}
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${mktFilter} ${activeOrderFilter}
     `).get(startDate, endDate, ...mktParams) as any;
 
     // ═══ OTHER EXPENSES ══════════════════════════════════════════════
@@ -407,16 +474,16 @@ export async function GET(request: NextRequest) {
 
     const salesTaxByState = db.prepare(`
       SELECT
-        state,
-        COALESCE(SUM(tax_collected), 0) as taxCollected,
-        COALESCE(SUM(marketplace_facilitator_tax), 0) as facilitatorTax,
-        COALESCE(SUM(tax_collected), 0) as total,
+        st.state,
+        COALESCE(SUM(-st.tax_collected), 0) as taxCollected,
+        COALESCE(SUM(-st.marketplace_facilitator_tax), 0) as facilitatorTax,
+        COALESCE(SUM(-st.tax_collected), 0) as total,
         COUNT(*) as orderCount
-      FROM sales_tax
-      WHERE posted_date >= ? AND posted_date < ?
-      GROUP BY state
+      FROM sales_tax st
+      WHERE st.posted_date >= ? AND st.posted_date < ? ${taxMktFilter}
+      GROUP BY st.state
       ORDER BY total DESC
-    `).all(startDate, endDate) as any[];
+    `).all(startDate, endDate, ...mktParams) as any[];
 
     const totalTaxCollected = salesTaxByState.reduce((s: number, r: any) => s + r.taxCollected, 0);
 
@@ -424,16 +491,25 @@ export async function GET(request: NextRequest) {
 
     const refundsByMonth = db.prepare(`
       SELECT
-        strftime('%Y-%m', refund_date) as month,
+        strftime('%Y-%m', r.refund_date) as month,
         COUNT(*) as count,
-        COALESCE(SUM(refund_amount), 0) as totalRefunded,
-        COALESCE(SUM(fee_clawback), 0) as feeClawbacks,
-        COALESCE(SUM(refund_amount - fee_clawback), 0) as netCost
-      FROM refunds
-      WHERE refund_date >= ? AND refund_date < ?
-      GROUP BY strftime('%Y-%m', refund_date)
+        COALESCE(SUM(r.refund_amount), 0) as totalRefunded,
+        COALESCE(SUM(r.fee_clawback), 0) as feeClawbacks,
+        COALESCE(SUM(r.refund_amount - r.fee_clawback), 0) as netCost
+      FROM refunds r
+      WHERE r.refund_date >= ? AND r.refund_date < ? ${refundMktFilter}
+        AND (
+          r.marketplace != 'walmart'
+          OR EXISTS (
+            SELECT 1 FROM financial_events fe
+            WHERE fe.event_type = 'WalmartRefundEvent'
+              AND fe.order_id = r.order_id
+              AND json_extract(fe.raw_data, '$."Amount Type"') = 'Product Price'
+          )
+        )
+      GROUP BY strftime('%Y-%m', r.refund_date)
       ORDER BY month
-    `).all(startDate, endDate) as any[];
+    `).all(startDate, endDate, ...mktParams) as any[];
 
     // ═══ PER-MARKETPLACE BREAKDOWN ═════════════════════════════════
     const marketplaceBreakdown = db.prepare(`
@@ -444,10 +520,11 @@ export async function GET(request: NextRequest) {
         COALESCE(SUM(oi.total_price + COALESCE(oi.shipping_charged, 0)), 0) as grossReceipts,
         COUNT(DISTINCT o.order_id) as orderCount,
         COALESCE(SUM(oi.quantity), 0) as unitsSold,
-        COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0) as cogs
+        COALESCE(SUM(${recognizedCogsExpr('oi')}), 0) as cogs
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ?
+      ${sellableReturnJoin('oi')}
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${activeOrderFilter}
       GROUP BY o.marketplace
       ORDER BY grossReceipts DESC
     `).all(startDate, endDate) as any[];
@@ -456,16 +533,21 @@ export async function GET(request: NextRequest) {
     const feesByMarketplace = db.prepare(`
       SELECT
         o.marketplace,
-        COALESCE(SUM(ABS(fd.amount)), 0) as totalFees
+        COALESCE(-SUM(fd.amount), 0) as totalFees
       FROM fee_details fd
       JOIN orders o ON fd.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ?
+      LEFT JOIN financial_events src ON fd.financial_event_id = src.id
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${activeOrderFilter}
         AND fd.order_id IS NOT NULL AND fd.order_id != ''
+        AND NOT (src.event_type = 'RefundEvent' AND fd.amount > 0)
       GROUP BY o.marketplace
     `).all(startDate, endDate) as any[];
 
     const feeMap: Record<string, number> = {};
     for (const f of feesByMarketplace) feeMap[f.marketplace] = f.totalFees;
+    for (const f of serviceFees) {
+      feeMap[f.marketplace] = (feeMap[f.marketplace] || 0) + f.total;
+    }
 
     // Refunds per marketplace
     const refundsByMarketplace = db.prepare(`
@@ -474,9 +556,18 @@ export async function GET(request: NextRequest) {
         COALESCE(SUM(refund_amount), 0) as totalRefunds,
         COALESCE(SUM(fee_clawback), 0) as totalClawbacks,
         COUNT(*) as refundCount
-      FROM refunds
-      WHERE refund_date >= ? AND refund_date < ?
-      GROUP BY marketplace
+      FROM refunds r
+      WHERE r.refund_date >= ? AND r.refund_date < ?
+        AND (
+          r.marketplace != 'walmart'
+          OR EXISTS (
+            SELECT 1 FROM financial_events fe
+            WHERE fe.event_type = 'WalmartRefundEvent'
+              AND fe.order_id = r.order_id
+              AND json_extract(fe.raw_data, '$."Amount Type"') = 'Product Price'
+          )
+        )
+      GROUP BY r.marketplace
     `).all(startDate, endDate) as any[];
 
     const refundMap: Record<string, { refunds: number; clawbacks: number }> = {};
@@ -489,7 +580,7 @@ export async function GET(request: NextRequest) {
         COALESCE(SUM(COALESCE(oi.shipping_cost, 0)), 0) as shippingCosts
       FROM order_items oi
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE o.purchase_date >= ? AND o.purchase_date < ?
+      WHERE o.purchase_date >= ? AND o.purchase_date < ? ${activeOrderFilter}
       GROUP BY o.marketplace
     `).all(startDate, endDate) as any[];
 
@@ -501,7 +592,7 @@ export async function GET(request: NextRequest) {
       grossReceipts: m.grossReceipts,
       productSales: m.productSales,
       shippingIncome: m.shippingIncome,
-      cogs: m.cogs,
+      cogs: m.cogs + (m.marketplace === 'amazon' ? inventoryWriteoff - dispositionRestockReversal : 0),
       fees: feeMap[m.marketplace] || 0,
       refunds: refundMap[m.marketplace]?.refunds || 0,
       clawbacks: refundMap[m.marketplace]?.clawbacks || 0,
@@ -510,58 +601,38 @@ export async function GET(request: NextRequest) {
       units: m.unitsSold,
     }));
 
-    // ═══ 1099-K RECONCILIATION ═════════════════════════════════════
-    // The 1099-K Box 1a = Product Sales + Shipping + Gift Wrap - Promos + Sales Tax
-    // This uses transaction date to match the 1099-K
-    const k1099_grossReceipts = income.productSales + income.shippingIncome + promos.total + totalTaxCollected;
-    // Note: promos are already negative in the raw data, so adding them subtracts
-
-    // ═══ SCHEDULE C CALCULATION ══════════════════════════════════════
-    // Schedule C Line 1 = gross receipts WITHOUT sales tax (tax is pass-through)
-    const line1_grossReceipts = income.grossReceipts;
-    const line2_returnsAllowances = refundTotals.totalRefunds;
-    const line3_netReceipts = line1_grossReceipts - line2_returnsAllowances;
-    const line4_cogs = cogsSold.total;
-    const line5_grossProfit = line3_netReceipts - line4_cogs;
-    // Restocking fees: money kept by the seller on partial refunds — income.
-    const line6_otherIncome = reimbursements.total + otherIncomeData.total + refundTotals.totalClawbacks + refundTotals.totalRestocking;
-    const line7_grossIncome = line5_grossProfit + line6_otherIncome;
-
-    // Deductions (Lines 8-27 on Schedule C)
-    const deductions = {
-      amazonFees: totalAmazonFees,
+    const scheduleC = buildTaxSchedule({
+      grossReceipts: income.grossReceipts,
+      returnsAndAllowances: refundTotals.totalRefunds,
+      recognizedCogs,
+      inventoryWriteoff,
+      reimbursements: reimbursements.total,
+      otherIncome: otherIncomeData.total,
+      feeClawbacks: refundTotals.totalClawbacks,
+      restockingFees: refundTotals.totalRestocking,
+      marketplaceFees: totalAmazonFees,
       promotionalRebates: promos.total,
       shippingCosts: shippingCosts.total,
       otherExpenses: totalOtherExpenses,
       inboundShipping: inboundShipping.total,
-    };
-    const totalDeductions = Object.values(deductions).reduce((s, v) => s + v, 0);
-
-    const line31_netProfit = line7_grossIncome - totalDeductions;
+    });
 
     db.close();
 
     return NextResponse.json({
       year,
-      scheduleC: {
-        line1_grossReceipts,
-        line2_returnsAllowances,
-        line3_netReceipts,
-        line4_cogs,
-        line5_grossProfit,
-        line6_otherIncome,
-        line7_grossIncome,
-        deductions,
-        totalDeductions,
-        line31_netProfit,
-      },
+      scheduleC,
       incomeByMonth,
       cogs: {
         beginningInventory: beginningInventory.total,
         purchases: purchases.total,
         inboundShipping: inboundShipping.total,
-        costOfGoodsSold: cogsSold.total,
+        costOfGoodsSold: scheduleC.line4_cogs,
         endingInventory: endingInventory.total,
+        calculationMethod: 'transaction-fifo',
+        saleCogsBeforeDispositionAdjustments: cogsSold.total,
+        dispositionRestockReversal,
+        inventoryWriteoff,
       },
       perMarketplace,
       amazonFees: allFees,

@@ -32,16 +32,18 @@
  *   - closed: terminal, doesn't make sense
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
+import type Database from 'better-sqlite3';
 import { clearTokenCache, getAccessToken, getEndpoint } from '@/lib/sp-api/auth';
+import { listInboundPlans } from '@/lib/sp-api/inboundPlansV2';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import {
+  buildInboundPlanName,
+  selectRecoverableInboundPlan,
+} from '@/lib/inbound-plan-recovery';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 function getAmazonCredentials(db: Database.Database): SPAPICredentials | null {
@@ -87,12 +89,21 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
   const db = getDb();
   let creds: SPAPICredentials | null;
   let inboundPlanId: string | null;
+  let batchChannel: string;
+  let inboundPlanName: string;
   try {
     const batch = db.prepare(`
-      SELECT id, status, channel, inbound_plan_id as inboundPlanId,
+      SELECT id, name, status, channel, inbound_plan_id as inboundPlanId,
              COALESCE(sent_at, updated_at, created_at) as sentAt
       FROM listing_batches WHERE id = ?
-    `).get(batchId) as { id: number; status: string; channel: string; inboundPlanId: string | null; sentAt: string | null } | undefined;
+    `).get(batchId) as {
+      id: number;
+      name: string;
+      status: string;
+      channel: string;
+      inboundPlanId: string | null;
+      sentAt: string | null;
+    } | undefined;
 
     if (!batch) {
       return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
@@ -119,6 +130,8 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
       }
     }
     inboundPlanId = batch.inboundPlanId;
+    batchChannel = batch.channel;
+    inboundPlanName = buildInboundPlanName(batchId, batch.name);
     creds = getAmazonCredentials(db);
   } finally {
     db.close();
@@ -128,9 +141,36 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     return NextResponse.json({ error: 'Amazon SP-API credentials not configured' }, { status: 400 });
   }
 
-  // Cancel the plan on Amazon (best-effort — even if this fails, we'll
-  // reset the batch locally so the user isn't stuck. Amazon's plan will
-  // expire on its own if not used.)
+  // A crashed send can leave the plan ID only on Amazon. Recover the stable
+  // external name before resetting so an active remote plan is never orphaned.
+  if (!inboundPlanId && batchChannel === 'FBA') {
+    clearTokenCache();
+    let recoveryMatch;
+    try {
+      recoveryMatch = selectRecoverableInboundPlan(
+        await listInboundPlans(creds, { status: 'ACTIVE' }),
+        inboundPlanName,
+      );
+    } catch (err) {
+      return NextResponse.json({
+        error: `Could not verify whether Amazon has an inbound plan to cancel: ${err}`,
+      }, { status: 502 });
+    }
+    if (recoveryMatch.kind === 'ambiguous') {
+      return NextResponse.json({
+        error: `Amazon has multiple active plans named "${inboundPlanName}". `
+          + 'Reset stopped without changing FlipLedger.',
+        planIds: recoveryMatch.plans.map((plan) => plan.inboundPlanId),
+      }, { status: 409 });
+    }
+    if (recoveryMatch.kind === 'found') {
+      inboundPlanId = recoveryMatch.plan.inboundPlanId;
+    }
+  }
+
+  // Cancel the plan on Amazon before resetting local state. Failure is
+  // fail-closed: preserving the local batch is safer than silently leaving a
+  // live remote plan that no longer matches edited quantities.
   let amazonCancelled = false;
   let amazonError: string | undefined;
   if (inboundPlanId) {
@@ -139,7 +179,10 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     amazonCancelled = result.ok;
     amazonError = result.error;
     if (!amazonCancelled) {
-      console.warn(`[cancel-and-edit] Amazon cancellation failed (proceeding with local reset): ${amazonError}`);
+      return NextResponse.json({
+        error: `Amazon cancellation failed; FlipLedger was not reset: ${amazonError}`,
+        planId: inboundPlanId,
+      }, { status: 502 });
     }
   }
 
@@ -200,6 +243,6 @@ export async function POST(_request: NextRequest, { params }: { params: Promise<
     cancelledPlanId: inboundPlanId,
     note: amazonCancelled
       ? 'Inbound plan cancelled on Amazon. Batch is now in draft state — add items and re-send.'
-      : 'Local batch reset to draft. Amazon-side cancellation failed (plan may expire on its own).',
+      : 'No active Amazon plan existed. Batch is now in draft state.',
   });
 }

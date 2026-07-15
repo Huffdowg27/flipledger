@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { calculateProfit, calculateROI, calculateMargin, calculateShippingProfit } from '@/lib/calculations';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -14,23 +15,38 @@ const ORDER_POSTED = `(SELECT order_id, MIN(posted_date) as posted_date FROM fin
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const db = getDb();
 
-  let startDate = searchParams.get('startDate');
-  let endDate = searchParams.get('endDate');
-  if (!startDate) {
-    const days = parseInt(searchParams.get('days') || '30');
+  const rawStartDate = searchParams.get('startDate');
+  const rawEndDate = searchParams.get('endDate');
+  if (
+    (rawStartDate !== null && !isIsoCalendarDate(rawStartDate))
+    || (rawEndDate !== null && !isIsoCalendarDate(rawEndDate))
+    || (rawStartDate !== null && rawEndDate !== null && rawStartDate > rawEndDate)
+  ) {
+    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  }
+  let startDate: string;
+  if (rawStartDate) {
+    startDate = rawStartDate;
+  } else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays) || Number(rawDays) < 1 || Number(rawDays) > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    const days = Number(rawDays);
     startDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
   }
-  if (!endDate) {
-    endDate = new Date().toISOString().split('T')[0];
+  const endDate = rawEndDate || new Date().toISOString().split('T')[0];
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
   }
-  const marketplace = searchParams.get('marketplace');
+  const marketplace = marketplaceResult.marketplace;
   const openOnly = searchParams.get('openOnly') === '1';
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
+  const marketplaceClause = marketplace ? 'AND o.marketplace = ?' : '';
 
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
+  const db = getDb();
 
   try {
     const openOrderFilter = openOnly
@@ -76,13 +92,13 @@ export async function GET(request: NextRequest) {
       ) ot ON o.order_id = ot.order_id
       WHERE o.fulfillment_channel IN ('MFN', 'Seller')
         AND o.marketplace != 'ebay'
-        ${openOrderFilter} ${MF}
+        ${openOrderFilter} ${marketplaceClause}
       ORDER BY o.purchase_date DESC
     `);
 
     const rows = (openOnly
-      ? query.all()
-      : query.all(startDate, endDateNext)) as any[];
+      ? query.all(...(marketplace ? [marketplace] : []))
+      : query.all(...(marketplace ? [startDate, endDateNext, marketplace] : [startDate, endDateNext]))) as any[];
 
     const items = rows.map((row) => {
       const buyCost = row.buyCostPerUnit * row.quantity;

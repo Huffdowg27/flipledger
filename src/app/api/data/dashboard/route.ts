@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { calculateProfit } from '@/lib/calculations';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -16,32 +17,63 @@ const FE_PURCHASE = `(SELECT order_id, purchase_date as posted_date FROM orders)
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const db = getDb();
 
-  let startDate = searchParams.get('startDate');
-  let endDate = searchParams.get('endDate');
-  if (!startDate) {
-    const days = parseInt(searchParams.get('days') || '30');
+  const rawStartDate = searchParams.get('startDate');
+  const rawEndDate = searchParams.get('endDate');
+  if (
+    (rawStartDate !== null && !isIsoCalendarDate(rawStartDate))
+    || (rawEndDate !== null && !isIsoCalendarDate(rawEndDate))
+    || (rawStartDate !== null && rawEndDate !== null && rawStartDate > rawEndDate)
+  ) {
+    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  }
+
+  let startDate: string;
+  if (rawStartDate) {
+    startDate = rawStartDate;
+  } else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays)) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    const days = Number(rawDays);
+    if (!Number.isSafeInteger(days) || days < 1 || days > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
     startDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
   }
-  if (!endDate) {
-    endDate = new Date().toISOString().split('T')[0];
+  const endDate = rawEndDate || new Date().toISOString().split('T')[0];
+
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
   }
+  const marketplace = marketplaceResult.marketplace;
+
+  const dateBasis = searchParams.get('dateBasis') || 'posted';
+  if (!['posted', 'purchase', 'reconciled'].includes(dateBasis)) {
+    return NextResponse.json({ error: 'Invalid date basis' }, { status: 400 });
+  }
+
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
   const startMs = new Date(startDate).getTime();
   const endMs = new Date(endDate).getTime();
   const periodMs = endMs - startMs + 86400000;
   const prevStart = new Date(startMs - periodMs).toISOString().split('T')[0];
 
-  // Marketplace filter
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
-  const dateBasis = searchParams.get('dateBasis') || 'posted';
+  const MF_ORDER = marketplace ? 'AND o.marketplace = ?' : '';
+  const MF_EVENT = marketplace ? 'AND fe.marketplace = ?' : '';
+  const MF_REFUND = marketplace ? 'AND refunds.marketplace = ?' : '';
+  const MF_REIMBURSEMENT = marketplace ? 'AND reimbursements.marketplace = ?' : '';
+  const withMarketplace = (...values: string[]): string[] => (
+    marketplace ? [...values, marketplace] : values
+  );
+
   // 'reconciled' uses posted_date basis but requires real fee rows (financial_event_id != 0),
   // excluding estimated fees written by estimateAndBackfillFees() for unreconciled orders.
   const FE = dateBasis === 'purchase' ? FE_PURCHASE : FE_POSTED;
   const REAL_FEES_ONLY = dateBasis === 'reconciled' ? 'AND fd.financial_event_id != 0' : '';
+  const db = getDb();
 
   try {
     // ─── Revenue & units ──────────────────────────────────────────────
@@ -72,9 +104,9 @@ export async function GET(request: NextRequest) {
       FROM orders o
       JOIN ${FE} fe ON o.order_id = fe.order_id
       LEFT JOIN item_rollup ir ON o.order_id = ir.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         AND o.status NOT IN ('Canceled', 'Cancelled')
-    `).get(startDate, endDateNext) as any;
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
     const prevSalesData = db.prepare(`
       WITH item_rollup AS (
@@ -103,9 +135,9 @@ export async function GET(request: NextRequest) {
       FROM orders o
       JOIN ${FE} fe ON o.order_id = fe.order_id
       LEFT JOIN item_rollup ir ON o.order_id = ir.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         AND o.status NOT IN ('Canceled', 'Cancelled')
-    `).get(prevStart, startDate) as any;
+    `).get(...withMarketplace(prevStart, startDate)) as any;
 
     // ─── Order fees ───────────────────────────────────────────────────
     // In reconciled mode: REAL_FEES_ONLY excludes financial_event_id=0 estimated fee rows.
@@ -115,9 +147,9 @@ export async function GET(request: NextRequest) {
       JOIN ${FE} fe ON fd.order_id = fe.order_id
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
-        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         ${REAL_FEES_ONLY}
-    `).get(startDate, endDateNext) as any;
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
     const serviceFeeData = db.prepare(`
       SELECT COALESCE(-SUM(fd.amount), 0) as totalFees
@@ -125,7 +157,7 @@ export async function GET(request: NextRequest) {
       JOIN financial_events fe ON fd.financial_event_id = fe.id
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ? AND date(fd.posted_date) < ?
-        ${marketplace ? "AND fe.marketplace = '" + marketplace + "'" : ''}
+        ${MF_EVENT}
         AND NOT (
           fe.event_type = 'ServiceFeeEvent'
           AND fd.fee_type IN (
@@ -136,7 +168,7 @@ export async function GET(request: NextRequest) {
             'FBAInboundTransportationFee'
           )
         )
-    `).get(startDate, endDateNext) as any;
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
     const prevOrderFeeData = db.prepare(`
       SELECT COALESCE(-SUM(fd.amount), 0) as totalFees
@@ -144,9 +176,9 @@ export async function GET(request: NextRequest) {
       JOIN ${FE} fe ON fd.order_id = fe.order_id
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
-        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         ${REAL_FEES_ONLY}
-    `).get(prevStart, startDate) as any;
+    `).get(...withMarketplace(prevStart, startDate)) as any;
 
     const prevServiceFeeData = db.prepare(`
       SELECT COALESCE(-SUM(fd.amount), 0) as totalFees
@@ -154,7 +186,7 @@ export async function GET(request: NextRequest) {
       JOIN financial_events fe ON fd.financial_event_id = fe.id
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ? AND date(fd.posted_date) < ?
-        ${marketplace ? "AND fe.marketplace = '" + marketplace + "'" : ''}
+        ${MF_EVENT}
         AND NOT (
           fe.event_type = 'ServiceFeeEvent'
           AND fd.fee_type IN (
@@ -165,7 +197,7 @@ export async function GET(request: NextRequest) {
             'FBAInboundTransportationFee'
           )
         )
-    `).get(prevStart, startDate) as any;
+    `).get(...withMarketplace(prevStart, startDate)) as any;
 
     // ─── COGS ─────────────────────────────────────────────────────────
     const cogsData = db.prepare(`
@@ -173,16 +205,16 @@ export async function GET(request: NextRequest) {
       FROM order_items oi
       JOIN ${FE} fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(startDate, endDateNext) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
     const prevCogsData = db.prepare(`
       SELECT COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0) as totalCogs
       FROM order_items oi
       JOIN ${FE} fe ON oi.order_id = fe.order_id
       JOIN orders o ON oi.order_id = o.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
-    `).get(prevStart, startDate) as any;
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
+    `).get(...withMarketplace(prevStart, startDate)) as any;
 
     // ─── Refunds ──────────────────────────────────────────────────────
     // Walmart refunds: only count those settled in recon (matches Walmart Net
@@ -191,7 +223,7 @@ export async function GET(request: NextRequest) {
     // settlement time).
     const SETTLED_FILTER = `
       AND (
-        marketplace != 'walmart'
+        refunds.marketplace != 'walmart'
         OR EXISTS (
           SELECT 1 FROM financial_events fe
           WHERE fe.event_type = 'WalmartRefundEvent'
@@ -203,27 +235,27 @@ export async function GET(request: NextRequest) {
     const refundData = db.prepare(`
       SELECT COALESCE(SUM(refund_amount), 0) as totalRefunds,
         COALESCE(SUM(fee_clawback), 0) as totalClawbacks
-      FROM refunds WHERE refund_date >= ? AND refund_date < ? ${MF_R} ${SETTLED_FILTER}
-    `).get(startDate, endDateNext) as any;
+      FROM refunds WHERE refund_date >= ? AND refund_date < ? ${MF_REFUND} ${SETTLED_FILTER}
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
     const prevRefundData = db.prepare(`
       SELECT COALESCE(SUM(refund_amount), 0) as totalRefunds,
         COALESCE(SUM(fee_clawback), 0) as totalClawbacks
-      FROM refunds WHERE refund_date >= ? AND refund_date < ? ${MF_R} ${SETTLED_FILTER}
-    `).get(prevStart, startDate) as any;
+      FROM refunds WHERE refund_date >= ? AND refund_date < ? ${MF_REFUND} ${SETTLED_FILTER}
+    `).get(...withMarketplace(prevStart, startDate)) as any;
 
     // ─── Reimbursements — exclude SETTLEMENT- rows (duplicates of ADJ- rows) ──
     const reimbData = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
-      FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
+      FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_REIMBURSEMENT}
         AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
-    `).get(startDate, endDateNext) as any;
+    `).get(...withMarketplace(startDate, endDateNext)) as any;
 
     const prevReimbData = db.prepare(`
       SELECT COALESCE(SUM(amount), 0) as total
-      FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_R}
+      FROM reimbursements WHERE reimbursement_date >= ? AND reimbursement_date < ? ${MF_REIMBURSEMENT}
         AND reimbursement_id NOT LIKE 'SETTLEMENT-%'
-    `).get(prevStart, startDate) as any;
+    `).get(...withMarketplace(prevStart, startDate)) as any;
 
     // ─── Other expenses ───────────────────────────────────────────────
     const expenseData = db.prepare(`
@@ -254,10 +286,10 @@ export async function GET(request: NextRequest) {
       FROM orders o
       JOIN ${FE} fe ON o.order_id = fe.order_id
       LEFT JOIN item_rollup ir ON o.order_id = ir.order_id
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         AND o.status NOT IN ('Canceled', 'Cancelled')
       GROUP BY ${chartGroupExpr} ORDER BY day
-    `).all(startDate, endDateNext) as any[];
+    `).all(...withMarketplace(startDate, endDateNext)) as any[];
 
     const dailyOrderFees = db.prepare(`
       SELECT ${chartGroupExpr} as day, -SUM(fd.amount) as fees
@@ -265,9 +297,9 @@ export async function GET(request: NextRequest) {
       JOIN ${FE} fe ON fd.order_id = fe.order_id
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
-        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
       GROUP BY ${chartGroupExpr}
-    `).all(startDate, endDateNext) as any[];
+    `).all(...withMarketplace(startDate, endDateNext)) as any[];
 
     const feesByDay: Record<string, number> = {};
     for (const row of dailyOrderFees) feesByDay[row.day] = row.fees;
@@ -288,12 +320,12 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN products p ON oi.asin = p.asin
       LEFT JOIN products p2 ON oi.sku = p2.asin
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         AND oi.asin != 'PENDING'
       GROUP BY oi.asin
       ORDER BY (SUM(oi.total_price) - COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0)) DESC
       LIMIT 5
-    `).all(startDate, endDateNext) as any[];
+    `).all(...withMarketplace(startDate, endDateNext)) as any[];
 
     const worstProducts = db.prepare(`
       SELECT COALESCE(p.name, p2.name, oi.asin) as name, oi.asin, COALESCE(p.category, p2.category) as category,
@@ -304,13 +336,13 @@ export async function GET(request: NextRequest) {
       JOIN orders o ON oi.order_id = o.order_id
       LEFT JOIN products p ON oi.asin = p.asin
       LEFT JOIN products p2 ON oi.sku = p2.asin
-      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+      WHERE fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         AND oi.asin != 'PENDING'
         AND oi.cogs_per_unit > 0
       GROUP BY oi.asin
       ORDER BY (SUM(oi.total_price) - COALESCE(SUM(oi.cogs_per_unit * oi.quantity), 0)) ASC
       LIMIT 5
-    `).all(startDate, endDateNext) as any[];
+    `).all(...withMarketplace(startDate, endDateNext)) as any[];
 
     // ─── Expense breakdown ────────────────────────────────────────────
     const orderFeeBreakdown = db.prepare(`
@@ -319,10 +351,10 @@ export async function GET(request: NextRequest) {
       JOIN ${FE} fe ON fd.order_id = fe.order_id
       JOIN orders o ON fd.order_id = o.order_id
       WHERE fd.order_id IS NOT NULL AND fd.order_id != ''
-        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF}
+        AND fe.posted_date >= ? AND fe.posted_date < ? ${MF_ORDER}
         ${REAL_FEES_ONLY}
       GROUP BY fd.fee_category
-    `).all(startDate, endDateNext) as any[];
+    `).all(...withMarketplace(startDate, endDateNext)) as any[];
 
     const serviceFeeBreakdown = db.prepare(`
       SELECT COALESCE(fd.fee_category, 'Other') as category, -SUM(fd.amount) as total
@@ -330,7 +362,7 @@ export async function GET(request: NextRequest) {
       JOIN financial_events fe ON fd.financial_event_id = fe.id
       WHERE (fd.order_id IS NULL OR fd.order_id = '')
         AND date(fd.posted_date) >= ? AND date(fd.posted_date) < ?
-        ${marketplace ? "AND fe.marketplace = '" + marketplace + "'" : ''}
+        ${MF_EVENT}
         AND NOT (
           fe.event_type = 'ServiceFeeEvent'
           AND fd.fee_type IN (
@@ -342,7 +374,7 @@ export async function GET(request: NextRequest) {
           )
         )
       GROUP BY fd.fee_category
-    `).all(startDate, endDateNext) as any[];
+    `).all(...withMarketplace(startDate, endDateNext)) as any[];
 
     const categoryMap: Record<string, number> = {};
     for (const row of [...orderFeeBreakdown, ...serviceFeeBreakdown]) {
@@ -401,7 +433,8 @@ export async function GET(request: NextRequest) {
     // ─── In-flight: orders not yet recognized in P&L (regardless of dateBasis) ──
     // pending = customer placed but not shipped (Pending/Unshipped)
     // shipped = shipped but Financial Events ShipmentEvent hasn't posted yet (cash-basis lag)
-    const pendingMF = marketplace ? `AND o.marketplace = '${marketplace}'` : `AND o.marketplace = 'amazon'`;
+    const pendingMarketplace = marketplace || 'amazon';
+    const pendingMF = 'AND o.marketplace = ?';
     const pendingData = db.prepare(`
       SELECT
         COUNT(DISTINCT o.order_id) as orders,
@@ -409,7 +442,7 @@ export async function GET(request: NextRequest) {
       FROM orders o
       LEFT JOIN order_items oi ON oi.order_id = o.order_id
       WHERE o.status IN ('Pending', 'Unshipped') ${pendingMF}
-    `).get() as any;
+    `).get(pendingMarketplace) as any;
 
     // Limit to last 14 days — older shipped-no-event orders are stuck anomalies, not actionable.
     // Amazon's Delivery Date Policy holds funds ~7-10 days from ship (≈ delivery + 7-day cushion).
@@ -428,7 +461,7 @@ export async function GET(request: NextRequest) {
         AND fe.order_id IS NULL
         AND o.purchase_date >= ?
         ${pendingMF}
-    `).get(recentCutoff) as any;
+    `).get(recentCutoff, pendingMarketplace) as any;
 
     // Amazon's Delivery Date Policy: funds release ~10 days after ship (typical observed window 8-10 days)
     const DDP_DAYS = 10;
@@ -451,7 +484,7 @@ export async function GET(request: NextRequest) {
       WHERE o.purchase_date >= ?
         AND o.status IN ('Shipped', 'PartiallyShipped')
         ${pendingMF}
-    `).get(aovCutoff) as any;
+    `).get(aovCutoff, pendingMarketplace) as any;
     const avgOrderValueCents = aovData.orders > 0 ? Math.round(aovData.revenue / aovData.orders) : 0;
     const pendingEstimateCents = pendingData.orders * avgOrderValueCents;
 
@@ -471,7 +504,7 @@ export async function GET(request: NextRequest) {
           WHERE oi.order_id = o.order_id AND oi.asin != 'PENDING'
         )
         ${pendingMF}
-    `).get(startDate, endDateNext) as any;
+    `).get(startDate, endDateNext, pendingMarketplace) as any;
 
     const unknownPendingData = db.prepare(`
       SELECT COUNT(*) AS unknownOrders
@@ -484,7 +517,7 @@ export async function GET(request: NextRequest) {
           WHERE oi.order_id = o.order_id AND oi.asin != 'PENDING'
         )
         ${pendingMF}
-    `).get(startDate, endDateNext) as any;
+    `).get(startDate, endDateNext, pendingMarketplace) as any;
 
     const unknownEstimateCents = unknownPendingData.unknownOrders * avgOrderValueCents;
 

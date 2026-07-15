@@ -94,10 +94,10 @@ export default function DataIntegrityPage() {
               </div>
             </div>
             <div className="bg-bg-surface border border-border-subtle rounded-lg p-5 border-t-2 border-t-negative">
-              <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Profit Overstated By ≥</div>
+              <div className="text-[11px] font-medium tracking-widest uppercase text-text-tertiary mb-2">Revenue Missing Cost</div>
               <div className="text-2xl font-bold font-mono text-text-primary">{formatCurrency(data.summary.zeroCogsRevenueCents)}</div>
               <div className="text-xs text-text-tertiary mt-1 font-mono">
-                revenue on {formatNumber(data.summary.zeroCogsUnits)} units with $0 cost
+                revenue on {formatNumber(data.summary.zeroCogsUnits)} units currently costed at $0
               </div>
             </div>
           </div>

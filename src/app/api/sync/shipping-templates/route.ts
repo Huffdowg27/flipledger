@@ -5,9 +5,9 @@
  * Read-only — no Amazon writes, no schema changes.
  *
  * The templates are account-specific: they live inside the PRODUCT type
- * definition schema as merchant_shipping_group enum values. Amazon's enum
- * keys (e.g. "DEFAULT_MFN") are what must be written to listings — the
- * display names ("DEFAULT MFN USE THIS ONE") are labels only.
+ * definition schema as merchant_shipping_group enum values with display names.
+ * FlipLedger caches both the enum key and display name so old local key values
+ * can be resolved to the exact template name sent in Listings Items payloads.
  *
  * Cache strategy: result stored in settings table under key
  * `amazon_shipping_templates` as a JSON blob with `fetchedAt` embedded.

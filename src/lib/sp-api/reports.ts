@@ -6,8 +6,14 @@
 
 import { spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
+import { replaceSettlementReport } from './settlementParser';
 import Database from 'better-sqlite3';
 import path from 'path';
+import {
+  parseSettlementPeriodMetadata,
+  upsertSettlementPeriod,
+} from '../settlement-periods';
+import type { SettlementReportListItem } from './settlement-report-resolution';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -22,7 +28,7 @@ function getDb() {
 export async function getSettlementReports(
   credentials: SPAPICredentials,
   startDate: string,
-): Promise<any[]> {
+): Promise<SettlementReportListItem[]> {
   const params: Record<string, string> = {
     reportTypes: 'GET_V2_SETTLEMENT_REPORT_DATA_FLAT_FILE_V2',
     processingStatuses: 'DONE',
@@ -34,16 +40,40 @@ export async function getSettlementReports(
   return response.reports || [];
 }
 
+export async function getSettlementReport(
+  credentials: SPAPICredentials,
+  reportId: string,
+  retries = 1,
+): Promise<SettlementReportListItem> {
+  const report = await spApiRequest(
+    credentials,
+    `/reports/2021-06-30/reports/${encodeURIComponent(reportId)}`,
+    undefined,
+    retries,
+  );
+  return {
+    reportId: String(report.reportId || reportId),
+    reportDocumentId: report.reportDocumentId ? String(report.reportDocumentId) : undefined,
+    dataStartTime: report.dataStartTime,
+    dataEndTime: report.dataEndTime,
+    createdTime: report.createdTime,
+    processingStatus: report.processingStatus,
+  };
+}
+
 /**
  * Download a report's content by document ID.
  */
 export async function downloadReport(
   credentials: SPAPICredentials,
-  reportDocumentId: string
+  reportDocumentId: string,
+  retries = 3,
 ): Promise<string> {
   const docResponse = await spApiRequest(
     credentials,
-    `/reports/2021-06-30/documents/${reportDocumentId}`
+    `/reports/2021-06-30/documents/${reportDocumentId}`,
+    undefined,
+    retries,
   );
 
   const downloadUrl = docResponse.url;
@@ -67,38 +97,71 @@ export async function downloadReport(
 }
 
 /**
- * Normalize a settlement report date string to "YYYY-MM-DD HH:MM:SS UTC".
- *
- * Handled formats:
- *   "2026-04-14 22:35:46 UTC"    → unchanged
- *   "2026-04-14T22:35:46Z"       → "2026-04-14 22:35:46 UTC"
- *   "16.02.2026 18:58:33 UTC"    → "2026-02-16 18:58:33 UTC"
- *
- * Returns null (and logs a warning) when the input cannot be recognized.
+ * Download and ingest exactly one settlement report by report/settlement id.
+ * This intentionally disables SP-API retries so an HTTP 429 or other failure
+ * stops after the first attempt.
  */
-export function normalizeSettlementDate(raw: string, label: string): string | null {
-  if (!raw) return null;
-  const s = raw.trim();
+export async function syncSingleSettlementReport(
+  credentials: SPAPICredentials,
+  settlementId: string,
+): Promise<{ settlementId: string; reportDocumentId: string; rowsPersisted: number; shippingCostsUpdated: number }> {
+  return syncSettlementReportByReportId(credentials, {
+    reportId: settlementId,
+    expectedSettlementId: settlementId,
+  });
+}
 
-  // Already in canonical form: "YYYY-MM-DD HH:MM:SS UTC"
-  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(s)) {
-    return s.endsWith(' UTC') ? s : `${s} UTC`;
+export async function syncSettlementReportByReportId(
+  credentials: SPAPICredentials,
+  input: {
+    reportId: string;
+    expectedSettlementId?: string | null;
+    reportDocumentId?: string;
+  },
+): Promise<{
+  settlementId: string;
+  reportId: string;
+  reportDocumentId: string;
+  rowsPersisted: number;
+  shippingCostsUpdated: number;
+}> {
+  const report = input.reportDocumentId
+    ? { reportId: input.reportId, reportDocumentId: input.reportDocumentId }
+    : await getSettlementReport(credentials, input.reportId, 1);
+  const reportDocumentId = String(report.reportDocumentId || '');
+  if (!reportDocumentId) {
+    throw new Error(`Settlement report ${input.reportId} has no reportDocumentId`);
   }
 
-  // ISO-8601 with T separator: "2026-04-14T22:35:46Z" or "...+00:00"
-  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(s)) {
-    const normalized = s.replace('T', ' ').replace(/Z$/, ' UTC').replace(/[+-]\d{2}:\d{2}$/, ' UTC').trim();
-    return normalized;
+  const content = await downloadReport(credentials, reportDocumentId, 1);
+  const metadata = parseSettlementPeriodMetadata(content);
+  if (!metadata) {
+    throw new Error(`Settlement report ${input.reportId} did not contain settlement period metadata`);
+  }
+  if (input.expectedSettlementId && metadata.settlementId !== input.expectedSettlementId) {
+    throw new Error(`Settlement report metadata id ${metadata.settlementId} did not match requested ${input.expectedSettlementId}`);
   }
 
-  // DD.MM.YYYY HH:MM:SS [UTC]: "16.02.2026 18:58:33 UTC"
-  const ddmmyyyy = /^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}:\d{2}:\d{2})/.exec(s);
-  if (ddmmyyyy) {
-    return `${ddmmyyyy[3]}-${ddmmyyyy[2]}-${ddmmyyyy[1]} ${ddmmyyyy[4]} UTC`;
+  const shippingCostsUpdated = parseSettlementReport(content);
+  const db = new Database(path.join(process.cwd(), 'data', 'flipledger.db'), { readonly: true });
+  db.pragma('busy_timeout = 15000');
+  db.pragma('journal_mode = WAL');
+  try {
+    const row = db.prepare(`
+      SELECT COUNT(*) AS rowsPersisted
+      FROM settlement_transactions
+      WHERE settlement_id = ?
+    `).get(metadata.settlementId) as { rowsPersisted: number };
+    return {
+      settlementId: metadata.settlementId,
+      reportId: input.reportId,
+      reportDocumentId,
+      rowsPersisted: row.rowsPersisted,
+      shippingCostsUpdated,
+    };
+  } finally {
+    db.close();
   }
-
-  console.warn(`[Settlement] Unrecognized date format for ${label}: "${s}" — skipping`);
-  return null;
 }
 
 /**
@@ -112,65 +175,10 @@ export function normalizeSettlementDate(raw: string, label: string): string | nu
 export function extractAndStoreSettlementPeriod(content: string): string | null {
   const db = getDb();
   try {
-    const lines = content.split('\n');
-    if (lines.length < 2) return null;
-
-    const headers = lines[0].split('\t').map(h => h.trim().replace(/"/g, ''));
-    const colIndex = (name: string) => headers.indexOf(name);
-
-    const settlementIdIdx    = colIndex('settlement-id');
-    const settlementStartIdx = colIndex('settlement-start-date');
-    const settlementEndIdx   = colIndex('settlement-end-date');
-    const depositDateIdx     = colIndex('deposit-date');
-    const marketplaceNameIdx = colIndex('marketplace-name');
-
-    if (settlementIdIdx < 0 || settlementStartIdx < 0 || settlementEndIdx < 0) {
-      console.warn('[Settlement] extractAndStoreSettlementPeriod: required columns absent (V1 format?)');
-      return null;
-    }
-
-    // Scan rows until we find one with all three required values populated.
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split('\t').map(c => c.trim().replace(/"/g, ''));
-      if (cols.length <= Math.max(settlementIdIdx, settlementStartIdx, settlementEndIdx)) continue;
-
-      const sid     = cols[settlementIdIdx]    || '';
-      const rawStart = cols[settlementStartIdx] || '';
-      const rawEnd   = cols[settlementEndIdx]   || '';
-      if (!sid || !rawStart || !rawEnd) continue;
-
-      const sStart = normalizeSettlementDate(rawStart, `start for ${sid}`);
-      const sEnd   = normalizeSettlementDate(rawEnd,   `end for ${sid}`);
-      if (!sStart || !sEnd) {
-        // Required dates could not be parsed; skip this row.
-        continue;
-      }
-
-      const rawDeposit  = depositDateIdx >= 0 ? (cols[depositDateIdx] || null) : null;
-      const depositDate = rawDeposit ? normalizeSettlementDate(rawDeposit, `deposit for ${sid}`) : null;
-
-      const marketName  = marketplaceNameIdx >= 0 ? (cols[marketplaceNameIdx] || null) : null;
-      const marketplace = marketName
-        ? marketName.toLowerCase().replace('amazon.', '').replace('.com', '') || 'amazon'
-        : 'amazon';
-
-      db.prepare(`
-        INSERT INTO settlement_periods
-          (settlement_id, marketplace, start_date, end_date, deposit_date, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-        ON CONFLICT(settlement_id) DO UPDATE SET
-          marketplace  = excluded.marketplace,
-          start_date   = excluded.start_date,
-          end_date     = excluded.end_date,
-          deposit_date = excluded.deposit_date,
-          updated_at   = datetime('now')
-      `).run(sid, marketplace, sStart, sEnd, depositDate);
-
-      return sid;
-    }
-
-    console.warn('[Settlement] extractAndStoreSettlementPeriod: no row with settlement-id/start/end found');
-    return null;
+    const metadata = parseSettlementPeriodMetadata(content);
+    if (!metadata) return null;
+    upsertSettlementPeriod(db, metadata);
+    return metadata.settlementId;
   } finally {
     db.close();
   }
@@ -308,6 +316,17 @@ function parseSettlementReport(content: string): number {
     const lines = content.split('\n');
     if (lines.length < 2) return 0;
 
+    const settlementPeriod = parseSettlementPeriodMetadata(content);
+    if (settlementPeriod) {
+      upsertSettlementPeriod(db, settlementPeriod);
+    }
+
+    // Per-transaction settlement lines (the settlement-accurate backbone for
+    // Profit First / returns reconciliation) are persisted AFTER this loop via
+    // the shared, tested `replaceSettlementReport` helper — see the end of this
+    // function. The duplicate inline create/track/delete/insert logic was
+    // removed so production and the test harness share one implementation.
+
     // Parse header to find column indices
     const headers = lines[0].split('\t').map(h => h.trim().replace(/"/g, ''));
     const colIndex = (name: string) => headers.indexOf(name);
@@ -319,24 +338,11 @@ function parseSettlementReport(content: string): number {
     const amountIdx = colIndex('amount');
     const postedDateColIdx = colIndex('posted-date') >= 0 ? colIndex('posted-date') : colIndex('posted-date-time');
 
-    // Settlement period metadata columns — present in flat-file V2, absent in V1.
-    // If missing, we skip upsert but do not crash.
-    const settlementIdIdx    = colIndex('settlement-id');
-    const settlementStartIdx = colIndex('settlement-start-date');
-    const settlementEndIdx   = colIndex('settlement-end-date');
-    const depositDateIdx     = colIndex('deposit-date');
-    const marketplaceNameIdx = colIndex('marketplace-name');
-
     if (orderIdIdx === -1 || amountIdx === -1) {
       // Try V1 format columns
       const altOrderIdx = colIndex('order id');
-      const altAmountIdx = colIndex('total');
       if (altOrderIdx === -1) return 0;
     }
-
-    // Extract and upsert settlement period metadata from first data row.
-    // Every data row repeats the same settlement-id/start/end, so one pass is enough.
-    let settlementMetaUpserted = false;
 
     // Multiplicity tracker for service-fee rows within THIS report. Amazon
     // legitimately charges identical fees (same type/amount/day) several times —
@@ -349,51 +355,25 @@ function parseSettlementReport(content: string): number {
       const cols = lines[i].split('\t').map(c => c.trim().replace(/"/g, ''));
       if (cols.length < Math.max(orderIdIdx, amountIdx) + 1) continue;
 
-      // Upsert settlement period metadata once per report, from the first parseable row.
-      if (!settlementMetaUpserted && settlementIdIdx >= 0 && settlementStartIdx >= 0 && settlementEndIdx >= 0) {
-        const sid   = cols[settlementIdIdx]   || '';
-        const sStart = cols[settlementStartIdx] || '';
-        const sEnd   = cols[settlementEndIdx]   || '';
-        if (sid && sStart && sEnd) {
-          const depositDate  = depositDateIdx >= 0     ? (cols[depositDateIdx]     || null) : null;
-          const marketName   = marketplaceNameIdx >= 0 ? (cols[marketplaceNameIdx] || null) : null;
-          // Normalize marketplace-name ("Amazon.com" → "amazon") for consistency.
-          const marketplace  = marketName
-            ? marketName.toLowerCase().replace('amazon.', '').replace('.com', '') || 'amazon'
-            : 'amazon';
-          try {
-            db.prepare(`
-              INSERT INTO settlement_periods (settlement_id, marketplace, start_date, end_date, deposit_date, created_at, updated_at)
-              VALUES (?, ?, ?, ?, ?, datetime('now'), datetime('now'))
-              ON CONFLICT(settlement_id) DO UPDATE SET
-                marketplace  = excluded.marketplace,
-                start_date   = excluded.start_date,
-                end_date     = excluded.end_date,
-                deposit_date = excluded.deposit_date,
-                updated_at   = datetime('now')
-            `).run(sid, marketplace, sStart, sEnd, depositDate);
-            settlementMetaUpserted = true;
-          } catch (err) {
-            console.warn(`[Settlement] Could not upsert settlement_periods for id=${sid}: ${err}`);
-          }
-        } else {
-          console.warn(`[Settlement] Missing settlement-id/start/end in report row ${i} — skipping metadata upsert`);
-          settlementMetaUpserted = true; // don't retry on every row
-        }
-      }
-
       const orderId = cols[orderIdIdx];
       const transactionType = transactionTypeIdx >= 0 ? cols[transactionTypeIdx] : '';
       const amountType = amountTypeIdx >= 0 ? cols[amountTypeIdx] : '';
       const amountDescription = amountDescriptionIdx >= 0 ? cols[amountDescriptionIdx] : '';
-      const amount = parseFloat(cols[amountIdx] || '0');
+      // Same blank-amount rule as parseSettlementLines (the settlement-line
+      // backbone): a blank amount cell is not a financial transaction — skip it
+      // so both passes agree and the unused row never reaches posted-date
+      // fallback. Explicit "0"/"0.00" is preserved; non-numeric is rejected.
+      const rawAmount = cols[amountIdx] ?? '';
+      if (rawAmount.trim() === '') continue;
+      const amount = parseFloat(rawAmount);
 
       if (isNaN(amount)) continue;
-      // Service fees have no order ID — don't skip them
-      if (!orderId && transactionType !== 'other-transaction' && transactionType !== 'Liquidations') continue;
 
       // Get posted date from settlement report
       const postedDate = postedDateColIdx >= 0 && cols[postedDateColIdx] ? cols[postedDateColIdx] : new Date().toISOString();
+
+      // Service fees have no order ID — don't skip them
+      if (!orderId && transactionType !== 'other-transaction' && transactionType !== 'Liquidations') continue;
 
       // Shipping label costs
       if (transactionType === 'other-transaction' && amountDescription === 'Shipping label purchase' && amount < 0) {
@@ -491,7 +471,8 @@ function parseSettlementReport(content: string): number {
               INSERT OR IGNORE INTO reimbursements (reimbursement_id, reimbursement_date, asin, sku, reason, amount, quantity, status, marketplace, created_at)
               VALUES (?, ?, NULL, NULL, ?, ?, 1, 'Approved', 'amazon', datetime('now'))
             `).run(reimbId, feeDate, amountDescription, feeCents);
-            if (db.prepare('SELECT changes()').get() as any > 0) updated++;
+            const changes = db.prepare('SELECT changes() AS changes').get() as { changes: number };
+            if (changes.changes > 0) updated++;
           }
           continue;
         }
@@ -557,6 +538,13 @@ function parseSettlementReport(content: string): number {
         }
       }
     }
+
+    // Settlement-line backbone: replace this settlement's stored transaction
+    // lines in ONE atomic, tested operation, only after the report loop above
+    // has finished its side effects. A report that resolves a valid settlement
+    // with zero valid amount rows throws here and leaves the prior rows intact
+    // (see replaceSettlementReport / replaceSettlementLines in settlementParser).
+    replaceSettlementReport(db, content);
   } finally {
     db.close();
   }

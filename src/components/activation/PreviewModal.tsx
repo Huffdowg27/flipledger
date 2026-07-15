@@ -42,11 +42,17 @@ export interface PushResult {
   log_id: number | null;
 }
 
+interface ShippingTemplateOption {
+  key: string;
+  name: string;
+}
+
 type PushPhase = 'preview' | 'confirm' | 'testing' | 'test_done' | 'pushing' | 'done';
 
 export interface PreviewModalProps {
   rows: ActivationPreviewRow[];
   shippingTemplate: string;
+  shippingTemplates?: ShippingTemplateOption[];
   onClose: () => void;
   onPushComplete?: () => void;
   /**
@@ -73,11 +79,14 @@ function spStatusBadge(status: PushResult['sp_status']) {
   );
 }
 
-export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete, onAllEligibleAccepted }: PreviewModalProps) {
+export function PreviewModal({ rows, shippingTemplate, shippingTemplates = [], onClose, onPushComplete, onAllEligibleAccepted }: PreviewModalProps) {
   const [pushPhase, setPushPhase]     = useState<PushPhase>('preview');
   const [testResult, setTestResult]   = useState<PushResult | null>(null);
   const [bulkResults, setBulkResults] = useState<PushResult[]>([]);
   const [pushError, setPushError]     = useState<string | null>(null);
+  const [selectedTemplate, setSelectedTemplate] = useState(
+    shippingTemplate || rows.find((row) => row.proposed_shipping_template)?.proposed_shipping_template || ''
+  );
 
   const pushableRows  = rows.filter(r => r.can_push);
   const pushableCount = pushableRows.length;
@@ -94,7 +103,7 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete, 
     const res = await fetch('/api/data/merchant-inventory/activation-push', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skus, dryRun: false }),
+      body: JSON.stringify({ skus, dryRun: false, shippingTemplate: selectedTemplate }),
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Push failed');
@@ -193,19 +202,35 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete, 
           <span className="text-green-400 font-medium">{pushableCount} push eligible</span>
           <span className="text-text-tertiary">{rows.length - pushableCount} not eligible</span>
           {warningCount > 0 && <span className="text-amber-400">{warningCount} with warnings</span>}
-          <span className="ml-auto text-text-tertiary font-mono truncate max-w-[300px]">
-            Template: {shippingTemplate || '(varies per lot)'}
-          </span>
+          <label className="ml-auto flex items-center gap-2 text-text-tertiary">
+            <span>Template</span>
+            {shippingTemplates.length > 0 ? (
+              <select
+                value={shippingTemplates.find((template) => template.name === selectedTemplate || template.key === selectedTemplate)?.name ?? selectedTemplate}
+                onChange={(event) => setSelectedTemplate(event.target.value)}
+                disabled={isBusy}
+                className="h-7 max-w-[260px] rounded-md border border-border-subtle bg-bg-surface px-2 text-[11px] text-text-primary disabled:opacity-50"
+              >
+                {selectedTemplate && !shippingTemplates.some((template) => template.name === selectedTemplate || template.key === selectedTemplate) && (
+                  <option value={selectedTemplate}>{selectedTemplate} (not synced)</option>
+                )}
+                {shippingTemplates.map((template) => (
+                  <option key={template.key} value={template.name}>{template.name}</option>
+                ))}
+              </select>
+            ) : (
+              <span className="font-mono truncate max-w-[300px]">{selectedTemplate || '(none synced)'}</span>
+            )}
+          </label>
         </div>
 
         {/* Shipping-template scope banner — appears in preview phase only */}
         {(pushPhase === 'preview' || pushPhase === 'confirm') && (
-          <div className="px-5 py-2 bg-amber-500/5 border-b border-amber-500/20 shrink-0 flex items-start gap-2 text-[11px] text-amber-400/90">
-            <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+          <div className="px-5 py-2 bg-green-500/5 border-b border-green-500/20 shrink-0 flex items-start gap-2 text-[11px] text-green-400/90">
+            <Check size={12} className="shrink-0 mt-0.5" />
             <span>
-              <span className="font-medium">Shipping template is stored locally only.</span>{' '}
-              Amazon push updates quantity and price. Set the shipping template
-              for each SKU in Seller Central directly.
+              <span className="font-medium">Shipping template will be included.</span>{' '}
+              Eligible SKUs will push quantity, price, and merchant_shipping_group.
             </span>
           </div>
         )}
@@ -270,6 +295,10 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete, 
             <tbody>
               {rows.map(row => {
                 const pushed = resultBySku.get(row.sku);
+                const visibleWarnings = row.warnings.filter((warning) =>
+                  !warning.startsWith('Will push Amazon shipping template:')
+                );
+                const templateToPush = selectedTemplate || row.proposed_shipping_template;
                 return (
                   <tr
                     key={row.sku}
@@ -334,9 +363,19 @@ export function PreviewModal({ rows, shippingTemplate, onClose, onPushComplete, 
                             : pushed.sp_submission_id
                               ? <span className="text-green-400/70 text-[10px] font-mono">ID: {pushed.sp_submission_id.slice(0, 12)}…</span>
                               : <span className="text-green-400 text-[10px]">Submitted</span>
-                        : row.warnings.length > 0
-                          ? <div className="space-y-0.5">{row.warnings.map((w, i) => <div key={i} className="text-amber-400 text-[10px] leading-tight">{w}</div>)}</div>
-                          : <span className="text-green-400 text-[10px]">All checks pass</span>
+                        : (
+                          <div className="space-y-0.5">
+                            {row.can_push && templateToPush && (
+                              <div className="text-green-400 text-[10px] leading-tight">Will push template: {templateToPush}</div>
+                            )}
+                            {visibleWarnings.map((w, i) => (
+                              <div key={i} className="text-amber-400 text-[10px] leading-tight">{w}</div>
+                            ))}
+                            {visibleWarnings.length === 0 && (!row.can_push || !templateToPush) && (
+                              <span className="text-green-400 text-[10px]">All checks pass</span>
+                            )}
+                          </div>
+                        )
                       }
                     </td>
                   </tr>

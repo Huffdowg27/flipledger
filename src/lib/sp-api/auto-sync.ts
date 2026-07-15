@@ -19,18 +19,31 @@ import { syncWalmartDisputeCandidates } from '../walmart-api/disputeCandidates';
 import { generateRecurringExpenses } from '../recurring-expenses';
 import { recalculateFIFO } from '../fifo';
 import { syncVeeqoShipping, getVeeqoApiKey } from '../veeqo-api/shipping';
+import { syncVeeqoBins } from '../veeqo-api/bins';
 import { backfillMfnFees } from './backfillMfnFees';
 import { backfillUpcs } from './backfillUpcs';
 import { reconcileFbaShipments } from './reconcileFbaShipments';
 import { syncAirtablePurchases } from '../airtable/purchases';
 import type { SPAPICredentials } from './types';
-import Database from 'better-sqlite3';
-import path from 'path';
+import { getAmazonCredentials as readAmazonCredentials, getSetting, upsertSetting } from '../settings';
+import { openFlipLedgerDb } from '../sqlite';
+import {
+  isPersistedAutoSyncRunning,
+  markAutoSyncRunning,
+  markAutoSyncStopped,
+  shouldStartAutoSync,
+} from './auto-sync-state';
 
 let syncInterval: NodeJS.Timeout | null = null;
+let initialTickTimeout: NodeJS.Timeout | null = null;
+let activeTick: Promise<void> | null = null;
 const SYNC_INTERVAL_HOURS = 1;
 const CHECK_INTERVAL_MS = 15 * 60 * 1000; // Check every 15 minutes
 const LOOKBACK_DAYS = 14; // Sync last 2 weeks each run
+
+interface StartAutoSyncOptions {
+  runInitialTick?: boolean;
+}
 
 // Per-job in-process lock — prevents two 15-min ticks from overlapping the same
 // long-running report sync. Cleared on process restart (PM2 handles that).
@@ -242,39 +255,27 @@ export const SYNC_JOB_REGISTRY = [
 export type SyncJobRegistryEntry = (typeof SYNC_JOB_REGISTRY)[number];
 
 function getAmazonCredentials(): SPAPICredentials | null {
+  let db: ReturnType<typeof openFlipLedgerDb> | null = null;
   try {
-    const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-    const db = new Database(dbPath, { readonly: true });
-    db.pragma('journal_mode = WAL');
-    const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-    db.close();
-
-    const settings: Record<string, string> = {};
-    for (const row of rows) settings[row.key] = row.value;
-
-    if (!settings.clientId || !settings.clientSecret || !settings.refreshToken) return null;
-
-    return {
-      clientId: settings.clientId,
-      clientSecret: settings.clientSecret,
-      refreshToken: settings.refreshToken,
-      marketplaceId: settings.marketplaceId || 'ATVPDKIKX0DER',
-    };
+    db = openFlipLedgerDb({ readonly: true });
+    return readAmazonCredentials(db);
   } catch {
     return null;
+  } finally {
+    db?.close();
   }
 }
 
 function getLastSyncTime(key: string): number {
+  let db: ReturnType<typeof openFlipLedgerDb> | null = null;
   try {
-    const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-    const db = new Database(dbPath, { readonly: true });
-    db.pragma('journal_mode = WAL');
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as { value: string } | undefined;
-    db.close();
-    return row?.value ? new Date(row.value).getTime() : 0;
+    db = openFlipLedgerDb({ readonly: true });
+    const value = getSetting(db, key);
+    return value ? new Date(value).getTime() : 0;
   } catch {
     return 0;
+  } finally {
+    db?.close();
   }
 }
 
@@ -283,17 +284,14 @@ function hoursSince(timestamp: number): number {
 }
 
 function setLastSyncTime(key: string, value: string) {
+  let db: ReturnType<typeof openFlipLedgerDb> | null = null;
   try {
-    const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-    const db = new Database(dbPath);
-    db.pragma('journal_mode = WAL');
-    db.prepare(`
-      INSERT INTO settings (key, value) VALUES (?, ?)
-      ON CONFLICT(key) DO UPDATE SET value = excluded.value
-    `).run(key, value);
-    db.close();
+    db = openFlipLedgerDb();
+    upsertSetting(db, key, value);
   } catch (err) {
     console.error(`[AutoSync] setLastSyncTime(${key}) failed:`, err);
+  } finally {
+    db?.close();
   }
 }
 
@@ -352,7 +350,9 @@ async function autoSyncTick() {
           const start = new Date(Date.now() - CUSTOMER_RETURNS_LOOKBACK_DAYS * 86400000).toISOString();
           const result = await syncFbaCustomerReturns(amazonCreds, start, end);
           console.log(
-            `[AutoSync] Customer returns: ${result.reportRows} rows, ${result.refundsUpdated} refunds updated, ${result.unmatched} unmatched`
+            `[AutoSync] Customer returns: ${result.reportRows} rows, `
+            + `${result.refundsUpdated} refunds updated, ${result.returnsConfirmed} confirmed units, `
+            + `${result.inventoryRestored} FIFO-restored units, ${result.unmatched} unmatched`
           );
         },
       });
@@ -383,7 +383,10 @@ async function autoSyncTick() {
           console.log('[AutoSync] Starting sales rank sync');
           const result = await syncSalesRanks(amazonCreds);
           console.log(
-            `[AutoSync] Sales rank: ${result.asinsChecked} ASINs checked, ${result.asinsUpdated} updated, ${result.errors} errors`
+            `[AutoSync] Sales rank: ${result.asinsAttempted}/${result.asinsEligible} attempted, ` +
+            `${result.asinsSkippedToday} skipped today, ${result.asinsUpdated} updated, ` +
+            `${result.asinsNotFound} not found, ${result.errors} errors, ` +
+            `${result.asinsDeferred} deferred (${result.stoppedReason})`
           );
         },
       });
@@ -583,6 +586,25 @@ async function autoSyncTick() {
     }
   }
 
+  // Veeqo bins (daily) — push FlipLedger bin locations to Veeqo's stock
+  // entries so the native pick/pack list shows them. Matched on sku_code;
+  // unmatched SKUs are reported, never guessed. Only runs with a Veeqo key.
+  {
+    if (getVeeqoApiKey()) {
+      await runGatedSync({
+        key: 'veeqo_bins_last_sync',
+        intervalHours: 24,
+        label: 'Veeqo bins push',
+        run: async () => {
+          const v = await syncVeeqoBins({ apply: true });
+          if (v.written > 0 || v.unmatched > 0) {
+            console.log(`[AutoSync] Veeqo bins: wrote ${v.written}/${v.toWrite}, ${v.unchanged} unchanged, ${v.unmatched} unmatched`);
+          }
+        },
+      });
+    }
+  }
+
   // Generate any new recurring expenses
   try {
     const result = generateRecurringExpenses();
@@ -596,6 +618,15 @@ async function autoSyncTick() {
   // Recalculate FIFO COGS for any new orders
   try {
     const fifoResult = recalculateFIFO({ recalcAll: true });
+    if (fifoResult.errors.length > 0 || fifoResult.returnRestoreMismatches > 0) {
+      console.error(JSON.stringify({
+        event: 'fifo_reconciliation_failed',
+        errors: fifoResult.errors,
+        returnRestoreMismatches: fifoResult.returnRestoreMismatches,
+        returnsConfirmed: fifoResult.returnsConfirmed,
+        returnsRestored: fifoResult.returnsRestored,
+      }));
+    }
     if (fifoResult.itemsUpdated > 0) {
       console.log(`[AutoSync] FIFO: updated ${fifoResult.itemsUpdated} items across ${fifoResult.skusProcessed} SKUs`);
     }
@@ -604,26 +635,78 @@ async function autoSyncTick() {
   }
 }
 
-export function startAutoSync() {
-  if (syncInterval) return; // Already running
+function scheduleAutoSyncTick(): void {
+  if (activeTick) {
+    console.log('[AutoSync] Tick already running, skipping scheduler overlap');
+    return;
+  }
+  activeTick = autoSyncTick()
+    .catch((error) => {
+      console.error('[AutoSync] Tick failed unexpectedly:', error);
+    })
+    .finally(() => {
+      activeTick = null;
+    });
+}
+
+export async function waitForAutoSyncIdle(timeoutMs: number): Promise<boolean> {
+  const running = activeTick;
+  if (!running) return true;
+
+  let timeout: NodeJS.Timeout | undefined;
+  const timedOut = new Promise<false>((resolve) => {
+    timeout = setTimeout(() => resolve(false), timeoutMs);
+  });
+  const completed = running.then(() => true);
+  const result = await Promise.race([completed, timedOut]);
+  if (timeout) clearTimeout(timeout);
+  return result;
+}
+
+export function isAutoSyncRunning(): boolean {
+  return syncInterval != null || isPersistedAutoSyncRunning();
+}
+
+export function startAutoSync(options: StartAutoSyncOptions = {}): boolean {
+  if (!shouldStartAutoSync(syncInterval != null, isPersistedAutoSyncRunning())) {
+    return false;
+  }
 
   console.log(`[AutoSync] Starting auto-sync scheduler (every ${SYNC_INTERVAL_HOURS}h, checking every 15min, ${LOOKBACK_DAYS}-day lookback)`);
+  try {
+    markAutoSyncRunning();
+  } catch (err) {
+    console.error('[AutoSync] Failed to persist scheduler status:', err);
+  }
 
-  // Run first sync after 10 seconds (give the app time to start)
-  setTimeout(() => {
-    autoSyncTick();
-  }, 10000);
+  if (options.runInitialTick ?? true) {
+    // Run first sync after 10 seconds (give the app time to start)
+    initialTickTimeout = setTimeout(() => {
+      initialTickTimeout = null;
+      scheduleAutoSyncTick();
+    }, 10000);
+  }
 
   // Check every 15 minutes if a sync is needed
   syncInterval = setInterval(() => {
-    autoSyncTick();
+    scheduleAutoSyncTick();
   }, CHECK_INTERVAL_MS);
+  return true;
 }
 
 export function stopAutoSync() {
+  if (initialTickTimeout) {
+    clearTimeout(initialTickTimeout);
+    initialTickTimeout = null;
+  }
   if (syncInterval) {
     clearInterval(syncInterval);
     syncInterval = null;
+    try {
+      markAutoSyncStopped();
+    } catch (err) {
+      console.error('[AutoSync] Failed to persist stopped status:', err);
+    }
     console.log('[AutoSync] Stopped');
   }
 }

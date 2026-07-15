@@ -5,14 +5,11 @@
  * POST /api/list/batches        - create a new batch
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
+import type Database from 'better-sqlite3';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 // A batch wedged in 'sending' means the send request died mid-flight (deploy /

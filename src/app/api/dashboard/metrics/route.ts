@@ -22,7 +22,7 @@ export async function GET() {
     //   live  = status not Inactive/Incomplete AND quantity > 0  (buyable now)
     //   oos   = status active but quantity = 0
     //   inactive = Inactive/Incomplete
-    //   notListed = local LV_ lots with stock and no Amazon listing yet
+    //   incoming = units on the buy sheet (incoming_purchases) bought but not yet landed
     const row = db.prepare(`
       SELECT
         (SELECT COUNT(*) FROM merchant_listings
@@ -31,9 +31,8 @@ export async function GET() {
            WHERE marketplace='amazon' AND status NOT IN ('Inactive','Incomplete') AND COALESCE(quantity,0) = 0) AS mfnOos,
         (SELECT COUNT(*) FROM merchant_listings
            WHERE marketplace='amazon' AND status IN ('Inactive','Incomplete')) AS mfnInactive,
-        (SELECT COUNT(*) FROM inventory_ledger il
-           WHERE (il.sku LIKE 'LV_%' OR il.sku LIKE 'MF_LV_%') AND il.quantity_remaining > 0
-             AND NOT EXISTS (SELECT 1 FROM merchant_listings ml WHERE ml.sku = il.sku AND ml.marketplace='amazon')) AS mfnNotListed,
+        (SELECT COALESCE(SUM(quantity - quantity_received), 0) FROM incoming_purchases
+           WHERE status IN ('on_order','partial')) AS mfnIncoming,
         (SELECT COUNT(*) FROM live_inventory WHERE marketplace='amazon' AND fulfillable_qty>0) AS fbaActiveSkus,
         (SELECT COALESCE(SUM(fulfillable_qty),0) FROM live_inventory WHERE marketplace='amazon') AS fbaUnits
     `).get() as any;

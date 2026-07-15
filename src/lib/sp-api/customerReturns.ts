@@ -213,14 +213,132 @@ export function parseCustomerReturnsReport(tsv: string): CustomerReturnRow[] {
   return rows;
 }
 
+export interface CustomerReturnReconciliationResult {
+  refundsMatched: number;
+  refundsUpdated: number;
+  unmatched: number;
+  ambiguous: number;
+  quantityMismatches: number;
+  returnsConfirmed: number;
+  reasonBreakdown: Record<string, number>;
+}
+
+interface RefundMatch {
+  id: number;
+  reason: string | null;
+  disposition: string | null;
+  item_returned: number;
+  sku: string | null;
+  asin: string | null;
+  quantity: number;
+}
+
+/**
+ * Reconcile parsed report rows to financial-event refunds.
+ *
+ * `item_returned` means Amazon confirmed a SELLABLE return. This function does
+ * not mutate inventory lots; the deterministic FIFO replay is solely
+ * responsible for recording how many confirmed units it could restore.
+ */
+export function applyCustomerReturnRows(
+  db: Database.Database,
+  rows: CustomerReturnRow[],
+): CustomerReturnReconciliationResult {
+  const findBySkuStmt = db.prepare(
+    `SELECT id, reason, disposition, item_returned, sku, asin, quantity
+     FROM refunds WHERE order_id = ? AND sku = ? AND marketplace = 'amazon'`
+  );
+  const findByAsinStmt = db.prepare(
+    `SELECT id, reason, disposition, item_returned, sku, asin, quantity
+     FROM refunds WHERE order_id = ? AND asin = ? AND marketplace = 'amazon' AND asin != ''`
+  );
+  const findByOrderOnlyStmt = db.prepare(
+    `SELECT id, reason, disposition, item_returned, sku, asin, quantity
+     FROM refunds WHERE order_id = ? AND marketplace = 'amazon'`
+  );
+  const updateStmt = db.prepare(`
+    UPDATE refunds
+    SET reason = ?, disposition = ?, item_returned = ?
+    WHERE id = ?
+  `);
+
+  let refundsMatched = 0;
+  let refundsUpdated = 0;
+  let unmatched = 0;
+  let ambiguous = 0;
+  let quantityMismatches = 0;
+  let returnsConfirmed = 0;
+  const reasonBreakdown: Record<string, number> = {};
+
+  db.transaction(() => {
+    for (const row of rows) {
+      if (!row.orderId) continue;
+      reasonBreakdown[row.reason] = (reasonBreakdown[row.reason] || 0) + 1;
+
+      let matches = row.sku
+        ? (findBySkuStmt.all(row.orderId, row.sku) as RefundMatch[])
+        : [];
+      if (matches.length === 0 && row.asin) {
+        matches = findByAsinStmt.all(row.orderId, row.asin) as RefundMatch[];
+      }
+      if (matches.length === 0) {
+        matches = findByOrderOnlyStmt.all(row.orderId) as RefundMatch[];
+      }
+
+      if (matches.length === 0) {
+        unmatched++;
+        continue;
+      }
+      if (matches.length !== 1) {
+        ambiguous++;
+        continue;
+      }
+
+      const match = matches[0];
+      if (
+        !Number.isSafeInteger(row.quantity)
+        || row.quantity < 1
+        || !Number.isSafeInteger(match.quantity)
+        || match.quantity < 1
+        || row.quantity !== match.quantity
+      ) {
+        quantityMismatches++;
+        continue;
+      }
+      const confirmed = row.detailedDisposition === 'SELLABLE' ? 1 : 0;
+      refundsMatched++;
+      if (
+        match.reason !== row.reason
+        || match.disposition !== row.detailedDisposition
+        || match.item_returned !== confirmed
+      ) {
+        updateStmt.run(row.reason, row.detailedDisposition || null, confirmed, match.id);
+        refundsUpdated++;
+      }
+      if (confirmed) {
+        returnsConfirmed += match.quantity;
+      }
+    }
+  })();
+
+  return {
+    refundsMatched,
+    refundsUpdated,
+    unmatched,
+    ambiguous,
+    quantityMismatches,
+    returnsConfirmed,
+    reasonBreakdown,
+  };
+}
+
 /**
  * Full sync: request the report, wait, download, parse, UPDATE our refunds
- * rows with reason + disposition. For SELLABLE returns not yet restored,
- * add the unit back to inventory_ledger so FIFO doesn't double-charge COGS
- * when the item resells.
+ * rows with reason + disposition. SELLABLE rows are recorded as confirmed
+ * returns, then the deterministic FIFO replay restores their original lot
+ * allocations in return-date order.
  *
- * Idempotent: item_returned=1 flags that inventory has already been restored
- * for a given refund row — re-runs skip those rows.
+ * Idempotent: report reconciliation and FIFO replay are both state-derived.
  */
 export async function syncFbaCustomerReturns(
   credentials: SPAPICredentials,
@@ -231,7 +349,11 @@ export async function syncFbaCustomerReturns(
   refundsMatched: number;
   refundsUpdated: number;
   unmatched: number;
+  ambiguous: number;
+  quantityMismatches: number;
+  returnsConfirmed: number;
   inventoryRestored: number;
+  returnRestoreMismatches: number;
   reasonBreakdown: Record<string, number>;
 }> {
   const { reportId } = await createCustomerReturnsReport(credentials, startDate, endDate);
@@ -245,102 +367,46 @@ export async function syncFbaCustomerReturns(
   console.log(`[CustomerReturns] Parsed ${rows.length} return rows`);
 
   const db = getDb();
-  let refundsMatched = 0;
-  let refundsUpdated = 0;
-  let unmatched = 0;
-  let inventoryRestored = 0;
-  const reasonBreakdown: Record<string, number> = {};
-
+  let reconciliation: CustomerReturnReconciliationResult;
   try {
-    const findBySkuStmt = db.prepare(
-      `SELECT id, reason, disposition, item_returned, sku, asin, quantity
-       FROM refunds WHERE order_id = ? AND sku = ? AND marketplace = 'amazon'`
-    );
-    const findByAsinStmt = db.prepare(
-      `SELECT id, reason, disposition, item_returned, sku, asin, quantity
-       FROM refunds WHERE order_id = ? AND asin = ? AND marketplace = 'amazon' AND asin != ''`
-    );
-    const findByOrderOnlyStmt = db.prepare(
-      `SELECT id, reason, disposition, item_returned, sku, asin, quantity
-       FROM refunds WHERE order_id = ? AND marketplace = 'amazon'`
-    );
-    const updateStmt = db.prepare(
-      `UPDATE refunds SET reason = ?, disposition = ? WHERE id = ?`
-    );
-    const markRestoredStmt = db.prepare(
-      `UPDATE refunds SET item_returned = 1 WHERE id = ?`
-    );
-    // Restore one unit to the oldest partially-depleted lot for this SKU/ASIN.
-    // FIFO depletes oldest lots first, so restoring there is most accurate.
-    const findLotStmt = db.prepare(`
-      SELECT id, quantity, quantity_remaining FROM inventory_ledger
-      WHERE (sku = ? OR (COALESCE(sku,'') = '' AND asin = ?))
-        AND quantity_remaining < quantity
-      ORDER BY date_purchased ASC, id ASC
-      LIMIT 1
-    `);
-    const restoreLotStmt = db.prepare(`
-      UPDATE inventory_ledger
-      SET quantity_remaining = MIN(quantity, quantity_remaining + ?)
-      WHERE id = ?
-    `);
-
-    const tx = db.transaction(() => {
-      for (const row of rows) {
-        if (!row.orderId) continue;
-        reasonBreakdown[row.reason] = (reasonBreakdown[row.reason] || 0) + 1;
-
-        let matches = row.sku
-          ? (findBySkuStmt.all(row.orderId, row.sku) as any[])
-          : [];
-        if (matches.length === 0 && row.asin)
-          matches = findByAsinStmt.all(row.orderId, row.asin) as any[];
-        if (matches.length === 0) {
-          const candidates = findByOrderOnlyStmt.all(row.orderId) as any[];
-          if (candidates.length === 1) matches = candidates;
-        }
-
-        if (matches.length === 0) { unmatched++; continue; }
-
-        refundsMatched += matches.length;
-        for (const m of matches) {
-          if (m.reason !== row.reason || m.disposition !== row.detailedDisposition) {
-            updateStmt.run(row.reason, row.detailedDisposition || null, m.id);
-            refundsUpdated++;
-          }
-
-          // Restore inventory for SELLABLE returns not yet restored
-          if (row.detailedDisposition === 'SELLABLE' && m.item_returned === 0) {
-            const qty = row.quantity || m.quantity || 1;
-            const sku = row.sku || m.sku || '';
-            const asin = row.asin || m.asin || '';
-            const lot = findLotStmt.get(sku, asin) as any;
-            if (lot) {
-              restoreLotStmt.run(qty, lot.id);
-              inventoryRestored++;
-            }
-            markRestoredStmt.run(m.id);
-          }
-        }
-      }
-    });
-    tx();
+    reconciliation = applyCustomerReturnRows(db, rows);
   } finally {
     db.close();
   }
 
-  // Re-run FIFO so restored inventory is correctly assigned to future resales
-  if (inventoryRestored > 0) {
-    console.log(`[CustomerReturns] Restored ${inventoryRestored} units to inventory — running FIFO recalc`);
-    recalculateFIFO({ recalcAll: true });
+  let inventoryRestored = 0;
+  let returnRestoreMismatches = 0;
+  if (reconciliation.returnsConfirmed > 0) {
+    const fifo = recalculateFIFO({ recalcAll: true });
+    if (fifo.errors.length > 0) {
+      throw new Error(`customer-return FIFO reconciliation failed: ${fifo.errors.join('; ')}`);
+    }
+    inventoryRestored = fifo.returnsRestored;
+    returnRestoreMismatches = fifo.returnRestoreMismatches;
+    console.log(JSON.stringify({
+      event: 'customer_returns_fifo_reconciled',
+      confirmedUnits: fifo.returnsConfirmed,
+      restoredUnits: fifo.returnsRestored,
+      mismatchRows: fifo.returnRestoreMismatches,
+    }));
+  }
+
+  if (
+    reconciliation.ambiguous > 0
+    || reconciliation.quantityMismatches > 0
+    || returnRestoreMismatches > 0
+  ) {
+    throw new Error(
+      `customer-return integrity failure: ${reconciliation.ambiguous} ambiguous report row(s), `
+      + `${reconciliation.quantityMismatches} quantity mismatch row(s), `
+      + `${returnRestoreMismatches} FIFO restoration mismatch row(s)`
+    );
   }
 
   return {
     reportRows: rows.length,
-    refundsMatched,
-    refundsUpdated,
-    unmatched,
+    ...reconciliation,
     inventoryRestored,
-    reasonBreakdown,
+    returnRestoreMismatches,
   };
 }

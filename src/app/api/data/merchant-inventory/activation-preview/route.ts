@@ -1,6 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { loadMfnActivationInventory } from '@/lib/mfnActivationInventory';
+import {
+  loadAmazonShippingTemplateCache,
+  resolveAmazonShippingTemplateName,
+  shippingTemplateValidationError,
+} from '@/lib/amazonShippingTemplates';
 
 // Update to match the exact shipping template name in Seller Central.
 const DEFAULT_MFN_SHIPPING_TEMPLATE = 'DEFAULT MFN USE THIS ONE';
@@ -29,8 +35,8 @@ function getDb() {
 //   - Local Amazon status is stale/inactive. The SP-API PATCH sends qty +
 //     price regardless; activation-push mirrors status back to Active on
 //     ACCEPTED.
-//   - Shipping template is stored locally only and is NOT pushed to Amazon —
-//     it must be set in Seller Central directly.
+//   - Shipping template is pushed to Amazon as merchant_shipping_group when it
+//     resolves to the synced Amazon template list.
 //
 // Input:  { skus: string[], shippingTemplate?: string }
 // Output: { dryRun: true, amazonWriteMade: false, rows: ActivationPreviewRow[], shippingTemplate, timestamp }
@@ -43,7 +49,7 @@ interface ActivationPreviewRow {
   current_price_cents: number | null;
   current_status: string | null;
   proposed_qty: number;
-  qty_source: 'received' | 'remaining' | 'none';
+  qty_source: 'remaining' | 'none';
   proposed_price_cents: number | null;
   proposed_shipping_template: string;
   il_id: number | null;
@@ -71,10 +77,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Too many SKUs (max 200 per preview)' }, { status: 400 });
   }
 
-  const shippingTemplate =
+  const explicitShippingTemplate =
     typeof body.shippingTemplate === 'string' && body.shippingTemplate.trim()
       ? body.shippingTemplate.trim()
-      : DEFAULT_MFN_SHIPPING_TEMPLATE;
+      : '';
+  const shippingTemplate = explicitShippingTemplate || DEFAULT_MFN_SHIPPING_TEMPLATE;
 
   const db = getDb();
   try {
@@ -94,34 +101,16 @@ export async function POST(request: NextRequest) {
       WHERE ml.sku IN (${placeholders}) AND ml.marketplace = 'amazon'
     `).all(...skus) as DbRow[];
 
-    // Most recent local lot with remaining quantity per SKU.
-    // ORDER BY date_purchased DESC so the first row per SKU is the latest lot.
-    const ilRows = db.prepare(`
-      SELECT
-        il.sku,
-        il.id                AS il_id,
-        il.asin,
-        il.list_price_cents  AS il_list_price_cents,
-        il.quantity_received,
-        il.quantity_remaining,
-        il.inspected_at,
-        il.merchant_shipping_group_name
-      FROM inventory_ledger il
-      WHERE il.sku IN (${placeholders}) AND il.quantity_remaining > 0
-      ORDER BY il.date_purchased DESC
-    `).all(...skus) as DbRow[];
-
     const mlBySku = new Map<string, DbRow>();
     for (const row of mlRows) mlBySku.set(String(row.sku), row);
 
-    const ilBySku = new Map<string, DbRow>();
-    for (const row of ilRows) {
-      if (!ilBySku.has(String(row.sku))) ilBySku.set(String(row.sku), row);
-    }
+    const inventoryBySku = loadMfnActivationInventory(db, skus);
+    const templateCache = loadAmazonShippingTemplateCache(db);
 
     const rows: ActivationPreviewRow[] = skus.map(sku => {
       const ml = mlBySku.get(sku) ?? null;
-      const il = ilBySku.get(sku) ?? null;
+      const inventory = inventoryBySku.get(sku) ?? null;
+      const il = inventory?.referenceLot ?? null;
       const warnings: string[] = [];
 
       // --- Eligibility checks (ordered by severity) ---
@@ -148,8 +137,7 @@ export async function POST(request: NextRequest) {
       // Qty: ledger remaining drives the push. Receiving/inspection are
       // tracked in Airtable, not gated here (see can_push below).
       const qtyReceived  = il ? (Number(il.quantity_received) || 0) : 0;
-      const qtyRemaining = il ? (Number(il.quantity_remaining) || 0) : 0;
-      const proposedQty  = qtyReceived > 0 ? qtyReceived : qtyRemaining;
+      const proposedQty = Math.max(0, inventory?.sellableQuantity ?? 0);
 
       if (proposedQty <= 0) {
         warnings.push('Quantity is 0 — not eligible to push');
@@ -163,18 +151,25 @@ export async function POST(request: NextRequest) {
         warnings.push('Not inspected in FlipLedger (inspection tracked in Airtable).');
       }
 
-      // Shipping template: per-lot value takes priority over the batch default.
-      // The template is stored locally only and is NOT pushed to Amazon — the
-      // user must set it manually in Seller Central. We always emit a soft
-      // warning so users see this in the preview UI.
+      // Shipping template: per-push selection takes priority; otherwise use the
+      // per-lot value, then the route default. Stored keys are accepted for
+      // compatibility, but the Listings payload sends Amazon's template name.
       const lotTemplate = il?.merchant_shipping_group_name != null
         ? String(il.merchant_shipping_group_name).trim()
         : '';
-      const proposedShippingTemplate = lotTemplate || shippingTemplate;
-      warnings.push('Shipping template is stored locally only — set it in Seller Central');
+      const requestedTemplate = explicitShippingTemplate || lotTemplate || DEFAULT_MFN_SHIPPING_TEMPLATE;
+      const templateError = shippingTemplateValidationError(requestedTemplate, templateCache.templates);
+      const proposedShippingTemplate =
+        resolveAmazonShippingTemplateName(requestedTemplate, templateCache.templates)
+        ?? requestedTemplate;
+      if (templateError) {
+        warnings.push(templateError);
+      } else {
+        warnings.push(`Will push Amazon shipping template: ${proposedShippingTemplate}`);
+      }
 
-      const qty_source: 'received' | 'remaining' | 'none' =
-        qtyReceived > 0 ? 'received' : qtyRemaining > 0 ? 'remaining' : 'none';
+      const qty_source: 'remaining' | 'none' =
+        proposedQty > 0 ? 'remaining' : 'none';
 
       // can_push: real blockers only — a matched Amazon listing, a positive
       // ledger quantity, and a price. Receiving/inspection are NOT gated here;
@@ -182,16 +177,16 @@ export async function POST(request: NextRequest) {
       // since FlipLedger's quantity_received/inspected_at stay NULL. Stale
       // local merchant_listings.status is downgraded to a warning — Seller
       // Central may show the SKU as Active while the local row hasn't synced
-      // yet. The SP-API PATCH sends qty + price regardless of local status;
-      // activation-push mirrors merchant_listings to Active after an ACCEPTED
-      // response. Shipping template is intentionally excluded — it's not
-      // pushed to Amazon (see mfnActivation.ts).
+      // yet. The SP-API PATCH sends qty + price + merchant_shipping_group
+      // regardless of local status; activation-push mirrors merchant_listings
+      // to Active after an ACCEPTED response.
       const can_push =
         !!sku &&
         !!ml &&
         proposedQty > 0 &&
         proposedPriceCents != null &&
-        proposedPriceCents > 0;
+        proposedPriceCents > 0 &&
+        !templateError;
 
       const asin = ml
         ? String(ml.asin ?? '')

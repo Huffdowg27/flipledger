@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
 
 import { buildMfnUploadList, normalizeAirtableMfnRow, type AirtableRecord } from '@/lib/mfn-upload-list';
+import { getSetting } from '@/lib/settings';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 const DEFAULT_E2A_BASE_ID = 'app8OwHDGugzOlskO';
 const DEFAULT_E2A_TABLE_ID = 'tblSJJcb6p5HDbD8f';
@@ -11,18 +11,14 @@ const DEFAULT_VIEW = 'IL FBM Upload Today';
 function airtableToken(): string {
   if (process.env.AIRTABLE_API_KEY) return process.env.AIRTABLE_API_KEY;
 
-  // Optional fallback: read AIRTABLE_API_KEY from a sibling .env file. The path
-  // is configurable via FBA_PIPELINE_ENV_PATH and defaults to ../fba-pipeline/.env
-  // relative to the app's working directory. Server-side only; never returned to
-  // the browser. Safely no-ops (returns '') if the file doesn't exist.
+  let db: ReturnType<typeof openFlipLedgerDb> | null = null;
   try {
-    const envPath = process.env.FBA_PIPELINE_ENV_PATH
-      || path.join(process.cwd(), '..', 'fba-pipeline', '.env');
-    const env = fs.readFileSync(envPath, 'utf8');
-    const line = env.split(/\r?\n/).find(l => l.trim().startsWith('AIRTABLE_API_KEY='));
-    return line?.split('=', 2)[1]?.trim().replace(/^['"]|['"]$/g, '') ?? '';
+    db = openFlipLedgerDb({ readonly: true, fileMustExist: true });
+    return getSetting(db, 'airtable_api_key')?.trim() || '';
   } catch {
     return '';
+  } finally {
+    db?.close();
   }
 }
 

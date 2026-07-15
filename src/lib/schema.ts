@@ -117,7 +117,13 @@ export const refunds = sqliteTable('refunds', {
   quantity: integer('quantity').default(1),
   refundAmount: integer('refund_amount').notNull(), // cents — amount refunded to customer
   reason: text('reason'),
+  // Confirmed by Amazon's customer-return report; this drives the COGS reversal.
   itemReturned: integer('item_returned', { mode: 'boolean' }).default(false),
+  // FIFO reconciliation is separate: mismatches are data-integrity errors, not
+  // a reason to suppress the accounting reversal for a confirmed return.
+  inventoryRestoredQuantity: integer('inventory_restored_quantity').notNull().default(0),
+  inventoryRestoreError: text('inventory_restore_error'),
+  inventoryRestoreCheckedAt: text('inventory_restore_checked_at'),
   feeClawback: integer('fee_clawback').default(0), // cents — fees Amazon returns to seller
   marketplace: text('marketplace').default('amazon'),
   createdAt: text('created_at').notNull(),

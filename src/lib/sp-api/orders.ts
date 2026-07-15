@@ -6,7 +6,7 @@
 
 import { spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
-import { extractCogsFromSku, isCogsEncodedSku } from '../sku-cogs';
+import { extractCogsFromSku, isCogsEncodedSku, isAmazonGradedSku } from '../sku-cogs';
 import { recalculateFIFO } from '../fifo';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -15,6 +15,9 @@ function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Wait for a held write lock (e.g. the background sync worker writing at the
+  // same time) instead of failing immediately with "database is locked".
+  db.pragma('busy_timeout = 5000');
   return db;
 }
 
@@ -178,7 +181,10 @@ export async function syncOrders(
           // Auto-create inventory_ledger entry for COGS-encoded SKUs that have
           // no existing lot. Works for MFN and FBA items bought per-order where
           // the buy cost is embedded in the SKU (LV_/ZTPC_ format).
-          if (oiSku && asin && isCogsEncodedSku(oiSku) && orderMeta) {
+          // NEVER for amzn.gr.* resales: they wrap an LV_/ZTPC_ SKU (so the cost
+          // decoder would otherwise fire), but their cost was already expensed on
+          // the unit's first sale — creating a lot would be a zero-basis ghost lot.
+          if (oiSku && asin && isCogsEncodedSku(oiSku) && !isAmazonGradedSku(oiSku) && orderMeta) {
             const cogsCents = extractCogsFromSku(oiSku);
             if (cogsCents > 0) {
               const hasLot = db.prepare(

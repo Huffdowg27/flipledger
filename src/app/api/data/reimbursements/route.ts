@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -11,25 +12,42 @@ function getDb() {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const db = getDb();
 
-  let startDate = searchParams.get('startDate');
-  let endDate = searchParams.get('endDate');
-  if (!startDate) {
-    const days = parseInt(searchParams.get('days') || '30');
+  const rawStartDate = searchParams.get('startDate');
+  const rawEndDate = searchParams.get('endDate');
+  if (
+    (rawStartDate !== null && !isIsoCalendarDate(rawStartDate))
+    || (rawEndDate !== null && !isIsoCalendarDate(rawEndDate))
+    || (rawStartDate !== null && rawEndDate !== null && rawStartDate > rawEndDate)
+  ) {
+    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  }
+
+  let startDate: string;
+  if (rawStartDate) {
+    startDate = rawStartDate;
+  } else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays) || Number(rawDays) < 1 || Number(rawDays) > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    const days = Number(rawDays);
     startDate = new Date(Date.now() - days * 86400000).toISOString().split('T')[0];
   }
-  if (!endDate) {
-    endDate = new Date().toISOString().split('T')[0];
-  }
+  const endDate = rawEndDate || new Date().toISOString().split('T')[0];
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
-  const marketplace = searchParams.get('marketplace');
-  // Qualify with `r.` — the products table also has a `marketplace` column,
-  // so an unqualified reference raises "ambiguous column name" in SQLite and
-  // silently returned 0 rows in the API path.
-  const MF_R = marketplace ? `AND r.marketplace = '${marketplace}'` : '';
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
+  }
+  const marketplace = marketplaceResult.marketplace;
+  const marketplaceClause = marketplace ? 'AND r.marketplace = ?' : '';
+  const reimbursementParams = marketplace
+    ? [startDate, endDateNext, marketplace]
+    : [startDate, endDateNext];
 
+  const db = getDb();
   try {
     // Amazon reimbursements
     const amazonRows = db.prepare(`
@@ -49,9 +67,9 @@ export async function GET(request: NextRequest) {
       FROM reimbursements r
       LEFT JOIN products p ON r.asin = p.asin
       LEFT JOIN products p2 ON r.sku = p2.sku
-      WHERE r.reimbursement_date >= ? AND r.reimbursement_date < ? ${MF_R}
+      WHERE r.reimbursement_date >= ? AND r.reimbursement_date < ? ${marketplaceClause}
       ORDER BY r.reimbursement_date DESC
-    `).all(startDate, endDateNext) as any[];
+    `).all(...reimbursementParams) as any[];
 
     // Walmart adjustment credits (WFS Refund, Customer Return Reversal, etc.)
     // These are positive fee_details from Walmart recon that represent money back

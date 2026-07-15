@@ -27,6 +27,7 @@ function getAmazonCredentials(): SPAPICredentials | null {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   try {
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     const settings: Record<string, string> = {};
@@ -62,6 +63,7 @@ function enrichWithHistory(item: CatalogItem): CatalogItem & {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
 
   try {
     // Historical fee rate: sum of fees / sum of revenue for this ASIN (lifetime, Amazon only)

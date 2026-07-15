@@ -218,6 +218,9 @@ export function getEndpoint(marketplaceId: string, sandbox: boolean = false): st
 /**
  * Make an authenticated SP-API request.
  * Handles token refresh, rate limiting (429), and retries.
+ *
+ * SP-API responses are endpoint-specific JSON payloads. This low-level boundary
+ * intentionally stays dynamic; callers narrow to their endpoint shape.
  */
 export async function spApiRequest(
   credentials: SPAPICredentials,
@@ -225,6 +228,7 @@ export async function spApiRequest(
   params?: Record<string, string>,
   retries: number = 3,
   sandbox: boolean = false
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const endpoint = getEndpoint(credentials.marketplaceId, sandbox);
   const limiter = getEndpointLimiter(path);
@@ -256,6 +260,10 @@ export async function spApiRequest(
 
     // Rate limited — wait with exponential backoff and retry
     if (response.status === 429) {
+      const errorBody = await response.text().catch(() => '');
+      if (attempt >= retries - 1) {
+        throw new Error(`SP-API 429 on ${path}: ${errorBody || 'rate limited'}`);
+      }
       const baseWait = getRetryAfterSeconds(response.headers.get('Retry-After'), 3);
       const waitTime = baseWait * Math.pow(2, attempt); // 3s, 6s, 12s, 24s, 48s
       limiter.recordThrottle(waitTime * 1000);
@@ -266,6 +274,10 @@ export async function spApiRequest(
 
     // Server error — retry with backoff
     if (response.status >= 500) {
+      if (attempt >= retries - 1) {
+        const errorBody = await response.text().catch(() => '');
+        throw new Error(`SP-API ${response.status} on ${path}: ${errorBody || 'server error'}`);
+      }
       const waitTime = 5 * Math.pow(2, attempt);
       console.warn(`SP-API ${response.status} on ${path}, retrying in ${waitTime}s (attempt ${attempt + 1}/${retries})`);
       await sleep(waitTime * 1000);
@@ -289,7 +301,7 @@ export async function spApiRequest(
  * Test the connection by making a simple API call.
  * Uses the Orders API to get a single order (lightweight call).
  */
-export async function testConnection(credentials: SPAPICredentials, sandbox: boolean = false): Promise<{ success: boolean; error?: string; mode?: string }> {
+export async function testConnection(credentials: SPAPICredentials): Promise<{ success: boolean; error?: string; mode?: string }> {
   try {
     // First just test the token exchange works
     const token = await getAccessToken(credentials);
@@ -304,7 +316,7 @@ export async function testConnection(credentials: SPAPICredentials, sandbox: boo
       await spApiRequest(credentials, '/sellers/v1/marketplaceParticipations', undefined, 1, true);
       return { success: true, mode: 'sandbox' };
     }
-  } catch (error) {
+  } catch {
     // If both fail but token exchange worked, that's still a partial success
     try {
       await getAccessToken(credentials);

@@ -11,126 +11,117 @@ import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import {
+  parseAmountToCents,
+  parseTransactionReportCsv,
+  parseTransactionReportDate,
+} from '@/lib/imports/transaction-report';
 
 interface ParsedRow {
   dateTime: string;
+  postedDate: string;
   settlementId: string;
   type: string;
   orderId: string;
   sku: string;
   description: string;
-  quantity: number;
-  productSales: number;
-  sellingFees: number;
-  fbaFees: number;
-  otherTransactionFees: number;
-  other: number;
-  total: number;
+  totalCents: number;
 }
 
-function parseMoney(s: string): number {
-  if (!s) return 0;
-  return parseFloat(s.replace(/,/g, '')) || 0;
-}
-
-function parseDateToISO(dateStr: string): string {
-  // Format: "Oct 2, 2025 5:48:32 AM PDT" or "Jan 15, 2026 3:22:11 PM PST"
-  // Remove timezone abbreviation, parse with Date, return ISO
-  const cleaned = dateStr.replace(/ P[DS]T$/, '').trim();
-  const d = new Date(cleaned);
-  if (isNaN(d.getTime())) {
-    // Fallback: try direct parse
-    const d2 = new Date(dateStr);
-    if (isNaN(d2.getTime())) return dateStr;
-    return d2.toISOString();
+class ImportValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ImportValidationError';
   }
-  // PDT = UTC-7, PST = UTC-8
-  const isPDT = dateStr.includes('PDT');
-  const offsetHours = isPDT ? 7 : 8;
-  const utc = new Date(d.getTime() + offsetHours * 60 * 60 * 1000);
-  return utc.toISOString();
 }
 
 function parseCSV(content: string): ParsedRow[] {
-  const lines = content.split('\n');
+  let sourceRows;
+  try {
+    sourceRows = parseTransactionReportCsv(content);
+  } catch (error) {
+    throw new ImportValidationError(error instanceof Error ? error.message : String(error));
+  }
+  if (sourceRows.length === 0) {
+    throw new ImportValidationError('Transaction report contains zero data rows');
+  }
 
-  // Find header line (starts with "date/time")
-  let headerIdx = -1;
-  for (let i = 0; i < Math.min(20, lines.length); i++) {
-    if (lines[i].startsWith('"date/time"')) {
-      headerIdx = i;
-      break;
+  return sourceRows.map((row, index) => {
+    try {
+      return {
+        dateTime: row.dateTime,
+        postedDate: parseTransactionReportDate(row.dateTime),
+        settlementId: row.settlementId,
+        type: row.type,
+        orderId: row.orderId,
+        sku: row.sku,
+        description: row.description,
+        totalCents: parseAmountToCents(row.totalRaw),
+      };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new ImportValidationError(`Invalid transaction report row ${index + 1}: ${detail}`);
     }
-  }
-  if (headerIdx === -1) throw new Error('Could not find header row starting with "date/time"');
-
-  // Parse header
-  const headerLine = lines[headerIdx];
-  const headers = parseCSVLine(headerLine);
-
-  const col = (name: string) => headers.findIndex(h => h.toLowerCase() === name.toLowerCase());
-
-  const dateIdx = col('date/time');
-  const settlementIdx = col('settlement id');
-  const typeIdx = col('type');
-  const orderIdx = col('order id');
-  const skuIdx = col('sku');
-  const descIdx = col('description');
-  const qtyIdx = col('quantity');
-  const productSalesIdx = col('product sales');
-  const sellingFeesIdx = col('selling fees');
-  const fbaFeesIdx = col('fba fees');
-  const otherTxFeesIdx = col('other transaction fees');
-  const otherIdx = col('other');
-  const totalIdx = col('total');
-
-  const rows: ParsedRow[] = [];
-
-  for (let i = headerIdx + 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-
-    const cols = parseCSVLine(line);
-    if (cols.length < 5) continue;
-
-    const row: ParsedRow = {
-      dateTime: cols[dateIdx] || '',
-      settlementId: cols[settlementIdx] || '',
-      type: cols[typeIdx] || '',
-      orderId: cols[orderIdx] || '',
-      sku: cols[skuIdx] || '',
-      description: cols[descIdx] || '',
-      quantity: parseInt(cols[qtyIdx] || '0') || 0,
-      productSales: parseMoney(cols[productSalesIdx]),
-      sellingFees: parseMoney(cols[sellingFeesIdx]),
-      fbaFees: parseMoney(cols[fbaFeesIdx]),
-      otherTransactionFees: parseMoney(cols[otherTxFeesIdx]),
-      other: parseMoney(cols[otherIdx]),
-      total: parseMoney(cols[totalIdx]),
-    };
-
-    rows.push(row);
-  }
-
-  return rows;
+  });
 }
 
-function parseCSVLine(line: string): string[] {
-  const cols: string[] = [];
-  let current = '';
-  let inQuotes = false;
-  for (const char of line) {
-    if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      cols.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
+function validateReplacementScopes(db: Database.Database, rows: ParsedRow[]) {
+  const incomingFeeRows = rows.filter(
+    (row) => (row.type === 'Service Fee' || row.type === 'FBA Inventory Fee')
+      && row.totalCents !== 0,
+  ).length;
+  const existingFeeRows = (db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM fee_details
+       WHERE (order_id IS NULL OR order_id = '')
+         AND fee_type IN (
+           'Subscription', 'FBAStorageFee', 'FBALongTermStorageFee', 'FBARemovalFee',
+           'CostOfAdvertising', 'FBAInboundTransportationFee', 'FBAInboundConvenienceFee',
+           'FBAInboundPlacementServiceFee', 'UnplannedServiceCharge',
+           'CustomerReturnHRRUnitFee', 'FBADisposalFee', 'FBAInboundDefectFee',
+           'FBAInboundShipmentCartonLevelInfoFee', 'InboundTransportationFee',
+           'RemovalComplete', 'DisposalComplete'
+         ))
+      + (SELECT COUNT(*) FROM financial_events
+         WHERE marketplace = 'amazon'
+           AND event_type IN (
+             'ServiceFeeEvent', 'SettlementServiceFee',
+             'TransactionReportServiceFee', 'TransactionReportInventoryFee'
+           )) AS count
+  `).get() as { count: number }).count;
+  if (existingFeeRows > 0 && incomingFeeRows === 0) {
+    throw new ImportValidationError(
+      'Refusing to replace an existing service/inventory-fee scope with zero replacement rows',
+    );
   }
-  cols.push(current.trim());
-  return cols;
+
+  const incomingShippingFeeRows = rows.filter(
+    (row) => row.type === 'Shipping Services'
+      && (row.description === 'Adjustment' || row.description === 'ReturnPostageBilling'),
+  ).length;
+  const existingShippingFeeRows = (db.prepare(`
+    SELECT COUNT(*) AS count FROM fee_details
+    WHERE fee_type IN ('ShippingLabelAdjustment', 'ReturnPostageBilling')
+      AND fee_category = 'Other Fees' AND financial_event_id = 0
+  `).get() as { count: number }).count;
+  if (existingShippingFeeRows > 0 && incomingShippingFeeRows === 0) {
+    throw new ImportValidationError(
+      'Refusing to replace an existing shipping-fee scope with zero replacement rows',
+    );
+  }
+
+  const incomingLiquidationRows = rows.filter(
+    (row) => row.type === 'Liquidations' && row.totalCents !== 0,
+  ).length;
+  const existingLiquidationRows = (db.prepare(`
+    SELECT COUNT(*) AS count FROM financial_events
+    WHERE event_type = 'TransactionReportLiquidation'
+  `).get() as { count: number }).count;
+  if (existingLiquidationRows > 0 && incomingLiquidationRows === 0) {
+    throw new ImportValidationError(
+      'Refusing to replace an existing liquidation scope with zero replacement rows',
+    );
+  }
 }
 
 function mapDescriptionToFeeType(type: string, description: string): { feeType: string; feeCategory: string } {
@@ -160,6 +151,12 @@ function mapDescriptionToFeeType(type: string, description: string): { feeType: 
 }
 
 export async function POST(request: NextRequest) {
+  if (request.nextUrl.searchParams.get('confirm') !== '1') {
+    return NextResponse.json({
+      error: 'Destructive transaction replacement requires explicit ?confirm=1',
+    }, { status: 400 });
+  }
+
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const csvPath = path.join(process.cwd(), 'data', 'amazon-transaction-report.csv');
 
@@ -168,12 +165,19 @@ export async function POST(request: NextRequest) {
   }
 
   const content = fs.readFileSync(csvPath, 'utf-8').replace(/^\uFEFF/, '');
+  let rows: ParsedRow[];
+  try {
+    rows = parseCSV(content);
+  } catch (error) {
+    return NextResponse.json({
+      error: error instanceof Error ? error.message : String(error),
+    }, { status: 400 });
+  }
+
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
 
   try {
-    const rows = parseCSV(content);
-
     const stats = {
       totalRows: rows.length,
       serviceFees: { deleted: 0, inserted: 0, totalCents: 0 },
@@ -187,6 +191,11 @@ export async function POST(request: NextRequest) {
     };
 
     const importAll = db.transaction(() => {
+      // Validate every destructive replacement scope inside the same transaction,
+      // before the first DELETE. A scope already holding rows may never be
+      // replaced by an empty parse.
+      validateReplacementScopes(db, rows);
+
       // === 1. DELETE old service fee data (wrong timestamps from Financial Events API) ===
       // The transaction report is the definitive source for ALL non-order fees.
       // Delete fee_details FIRST (before their parent events), then events.
@@ -241,10 +250,10 @@ export async function POST(request: NextRequest) {
 
       for (const row of rows) {
         if (row.type === 'Service Fee' || row.type === 'FBA Inventory Fee') {
-          const totalCents = Math.round(row.total * 100);
+          const totalCents = row.totalCents;
           if (totalCents === 0) continue; // Skip zero-amount rows (e.g. inbound placement with $0)
 
-          const postedDate = parseDateToISO(row.dateTime);
+          const postedDate = row.postedDate;
           const { feeType, feeCategory } = mapDescriptionToFeeType(row.type, row.description);
           const eventType = row.type === 'Service Fee' ? 'TransactionReportServiceFee' : 'TransactionReportInventoryFee';
 
@@ -287,8 +296,8 @@ export async function POST(request: NextRequest) {
       for (const row of rows) {
         if (row.type !== 'Shipping Services') continue;
 
-        const totalCents = Math.round(row.total * 100);
-        const postedDate = parseDateToISO(row.dateTime);
+        const totalCents = row.totalCents;
+        const postedDate = row.postedDate;
 
         if (row.description === 'Shipping Label Purchased through Amazon' && row.orderId) {
           // Update order_items shipping_cost for this order
@@ -320,8 +329,8 @@ export async function POST(request: NextRequest) {
       for (const row of rows) {
         if (row.type !== 'Adjustment') continue;
 
-        const totalCents = Math.round(row.total * 100);
-        const postedDate = parseDateToISO(row.dateTime);
+        const totalCents = row.totalCents;
+        const postedDate = row.postedDate;
 
         if (row.description.includes('FBA Inventory Reimbursement')) {
           // Try to update existing reimbursement date to the correct one
@@ -349,10 +358,10 @@ export async function POST(request: NextRequest) {
       for (const row of rows) {
         if (row.type !== 'Liquidations') continue;
 
-        const totalCents = Math.round(row.total * 100);
+        const totalCents = row.totalCents;
         if (totalCents === 0) continue;
 
-        const postedDate = parseDateToISO(row.dateTime);
+        const postedDate = row.postedDate;
 
         // Check if we already have this liquidation
         const existing = db.prepare(`
@@ -424,14 +433,15 @@ export async function POST(request: NextRequest) {
     });
   } catch (err) {
     db.close();
-    return NextResponse.json({ error: String(err) }, { status: 500 });
+    const status = err instanceof ImportValidationError ? 400 : 500;
+    return NextResponse.json({ error: String(err) }, { status });
   }
 }
 
 export async function GET() {
   return NextResponse.json({
     description: 'Import Amazon Unified Transaction Report',
-    usage: 'POST /api/sync/import-transactions (reads from data/amazon-transaction-report.csv)',
+    usage: 'POST /api/sync/import-transactions?confirm=1 (reads from data/amazon-transaction-report.csv)',
     actions: [
       'Deletes ServiceFeeEvent entries with wrong timestamps',
       'Inserts service fees and FBA inventory fees with correct posted dates',

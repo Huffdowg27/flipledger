@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { Save, TestTube, RefreshCw, CheckCircle, XCircle, AlertCircle, KeyRound } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Save, TestTube, RefreshCw, CheckCircle, XCircle, AlertCircle, KeyRound, Eye, EyeOff, Copy } from 'lucide-react';
 import { formatRelativeTime } from '@/lib/formatters';
 
 interface SettingsData {
@@ -68,6 +68,11 @@ export default function SettingsPage() {
   const [binResult, setBinResult] = useState<{ success?: boolean; error?: string; preview?: boolean; flSkusWithBin?: number; matched?: number; toWrite?: number; written?: number; unchanged?: number; unmatched?: number } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [showExtKey, setShowExtKey] = useState(false);
+  const [extKeyCopied, setExtKeyCopied] = useState(false);
+  // The settings GET redacts stored secrets to this sentinel — a saved key can
+  // never be re-displayed, only replaced. Reveal/Copy work on fresh keys only.
+  const extKeyIsRedacted = settings.extensionApiKey === '__redacted__';
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; error?: string } | null>(null);
   const [syncing, setSyncing] = useState(false);
@@ -326,11 +331,13 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* Shipping Station Extension */}
+      {/* Browser Extensions (shared key) */}
       <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
-        <h2 className="text-md font-medium text-text-primary mb-1">Shipping Station Extension</h2>
+        <h2 className="text-md font-medium text-text-primary mb-1">Browser Extensions</h2>
         <p className="text-xs text-text-tertiary mb-4">
-          Shared key for the Chrome extension that overlays Flip Ledger ASIN/bin context inside Veeqo.
+          One shared key for every Chrome extension that talks to FlipLedger — the RevSeller
+          inventory card and the Veeqo ASIN/bin overlay. Paste the SAME value into each
+          extension&apos;s settings.
         </p>
         <div>
           <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">
@@ -338,12 +345,33 @@ export default function SettingsPage() {
           </label>
           <div className="flex gap-2">
             <input
-              type="password"
+              type={showExtKey && !extKeyIsRedacted ? 'text' : 'password'}
               value={settings.extensionApiKey}
               onChange={e => setSettings(s => ({ ...s, extensionApiKey: e.target.value }))}
               placeholder="Generate a key and use the same value in the Chrome extension"
-              className="flex-1 h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+              className="flex-1 h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25 font-mono"
             />
+            <button
+              onClick={() => setShowExtKey(v => !v)}
+              disabled={extKeyIsRedacted || !settings.extensionApiKey}
+              title={extKeyIsRedacted ? 'Stored keys can’t be re-displayed — Generate a new one' : showExtKey ? 'Hide key' : 'Show key'}
+              className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors disabled:opacity-50"
+            >
+              {showExtKey && !extKeyIsRedacted ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+            <button
+              onClick={async () => {
+                await navigator.clipboard.writeText(settings.extensionApiKey);
+                setExtKeyCopied(true);
+                setTimeout(() => setExtKeyCopied(false), 2000);
+              }}
+              disabled={extKeyIsRedacted || !settings.extensionApiKey}
+              title={extKeyIsRedacted ? 'Stored keys can’t be copied back out — Generate a new one' : 'Copy key'}
+              className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors disabled:opacity-50"
+            >
+              <Copy size={14} />
+              {extKeyCopied ? 'Copied!' : 'Copy'}
+            </button>
             <button
               onClick={generateExtensionKey}
               className="flex items-center gap-2 h-9 px-3 bg-bg-elevated border border-border-default text-text-primary rounded-md text-sm font-medium hover:bg-bg-hover transition-colors"
@@ -352,6 +380,11 @@ export default function SettingsPage() {
               Generate
             </button>
           </div>
+          <p className="text-[11px] text-text-tertiary mt-2">
+            {extKeyIsRedacted
+              ? 'A key is saved, but stored keys are never shown again. To set up a new extension: Generate → Copy → Save here, then paste the same key into EVERY extension (RevSeller card + Veeqo overlay).'
+              : 'Copy this key BEFORE saving — once saved it can’t be displayed again.'}
+          </p>
         </div>
         <div className="flex items-center gap-3 mt-5">
           <button
@@ -422,6 +455,14 @@ export default function SettingsPage() {
             placeholder="pat..."
             className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary placeholder-text-tertiary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
           />
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="mt-3 flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50"
+          >
+            <Save size={14} />
+            {saving ? 'Saving...' : 'Save Airtable Token'}
+          </button>
         </div>
 
         <h2 className="text-md font-medium text-text-primary mb-1">Veeqo Shipping Costs</h2>
@@ -622,6 +663,9 @@ export default function SettingsPage() {
 
       {/* Informed Repricer */}
       <InformedSettings />
+
+      {/* Label Printer */}
+      <LabelPrinterSettings />
 
       {/* Transaction Report Import */}
       <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
@@ -854,6 +898,127 @@ function InformedSettings() {
         </button>
         {saved && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Saved</span>}
         {!saved && hasSaved && <span className="flex items-center gap-1 text-sm text-text-tertiary"><CheckCircle size={14} /> Key stored</span>}
+      </div>
+    </div>
+  );
+}
+
+interface DetectedPrinter { name: string; makeModel: string; fourBySix: boolean; }
+
+function LabelPrinterSettings() {
+  const [detected, setDetected] = useState<DetectedPrinter[]>([]);
+  const [selected, setSelected] = useState('');      // '' = auto-detect a 4x6
+  const [resolved, setResolved] = useState<{ queue: string | null; auto: boolean }>({ queue: null, auto: false });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; printer?: string; error?: string } | null>(null);
+
+  const loadPrinters = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/print/printers');
+      const d = await res.json();
+      setDetected(d.detected || []);
+      setSelected(d.configured || '');
+      setResolved(d.resolved || { queue: null, auto: false });
+    } catch { /* leave empty */ } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadPrinters(); }, [loadPrinters]);
+
+  async function handleSave() {
+    setSaving(true);
+    await fetch('/api/data/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ listing_rollo_printer_name: selected }),
+    });
+    setSaving(false);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 3000);
+    loadPrinters();
+  }
+
+  async function handleTest() {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch('/api/print/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ queue: selected }),
+      });
+      setTestResult(await res.json());
+    } catch (e) {
+      setTestResult({ success: false, error: String(e) });
+    }
+    setTesting(false);
+  }
+
+  return (
+    <div className="bg-bg-surface border border-border-subtle rounded-lg p-6 mb-6">
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-md font-medium text-text-primary">Label Printer</h2>
+        <button onClick={loadPrinters} disabled={loading}
+          className="flex items-center gap-1.5 h-8 px-2.5 text-xs border border-border-default rounded-md text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-50">
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Rescan
+        </button>
+      </div>
+      <p className="text-xs text-text-tertiary mb-4">
+        Direct-print 4×6 shipping/box labels to a thermal printer. Leave on auto-detect to use any installed 4×6 label printer, or pick a specific queue. Downloading PDFs always works regardless.
+      </p>
+
+      <div className="space-y-3">
+        <div>
+          <label className="block text-xs font-medium tracking-wide uppercase text-text-tertiary mb-1.5">Printer</label>
+          <select
+            value={selected}
+            onChange={e => setSelected(e.target.value)}
+            className="w-full h-9 px-3 bg-bg-input border border-border-default rounded-md text-sm text-text-primary focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent/25"
+          >
+            <option value="">Auto-detect 4×6 printer</option>
+            {detected.map(p => (
+              <option key={p.name} value={p.name}>
+                {p.name}{p.fourBySix ? '  ·  4×6 ✓' : ''}{p.makeModel ? `  (${p.makeModel})` : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="text-xs">
+          {resolved.queue ? (
+            <span className="text-text-secondary">
+              Labels will print to <span className="font-mono text-text-primary">{resolved.queue}</span>
+              {resolved.auto && <span className="text-text-tertiary"> (auto-detected 4×6)</span>}
+            </span>
+          ) : (
+            <span className="flex items-center gap-1.5 text-warning">
+              <AlertCircle size={13} /> No 4×6 label printer detected — install one in macOS → Printers, then Rescan. PDF download still works.
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3 mt-5">
+        <button onClick={handleSave} disabled={saving}
+          className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent-hover transition-colors disabled:opacity-50">
+          <Save size={14} />
+          {saving ? 'Saving...' : 'Save'}
+        </button>
+        <button onClick={handleTest} disabled={testing || (!selected && !resolved.queue)}
+          className="flex items-center gap-2 h-9 px-4 border border-border-default rounded-md text-sm text-text-secondary hover:bg-bg-hover transition-colors disabled:opacity-50">
+          <TestTube size={14} />
+          {testing ? 'Printing…' : 'Test print'}
+        </button>
+        {saved && <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Saved</span>}
+        {testResult && (testResult.success
+          ? <span className="flex items-center gap-1 text-sm text-positive"><CheckCircle size={14} /> Printed to {testResult.printer}</span>
+          : <span className="flex items-center gap-1 text-sm text-negative"><XCircle size={14} /> {testResult.error}</span>
+        )}
       </div>
     </div>
   );

@@ -25,13 +25,11 @@ export async function GET(request: NextRequest) {
   if (!endDate) {
     endDate = new Date().toISOString().split('T')[0];
   }
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
-
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
 
   try {
+    // Fixed-channel eBay endpoint; the marketplace predicate is a static part
+    // of the query and never comes from request input.
     const rows = db.prepare(`
       SELECT
         fe.posted_date as date,

@@ -1,8 +1,8 @@
 /**
  * POST /api/incoming/[id]  — actions on one incoming purchase.
  *
- * { action: 'receive', quantityGood, quantityIssue?, issueType?, issueNote?,
- *   sku?, binLocation? }
+ * { action: 'receive', receiptKey, expectedQuantityReceived, quantityGood,
+ *   quantityIssue?, issueType?, issueNote?, sku?, binLocation? }
  *   Good units become a real inventory_ledger lot (this is the moment the
  *   purchase enters FIFO/valuation). Issue units land in receiving_issues —
  *   they arrived, so they count toward quantity_received, but they create NO
@@ -11,40 +11,43 @@
  *   Writes the new received count back to Airtable's "Received" field
  *   (best-effort) so his existing views stay truthful.
  *
+ * { action: 'reconcile', receiptKey, expectedQuantityReceived,
+ *   inventoryLedgerId, quantity, confirmMismatch? }
+ *   Attributes legacy received units to an operator-selected existing lot.
+ *   This records immutable receipt identity and updates the incoming purchase,
+ *   but never changes the selected lot or reruns FIFO.
+ *
  * { action: 'cancel', note? }   — refunded/never coming; no lot, locked.
  * { action: 'snooze', days }    — still waiting; re-ages from today.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import { recalculateFIFO } from '@/lib/fifo';
+import { ReceiptConflictError, reconcileIncomingPurchase, writeBackReceived } from '@/lib/incoming-receipts';
+
+interface IncomingPurchaseRow {
+  airtable_record_id: string | null;
+  asin: string | null;
+  sku: string | null;
+  quantity: number;
+  quantity_received: number;
+  unit_cost_cents: number;
+  ordered_at: string | null;
+  status: string;
+  received_at: string | null;
+  inventory_ledger_id: number | null;
+  receipt_allocation_baseline: number;
+  receipt_identity_started_at: string | null;
+}
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   return db;
-}
-
-async function writeBackReceived(db: Database.Database, airtableRecordId: string | null, received: number, damaged: number) {
-  if (!airtableRecordId) return;
-  try {
-    const rows = db.prepare("SELECT key, value FROM settings WHERE key IN ('airtable_api_key','airtable_purchases_base','airtable_purchases_table')").all() as { key: string; value: string }[];
-    const s: Record<string, string> = {};
-    for (const r of rows) s[r.key] = r.value;
-    if (!s.airtable_api_key) return;
-    const baseId = s.airtable_purchases_base || 'app1G29Xd3K6S5swV';
-    const table = s.airtable_purchases_table || '💳 Orders';
-    const fields: Record<string, number> = { Received: received };
-    if (damaged > 0) fields['Damaged'] = damaged;
-    await fetch(`https://api.airtable.com/v0/${baseId}/${encodeURIComponent(table)}/${airtableRecordId}`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${s.airtable_api_key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ fields }),
-    });
-  } catch (err) {
-    console.warn('[incoming] Airtable write-back failed (non-fatal):', err);
-  }
 }
 
 export async function POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -76,32 +79,115 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       return NextResponse.json({ success: true });
     }
 
+    if (body.action === 'reconcile') {
+      const receiptKey = typeof body.receiptKey === 'string' ? body.receiptKey.trim() : '';
+      if (!receiptKey || receiptKey.length > 200) {
+        return NextResponse.json({ error: 'receiptKey is required' }, { status: 400 });
+      }
+      const expectedQuantityReceived = Number(body.expectedQuantityReceived);
+      if (!Number.isInteger(expectedQuantityReceived) || expectedQuantityReceived < 0) {
+        return NextResponse.json({ error: 'expectedQuantityReceived must be a non-negative integer' }, { status: 400 });
+      }
+      const inventoryLedgerId = Number(body.inventoryLedgerId);
+      if (!Number.isInteger(inventoryLedgerId) || inventoryLedgerId <= 0) {
+        return NextResponse.json({ error: 'inventoryLedgerId must be a positive integer' }, { status: 400 });
+      }
+      const quantity = Number(body.quantity);
+      if (!Number.isInteger(quantity) || quantity <= 0) {
+        return NextResponse.json({ error: 'quantity must be a positive integer' }, { status: 400 });
+      }
+      if (body.confirmMismatch !== undefined && typeof body.confirmMismatch !== 'boolean') {
+        return NextResponse.json({ error: 'confirmMismatch must be a boolean' }, { status: 400 });
+      }
+      const confirmMismatch = body.confirmMismatch === true;
+      const result = await reconcileIncomingPurchase(db, {
+        purchaseId,
+        receiptKey,
+        expectedQuantityReceived,
+        inventoryLedgerId,
+        quantity,
+        confirmMismatch,
+      });
+      return NextResponse.json(result);
+    }
+
     if (body.action !== 'receive') return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+
+    const receiptKey = typeof body.receiptKey === 'string' ? body.receiptKey.trim() : '';
+    if (!receiptKey || receiptKey.length > 200) {
+      return NextResponse.json({ error: 'receiptKey is required' }, { status: 400 });
+    }
+    const expectedQuantityReceived = Number(body.expectedQuantityReceived);
+    if (!Number.isInteger(expectedQuantityReceived) || expectedQuantityReceived < 0) {
+      return NextResponse.json({ error: 'expectedQuantityReceived must be a non-negative integer' }, { status: 400 });
+    }
 
     const good = Math.max(0, Math.floor(Number(body.quantityGood) || 0));
     const issue = Math.max(0, Math.floor(Number(body.quantityIssue) || 0));
     if (good + issue === 0) return NextResponse.json({ error: 'Nothing to receive' }, { status: 400 });
-    const remaining = p.quantity - p.quantity_received;
-    if (good + issue > remaining) {
-      return NextResponse.json({ error: `Receiving ${good + issue} but only ${remaining} outstanding` }, { status: 400 });
-    }
-    if (issue > 0 && !body.issueType) return NextResponse.json({ error: 'issueType required when receiving issue units' }, { status: 400 });
+    const issueType = typeof body.issueType === 'string' ? body.issueType.trim() : '';
+    if (issue > 0 && !issueType) return NextResponse.json({ error: 'issueType required when receiving issue units' }, { status: 400 });
 
-    // SKU: explicit override (relink) > stored > adopt live SC SKU by ASIN.
-    let sku: string | null = (typeof body.sku === 'string' && body.sku.trim()) ? body.sku.trim() : (p.sku || null);
-    if (!sku && p.asin) {
-      const live = db.prepare(
-        "SELECT sku FROM merchant_listings WHERE asin = ? AND marketplace = 'amazon' ORDER BY last_synced DESC"
-      ).all(p.asin) as { sku: string }[];
-      if (live.length === 1) sku = live[0].sku;
-    }
-    if (!sku && good > 0) {
-      return NextResponse.json({ error: 'No SKU known for this purchase — pick a Seller Central SKU (or enter one) to receive against.' }, { status: 400 });
-    }
-    const skuChanged = sku !== p.sku;
+    const requestedSku = typeof body.sku === 'string' && body.sku.trim() ? body.sku.trim() : null;
+    const issueNote = typeof body.issueNote === 'string' && body.issueNote.trim() ? body.issueNote.trim() : null;
+    const binLocation = typeof body.binLocation === 'string' && body.binLocation.trim() ? body.binLocation.trim() : null;
+    const payloadHash = createHash('sha256').update(JSON.stringify({
+      purchaseId,
+      expectedQuantityReceived,
+      good,
+      issue,
+      issueType: issueType || null,
+      issueNote,
+      requestedSku,
+      binLocation,
+    })).digest('hex');
 
-    let inventoryLedgerId: number | null = p.inventory_ledger_id;
     const tx = db.transaction(() => {
+      const prior = db.prepare(`
+        SELECT payload_hash, result_json
+        FROM incoming_receipt_allocations
+        WHERE receipt_key = ?
+      `).get(receiptKey) as { payload_hash: string; result_json: string } | undefined;
+      if (prior) {
+        if (prior.payload_hash !== payloadHash) {
+          throw new ReceiptConflictError('Receipt key was already used with different content');
+        }
+        return {
+          response: { ...JSON.parse(prior.result_json), replayed: true },
+          applied: false,
+          airtableRecordId: null,
+          newReceived: null,
+          sku: null,
+        };
+      }
+
+      const current = db.prepare('SELECT * FROM incoming_purchases WHERE id = ?').get(purchaseId) as IncomingPurchaseRow | undefined;
+      if (!current) throw new Error('Purchase not found');
+      if (current.quantity_received !== expectedQuantityReceived) {
+        throw new ReceiptConflictError(
+          `Incoming purchase changed since this receive started (expected ${expectedQuantityReceived}, current ${current.quantity_received})`
+        );
+      }
+
+      const remaining = current.quantity - current.quantity_received;
+      if (good + issue > remaining) {
+        throw new ReceiptConflictError(`Receiving ${good + issue} but only ${remaining} outstanding`);
+      }
+
+      // SKU: explicit override (relink) > stored > adopt live SC SKU by ASIN.
+      let sku: string | null = requestedSku || current.sku || null;
+      if (!sku && current.asin) {
+        const live = db.prepare(
+          "SELECT sku FROM merchant_listings WHERE asin = ? AND marketplace = 'amazon' ORDER BY last_synced DESC"
+        ).all(current.asin) as { sku: string }[];
+        if (live.length === 1) sku = live[0].sku;
+      }
+      if (!sku && good > 0) {
+        throw new Error('No SKU known for this purchase — pick a Seller Central SKU (or enter one) to receive against.');
+      }
+      const skuChanged = sku !== current.sku;
+      let inventoryLedgerId: number | null = current.inventory_ledger_id;
+
       if (good > 0) {
         if (inventoryLedgerId) {
           // Subsequent partial receive: grow the existing lot.
@@ -115,54 +201,97 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
             INSERT INTO inventory_ledger (asin, sku, buy_price, quantity, quantity_remaining, quantity_received,
               date_purchased, received_at, bin_location, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(p.asin, sku, p.unit_cost_cents, good, good, good, p.ordered_at || now, now, body.binLocation || null, now);
+          `).run(current.asin, sku, current.unit_cost_cents, good, good, good, current.ordered_at || now, now, binLocation, now);
           inventoryLedgerId = Number(lot.lastInsertRowid);
         }
       }
 
+      let receivingIssueId: number | null = null;
       if (issue > 0) {
-        db.prepare(`
+        const issueResult = db.prepare(`
           INSERT INTO receiving_issues (incoming_purchase_id, inventory_ledger_id, asin, sku, quantity, issue_type, note, status, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)
-        `).run(purchaseId, inventoryLedgerId, p.asin, sku, issue, String(body.issueType), body.issueNote || null, now, now);
+        `).run(purchaseId, inventoryLedgerId, current.asin, sku, issue, issueType, issueNote, now, now);
+        receivingIssueId = Number(issueResult.lastInsertRowid);
       }
 
-      const newReceived = p.quantity_received + good + issue;
+      const newReceived = current.quantity_received + good + issue;
+      const status = newReceived >= current.quantity ? 'received' : 'partial';
+      const receiptAllocationBaseline = current.receipt_identity_started_at
+        ? Number(current.receipt_allocation_baseline) || 0
+        : current.quantity_received;
       db.prepare(`
         UPDATE incoming_purchases SET quantity_received = ?, status = ?, received_at = ?,
-          inventory_ledger_id = ?, sku = ?, updated_at = ?
+          inventory_ledger_id = ?, sku = ?, receipt_allocation_baseline = ?,
+          receipt_identity_started_at = COALESCE(receipt_identity_started_at, ?),
+          updated_at = ?
         WHERE id = ?
       `).run(
         newReceived,
-        newReceived >= p.quantity ? 'received' : 'partial',
-        newReceived >= p.quantity ? now : p.received_at,
+        status,
+        newReceived >= current.quantity ? now : current.received_at,
         inventoryLedgerId,
         sku,
+        receiptAllocationBaseline,
+        now,
         now,
         purchaseId
       );
-      return newReceived;
+
+      const response = {
+        success: true,
+        inventoryLedgerId,
+        skuChanged,
+        sku,
+        status,
+        replayed: false,
+      };
+      db.prepare(`
+        INSERT INTO incoming_receipt_allocations (
+          receipt_key, payload_hash, incoming_purchase_id, inventory_ledger_id,
+          receiving_issue_id, quantity_good, quantity_issue, sku, source,
+          result_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'receive', ?, ?)
+      `).run(
+        receiptKey,
+        payloadHash,
+        purchaseId,
+        good > 0 ? inventoryLedgerId : null,
+        receivingIssueId,
+        good,
+        issue,
+        sku,
+        JSON.stringify(response),
+        now,
+      );
+
+      return {
+        response,
+        applied: true,
+        airtableRecordId: current.airtable_record_id as string | null,
+        newReceived,
+        sku,
+      };
     });
-    const newReceived = tx();
+    const outcome = tx.immediate();
 
     // FIFO sees the new lot (runs in-process where FIFO_IL_INFINITE is set).
-    if (good > 0 && sku) {
-      try { recalculateFIFO({ sku }); } catch (err) { console.warn('[incoming] FIFO recalc failed:', err); }
+    if (outcome.applied && good > 0 && outcome.sku) {
+      try { recalculateFIFO({ sku: outcome.sku }); } catch (err) { console.warn('[incoming] FIFO recalc failed:', err); }
     }
 
-    const damagedTotal = (db.prepare(
-      "SELECT COALESCE(SUM(quantity), 0) as q FROM receiving_issues WHERE incoming_purchase_id = ?"
-    ).get(purchaseId) as any).q;
-    await writeBackReceived(db, p.airtable_record_id, newReceived, damagedTotal);
+    if (outcome.applied && outcome.newReceived != null) {
+      const damagedTotal = (db.prepare(
+        "SELECT COALESCE(SUM(quantity), 0) as q FROM receiving_issues WHERE incoming_purchase_id = ?"
+      ).get(purchaseId) as any).q;
+      await writeBackReceived(db, outcome.airtableRecordId, outcome.newReceived, damagedTotal);
+    }
 
-    return NextResponse.json({
-      success: true,
-      inventoryLedgerId,
-      skuChanged,
-      sku,
-      status: newReceived >= p.quantity ? 'received' : 'partial',
-    });
+    return NextResponse.json(outcome.response);
   } catch (err) {
+    if (err instanceof ReceiptConflictError) {
+      return NextResponse.json({ error: err.message }, { status: 409 });
+    }
     return NextResponse.json({ error: String(err) }, { status: 500 });
   } finally {
     db.close();

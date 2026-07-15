@@ -2,8 +2,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import { getSellerId } from '@/lib/sp-api/listingsItems';
+import { refreshShippingTemplateCacheIfStale } from '@/lib/sp-api/shippingTemplates';
 import { patchMfnListing } from '@/lib/sp-api/mfnActivation';
+import { loadMfnActivationInventory } from '@/lib/mfnActivationInventory';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import {
+  loadAmazonShippingTemplateCache,
+  resolveAmazonShippingTemplateName,
+  resolveAmazonShippingTemplateKey,
+  shippingTemplateValidationError,
+} from '@/lib/amazonShippingTemplates';
 
 const DEFAULT_MFN_SHIPPING_TEMPLATE = 'DEFAULT MFN USE THIS ONE';
 
@@ -41,6 +49,7 @@ export interface PushResult {
   proposed_qty: number;
   proposed_price_cents: number | null;
   proposed_shipping_template: string;
+  proposed_shipping_template_key: string | null;
   il_id: number | null;
   eligible: boolean;
   skipped_reason: string | null;
@@ -53,10 +62,9 @@ export interface PushResult {
 
 // POST /api/data/merchant-inventory/activation-push
 //
-// Pushes quantity and price for eligible MFN SKUs to Amazon via the
-// Listings Items API PATCH. merchant_shipping_group_name is NOT sent —
-// it's stored locally on inventory_ledger and must be configured in
-// Seller Central directly.
+// Pushes quantity, price, and merchant_shipping_group for eligible MFN SKUs to
+// Amazon via the Listings Items API PATCH. Template names are validated against
+// the synced Amazon template cache before any live Amazon write.
 //
 // Eligibility mirrors activation-preview's can_push: merchant listing row
 // exists + ledger quantity > 0 + price > 0. Receiving/inspection are tracked
@@ -69,10 +77,10 @@ export interface PushResult {
 // dryRun=true  → eligibility check only; no SP-API calls; no DB writes.
 // dryRun=false → calls PATCH on each eligible SKU; logs every attempt.
 //
-// Input:  { skus: string[], dryRun?: boolean }
+// Input:  { skus: string[], dryRun?: boolean, shippingTemplate?: string }
 // Output: { dryRun, amazonWriteMade, results: PushResult[], timestamp }
 export async function POST(request: NextRequest) {
-  let body: { skus?: unknown; dryRun?: unknown };
+  let body: { skus?: unknown; dryRun?: unknown; shippingTemplate?: unknown };
   try {
     body = await request.json();
   } catch {
@@ -90,6 +98,10 @@ export async function POST(request: NextRequest) {
   }
 
   const dryRun = body.dryRun === true;
+  const explicitShippingTemplate =
+    typeof body.shippingTemplate === 'string' && body.shippingTemplate.trim()
+      ? body.shippingTemplate.trim()
+      : '';
 
   // Credentials guard — checked before any DB or API work
   const creds = getCredentials();
@@ -117,42 +129,33 @@ export async function POST(request: NextRequest) {
       WHERE ml.sku IN (${placeholders}) AND ml.marketplace = 'amazon'
     `).all(...skus) as DbRow[];
 
-    const ilRows = db.prepare(`
-      SELECT
-        il.sku,
-        il.id                              AS il_id,
-        il.asin,
-        il.list_price_cents                AS il_list_price_cents,
-        il.quantity_received,
-        il.quantity_remaining,
-        il.inspected_at,
-        il.merchant_shipping_group_name
-      FROM inventory_ledger il
-      WHERE il.sku IN (${placeholders}) AND il.quantity_remaining > 0
-      ORDER BY il.date_purchased DESC
-    `).all(...skus) as DbRow[];
-
     const mlBySku = new Map<string, DbRow>();
     for (const row of mlRows) mlBySku.set(String(row.sku), row);
 
-    const ilBySku = new Map<string, DbRow>();
-    for (const row of ilRows) {
-      if (!ilBySku.has(String(row.sku))) ilBySku.set(String(row.sku), row);
+    const inventoryBySku = loadMfnActivationInventory(db, skus);
+
+    // Live pushes validate against a current template list: refresh the cache
+    // when it's older than 24h. A failed refresh keeps the cached list (Amazon
+    // still rejects unknown names and the push fails closed), it never blocks.
+    let templateCache = loadAmazonShippingTemplateCache(db);
+    if (!dryRun) {
+      const refresh = await refreshShippingTemplateCacheIfStale(db, creds);
+      templateCache = refresh.cache;
+      if (refresh.refreshError) {
+        console.warn(
+          `[activation-push] shipping template refresh failed; validating against cache from ${templateCache.fetchedAt ?? 'unknown'}: ${refresh.refreshError}`
+        );
+      }
     }
 
     // Determine eligibility — identical gate to activation-preview
     const eligibilityMap = skus.map(sku => {
       const ml = mlBySku.get(sku) ?? null;
-      const il = ilBySku.get(sku) ?? null;
+      const inventory = inventoryBySku.get(sku) ?? null;
+      const il = inventory?.referenceLot ?? null;
       const reasons: string[] = [];
 
       if (!ml) reasons.push('No Amazon listing found');
-      // Local merchant_listings.status may be stale relative to Seller Central.
-      // The SP-API PATCH sends qty + price regardless of local status; after
-      // an ACCEPTED response we mirror status back to Active. Stale status is
-      // therefore not a blocker — only a warning in the preview.
-      const currentStatus = ml ? String(ml.current_status ?? '') || null : null;
-
       const ilPriceCents = il?.il_list_price_cents != null ? Number(il.il_list_price_cents) : null;
       const mlPriceCents = ml?.current_price_cents  != null ? Number(ml.current_price_cents)  : null;
       const proposedPriceCents = ilPriceCents ?? mlPriceCents;
@@ -160,19 +163,24 @@ export async function POST(request: NextRequest) {
 
       // Qty comes from ledger remaining; receiving/inspection are tracked in
       // Airtable and intentionally not gated here (mirrors activation-preview).
-      const qtyReceived  = il ? (Number(il.quantity_received)  || 0) : 0;
-      const qtyRemaining = il ? (Number(il.quantity_remaining) || 0) : 0;
-      const proposedQty = qtyReceived > 0 ? qtyReceived : qtyRemaining;
+      const proposedQty = Math.max(0, inventory?.sellableQuantity ?? 0);
       if (proposedQty <= 0) reasons.push('Quantity is 0');
 
-      // Shipping template is stored locally only — not pushed to Amazon.
-      // Captured here for the audit log and UI display, but never blocks
-      // eligibility. The exact template name must be configured in Seller
-      // Central directly.
+      // Shipping template is pushed to Amazon as merchant_shipping_group.
+      // Per-push selection wins; otherwise use the lot value, then the route
+      // default. Stored template keys are accepted but resolved to names.
       const lotTemplate = il?.merchant_shipping_group_name != null
         ? String(il.merchant_shipping_group_name).trim()
         : '';
-      const proposedShippingTemplate = lotTemplate || DEFAULT_MFN_SHIPPING_TEMPLATE;
+      const requestedTemplate = explicitShippingTemplate || lotTemplate || DEFAULT_MFN_SHIPPING_TEMPLATE;
+      const templateError = shippingTemplateValidationError(requestedTemplate, templateCache.templates);
+      const proposedShippingTemplate =
+        resolveAmazonShippingTemplateName(requestedTemplate, templateCache.templates)
+        ?? requestedTemplate;
+      // Amazon requires the enum KEY (id), not the display name, in the push.
+      const proposedShippingTemplateKey =
+        resolveAmazonShippingTemplateKey(requestedTemplate, templateCache.templates);
+      if (templateError) reasons.push(templateError);
 
       const asin = ml ? String(ml.asin ?? '') : il ? String(il.asin ?? '') : null;
 
@@ -183,11 +191,22 @@ export async function POST(request: NextRequest) {
         proposed_qty: proposedQty,
         proposed_price_cents: proposedPriceCents,
         proposed_shipping_template: proposedShippingTemplate,
+        proposed_shipping_template_key: proposedShippingTemplateKey,
         il_id: il ? Number(il.il_id) : null,
         eligible: reasons.length === 0,
         skipped_reason: reasons.length > 0 ? reasons.join('; ') : null,
       };
     });
+
+    if (!dryRun) {
+      const staleTemplate = eligibilityMap.find((item) =>
+        item.skipped_reason?.includes('synced Amazon shipping templates')
+        || item.skipped_reason?.includes('Select an Amazon shipping template')
+      );
+      if (staleTemplate) {
+        return NextResponse.json({ error: staleTemplate.skipped_reason }, { status: 400 });
+      }
+    }
 
     // Dry-run: return eligibility without any SP-API or DB writes
     if (dryRun) {
@@ -248,6 +267,8 @@ export async function POST(request: NextRequest) {
           sku: item.sku,
           quantity: item.proposed_qty,
           listPriceCents: item.proposed_price_cents!,
+          merchantShippingGroupName: item.proposed_shipping_template,
+          merchantShippingGroupValue: item.proposed_shipping_template_key,
         });
       } catch (err) {
         errorMessage = String(err);

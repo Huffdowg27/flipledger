@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -11,15 +12,39 @@ function getDb() {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const days = parseInt(searchParams.get('days') || '30');
+
+  const rawStartDate = searchParams.get('startDate');
+  const rawEndDate = searchParams.get('endDate');
+  if (
+    (rawStartDate !== null && !isIsoCalendarDate(rawStartDate))
+    || (rawEndDate !== null && !isIsoCalendarDate(rawEndDate))
+    || (rawStartDate !== null && rawEndDate !== null && rawStartDate > rawEndDate)
+  ) {
+    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  }
+
+  let cutoff: string;
+  if (rawStartDate) {
+    cutoff = rawStartDate;
+  } else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays) || Number(rawDays) < 1 || Number(rawDays) > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    cutoff = new Date(Date.now() - Number(rawDays) * 86400000).toISOString();
+  }
+
+  const cutoffEnd = rawEndDate
+    ? new Date(new Date(`${rawEndDate}T00:00:00Z`).getTime() + 86400000).toISOString().split('T')[0]
+    : null;
+
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
+  }
+  const marketplace = marketplaceResult.marketplace;
 
   const db = getDb();
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
-
-  const cutoff = new Date(Date.now() - days * 86400000).toISOString();
-
   try {
     const rows = db.prepare(`
       SELECT
@@ -39,8 +64,10 @@ export async function GET(request: NextRequest) {
       LEFT JOIN order_items oi ON r.order_id = oi.order_id
       LEFT JOIN products p2 ON oi.asin = p2.asin
       WHERE r.refund_date >= ?
+        AND (? IS NULL OR r.refund_date < ?)
+        AND (? IS NULL OR r.marketplace = ?)
       ORDER BY r.refund_date DESC
-    `).all(cutoff) as any[];
+    `).all(cutoff, cutoffEnd, cutoffEnd, marketplace, marketplace) as any[];
 
     const items = rows.map((row) => ({
       refundDate: row.refundDate,

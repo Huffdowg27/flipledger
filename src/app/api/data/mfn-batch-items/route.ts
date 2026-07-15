@@ -23,6 +23,61 @@ function getDb() {
   return db;
 }
 
+type DbRow = Record<string, unknown>;
+
+interface IncomingPurchaseCandidate {
+  id: number;
+  order_ref: string | null;
+  order_source: string | null;
+  asin: string | null;
+  sku: string | null;
+  quantity: number;
+  quantity_received: number;
+  unit_cost_cents: number;
+  ordered_at: string | null;
+  status: string;
+}
+
+function tableExists(db: Database.Database, table: string): boolean {
+  return !!db.prepare(`
+    SELECT 1 FROM sqlite_master
+    WHERE type = 'table' AND name = ?
+  `).get(table);
+}
+
+function attachOpenIncomingPurchases(db: Database.Database, rows: DbRow[]): DbRow[] {
+  if (rows.length === 0 || !tableExists(db, 'incoming_purchases')) return rows;
+  const asins = Array.from(new Set(
+    rows
+      .map(row => String(row.asin ?? '').trim())
+      .filter(asin => asin.length > 0),
+  ));
+  if (asins.length === 0) return rows;
+  const placeholders = asins.map(() => '?').join(',');
+  const candidates = db.prepare(`
+    SELECT
+      id, order_ref, order_source, asin, sku, quantity, quantity_received,
+      unit_cost_cents, ordered_at, status
+    FROM incoming_purchases
+    WHERE status IN ('on_order', 'partial')
+      AND quantity > quantity_received
+      AND asin IN (${placeholders})
+    ORDER BY ordered_at ASC, id ASC
+  `).all(...asins) as IncomingPurchaseCandidate[];
+  const byAsin = new Map<string, IncomingPurchaseCandidate[]>();
+  for (const candidate of candidates) {
+    const key = String(candidate.asin ?? '').trim();
+    if (!key) continue;
+    const list = byAsin.get(key) ?? [];
+    list.push(candidate);
+    byAsin.set(key, list);
+  }
+  return rows.map(row => ({
+    ...row,
+    open_incoming_purchases: byAsin.get(String(row.asin ?? '').trim()) ?? [],
+  }));
+}
+
 export async function GET(request: NextRequest) {
   const raw = request.nextUrl.searchParams.get('batchId');
   const batchId = raw != null && /^\d+$/.test(raw) ? Number(raw) : NaN;
@@ -54,6 +109,7 @@ export async function GET(request: NextRequest) {
         il.condition                                 AS condition,
         il.quantity_received                         AS quantity_received,
         il.quantity_remaining                        AS quantity_remaining,
+        il.quantity                                  AS lot_quantity,
         il.received_at                               AS received_at,
         il.inspected_at                              AS inspected_at,
         il.merchant_shipping_group_name              AS merchant_shipping_group_name,
@@ -64,7 +120,9 @@ export async function GET(request: NextRequest) {
         NULL                                         AS parsed_list_price_cents,
         NULL                                         AS parsed_order_qty,
         'unparsed'                                   AS sku_parse_status,
-        NULL                                         AS upc
+        NULL                                         AS upc,
+        (SELECT COUNT(*) FROM receiving_issues ri
+          WHERE ri.inventory_ledger_id = il.id AND ri.status = 'open') AS open_issue_count
       FROM inventory_ledger il
       LEFT JOIN merchant_listings ml
         ON ml.sku = il.sku AND ml.marketplace = 'amazon'
@@ -74,9 +132,9 @@ export async function GET(request: NextRequest) {
         ON fec.asin = COALESCE(ml.asin, il.asin) AND fec.marketplace LIKE '%:MFN'
       WHERE il.batch_id = ?
       ORDER BY il.created_at ASC, il.id ASC
-    `).all(batchId);
+    `).all(batchId) as DbRow[];
 
-    return NextResponse.json({ items: rows });
+    return NextResponse.json({ items: attachOpenIncomingPurchases(db, rows) });
   } catch (err) {
     return NextResponse.json({ error: String(err) }, { status: 500 });
   } finally {

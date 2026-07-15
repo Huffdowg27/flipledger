@@ -12,6 +12,7 @@ import { NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { isAmazonGradedSku } from '@/lib/sku-cogs';
 
 const IMPORTS_DIR = path.join(process.cwd(), 'imports');
 
@@ -135,7 +136,7 @@ export async function POST() {
         if (fromOrders) {
           asin = fromOrders.asin;
           // Create inventory_ledger entry so future imports resolve via ledger
-          if (asin && row.costCents) {
+          if (asin && row.costCents && !isAmazonGradedSku(row.msku)) {
             const r = insertLedger.run(asin, row.msku, row.costCents,
               row.onHand + row.inbound, row.onHand + row.inbound,
               now.slice(0, 10), `il:${row.msku}`, now);

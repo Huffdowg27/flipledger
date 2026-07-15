@@ -41,11 +41,7 @@ const NAV: NavSection[] = [
     key: 'inventory', label: 'Inventory', icon: <Warehouse size={26} />, href: '/inventory',
     items: [
       { label: 'Incoming', href: '/incoming' },
-      { label: 'Products & COGS', href: '/products' },
       { label: 'Merchant Inventory', href: '/analyze/merchant-inventory' },
-      { label: 'Inventory Valuation', href: '/analyze/inventory-valuation' },
-      { label: 'MFN Quick Tray', href: '/mfn/batch' },
-      { label: 'MFN Upload List', href: '/mfn/upload-list' },
     ],
   },
   {
@@ -63,6 +59,7 @@ const NAV: NavSection[] = [
     items: [
       { label: 'Refunds', href: '/bookkeep/refunds' },
       { label: 'Removals', href: '/analyze/removals' },
+      { label: 'Disposition Management', href: '/analyze/dispositions' },
     ],
   },
   {
@@ -79,7 +76,9 @@ const NAV: NavSection[] = [
     key: 'reports', label: 'Reports', icon: <BarChart3 size={26} />,
     items: [
       { label: 'Profit & Loss', href: '/analyze/profitloss' },
+      { label: 'Profit First', href: '/analyze/profit-first' },
       { label: 'Profitability Reports', href: '/analyze/profitability' },
+      { label: 'Inventory Valuation', href: '/analyze/inventory-valuation' },
       { label: 'FBA Sales', href: '/bookkeep/fba-sales' },
       { label: 'WFS Sales', href: '/bookkeep/wfs-sales' },
       { label: 'Merchant Sales', href: '/bookkeep/merchant-sales' },
@@ -146,7 +145,9 @@ export default function Sidebar() {
 
   useEffect(() => {
     fetchLastSync();
-    fetch('/api/sync/auto').catch(() => {});
+    // In development this starts the loop; production reports the dedicated
+    // worker's status without creating a scheduler in the web process.
+    fetch('/api/sync/auto', { method: 'POST' }).catch(() => {});
     const interval = setInterval(fetchLastSync, 60000);
     return () => clearInterval(interval);
   }, []);

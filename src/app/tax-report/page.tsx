@@ -29,7 +29,17 @@ interface TaxData {
   };
   perMarketplace: { marketplace: string; grossReceipts: number; productSales: number; shippingIncome: number; cogs: number; fees: number; refunds: number; clawbacks: number; shippingCosts: number; orders: number; units: number }[];
   incomeByMonth: { month: string; productSales: number; shippingIncome: number; orderCount: number; unitsSold: number }[];
-  cogs: { beginningInventory: number; purchases: number; inboundShipping: number; costOfGoodsSold: number; endingInventory: number };
+  cogs: {
+    beginningInventory: number;
+    purchases: number;
+    inboundShipping: number;
+    costOfGoodsSold: number;
+    endingInventory: number;
+    calculationMethod: 'historical-fifo' | 'transaction-fifo';
+    saleCogsBeforeDispositionAdjustments: number;
+    dispositionRestockReversal: number;
+    inventoryWriteoff: number;
+  };
   amazonFees: { category: string; feeType: string; total: number; count: number }[];
   amazonFeeSummary: { category: string; total: number }[];
   otherExpenses: { category: string; total: number; count: number }[];
@@ -88,7 +98,7 @@ export default function TaxReportPage() {
         ['1a', 'Gross Receipts or Sales', centsToDollarStr(sc.line1_grossReceipts)],
         ['1b', 'Returns and Allowances', centsToDollarStr(sc.line2_returnsAllowances)],
         ['1c', 'Net Receipts', centsToDollarStr(sc.line3_netReceipts)],
-        ['2', 'Cost of Goods Sold (Schedule A)', centsToDollarStr(sc.line4_cogs)],
+        ['2', 'Cost of Goods Sold (FIFO activity estimate)', centsToDollarStr(sc.line4_cogs)],
         ['3', 'Gross Profit', centsToDollarStr(sc.line5_grossProfit)],
         ['4-5', 'Other Income (Reimbursements + Fee Clawbacks)', centsToDollarStr(sc.line6_otherIncome)],
         ['6', 'Total Income', centsToDollarStr(sc.line7_grossIncome)],
@@ -120,18 +130,13 @@ export default function TaxReportPage() {
   function exportCogs() {
     if (!data) return;
     const c = data.cogs;
-    downloadCsv(`cogs-schedule-a-${year}.csv`,
-      ['1120-S Schedule A Line', 'Description', 'Amount'],
+    downloadCsv(`cogs-reconciliation-${year}.csv`,
+      ['Component', 'Description', 'Amount'],
       [
-        ['1', 'Inventory at Beginning of Year', centsToDollarStr(c.beginningInventory)],
-        ['2', 'Purchases', centsToDollarStr(c.purchases)],
-        ['3', 'Cost of Labor', '0.00'],
-        ['4', 'Additional Section 263A Costs', '0.00'],
-        ['5', 'Other Costs (Inbound Shipping)', centsToDollarStr(c.inboundShipping)],
-        ['6', 'Total (Lines 1-5)', centsToDollarStr(c.beginningInventory + c.purchases + c.inboundShipping)],
-        ['7', 'Inventory at End of Year', centsToDollarStr(c.endingInventory)],
-        ['8', 'Cost of Goods Sold (Line 6 - Line 7)', centsToDollarStr(c.costOfGoodsSold)],
-        ['9a', 'Method of Valuation: FIFO', ''],
+        ['A', 'Sale COGS before disposition adjustments', centsToDollarStr(c.saleCogsBeforeDispositionAdjustments)],
+        ['B', 'Restocked inventory reversal', centsToDollarStr(-c.dispositionRestockReversal)],
+        ['C', 'Inventory write-offs', centsToDollarStr(c.inventoryWriteoff)],
+        ['Total', 'FIFO activity COGS estimate', centsToDollarStr(c.costOfGoodsSold)],
       ]
     );
   }
@@ -207,7 +212,7 @@ export default function TaxReportPage() {
       {/* Sections */}
       <div className="space-y-4">
         {/* Schedule C Summary */}
-        <TaxSection title="Form 1120-S Summary" description="Maps to IRS Form 1120-S (S-Corporation) income and deductions" onExport={exportScheduleC}>
+        <TaxSection title="Form 1120-S Working Summary" description="CPA working paper — maps operating data to likely Form 1120-S income and deduction lines" onExport={exportScheduleC}>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border-subtle">
@@ -220,7 +225,7 @@ export default function TaxReportPage() {
               <ScheduleRow line="1a" label="Gross Receipts or Sales" value={sc.line1_grossReceipts} />
               <ScheduleRow line="1b" label="Returns and Allowances" value={sc.line2_returnsAllowances} negative />
               <ScheduleRow line="1c" label="Net Receipts" value={sc.line3_netReceipts} bold />
-              <ScheduleRow line="2" label="Cost of Goods Sold (Schedule A)" value={sc.line4_cogs} negative />
+              <ScheduleRow line="2" label="Cost of Goods Sold (FIFO activity estimate)" value={sc.line4_cogs} negative />
               <ScheduleRow line="3" label="Gross Profit" value={sc.line5_grossProfit} bold />
               <ScheduleRow line="4-5" label="Other Income (Reimbursements + Clawbacks)" value={sc.line6_otherIncome} />
               <ScheduleRow line="6" label="Total Income" value={sc.line7_grossIncome} bold />
@@ -339,32 +344,34 @@ export default function TaxReportPage() {
           </table>
         </TaxSection>
 
-        {/* COGS Calculation */}
-        <TaxSection title="Cost of Goods Sold (Schedule A)" description="Form 1120-S Schedule A — Inventory and COGS calculation using FIFO method" onExport={exportCogs}>
+        {/* COGS activity reconciliation */}
+        <TaxSection title="COGS Activity Reconciliation" description="Transaction-level FIFO estimate reconciled to returns and inventory dispositions" onExport={exportCogs}>
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border-subtle">
-                <th className="text-left py-2 text-text-tertiary font-medium text-xs uppercase tracking-wider w-20">Line</th>
+                <th className="text-left py-2 text-text-tertiary font-medium text-xs uppercase tracking-wider w-20">Step</th>
                 <th className="text-left py-2 text-text-tertiary font-medium text-xs uppercase tracking-wider">Description</th>
                 <th className="text-right py-2 text-text-tertiary font-medium text-xs uppercase tracking-wider w-40">Amount</th>
               </tr>
             </thead>
             <tbody>
-              <ScheduleRow line="1" label="Inventory at Beginning of Year" value={data.cogs.beginningInventory} />
-              <ScheduleRow line="2" label="Purchases" value={data.cogs.purchases} />
-              <ScheduleRow line="3" label="Cost of Labor" value={0} />
-              <ScheduleRow line="4" label="Additional Section 263A Costs" value={0} />
-              <ScheduleRow line="5" label="Other Costs (Inbound Shipping)" value={data.cogs.inboundShipping} />
-              <ScheduleRow line="6" label="Total (Add Lines 1-5)" value={data.cogs.beginningInventory + data.cogs.purchases + data.cogs.inboundShipping} bold />
-              <ScheduleRow line="7" label="Inventory at End of Year" value={data.cogs.endingInventory} />
+              <ScheduleRow line="A" label="Sale COGS before disposition adjustments" value={data.cogs.saleCogsBeforeDispositionAdjustments} />
+              <ScheduleRow line="B" label="Restocked inventory reversal" value={-data.cogs.dispositionRestockReversal} />
+              <ScheduleRow line="C" label="Inventory write-offs" value={data.cogs.inventoryWriteoff} />
               <tr className="border-t-2 border-border-subtle">
-                <td className="py-2 font-mono text-xs text-accent">8</td>
-                <td className="py-2 font-semibold text-text-primary">Cost of Goods Sold (Line 6 - Line 7)</td>
+                <td className="py-2 font-mono text-xs text-accent">Total</td>
+                <td className="py-2 font-semibold text-text-primary">FIFO Activity COGS Estimate</td>
                 <td className="py-2 text-right font-mono font-bold">{formatCurrency(data.cogs.costOfGoodsSold)}</td>
               </tr>
-              <ScheduleRow line="9a" label="Method of valuation: FIFO (First In, First Out)" value={0} hideValue />
             </tbody>
           </table>
+          <div className="mt-3 p-3 bg-bg-root rounded-lg border border-border-subtle">
+            <p className="text-xs text-text-secondary font-medium mb-1">CPA review required before filing Schedule A.</p>
+            <p className="text-xs text-text-tertiary">
+              This is a transaction-level FIFO activity estimate, not a beginning-inventory + purchases − ending-inventory roll-forward.
+              Final Schedule A requires verified year-end inventory snapshots and your CPA&apos;s capitalization policy.
+            </p>
+          </div>
         </TaxSection>
 
         {/* Amazon Fee Breakdown */}

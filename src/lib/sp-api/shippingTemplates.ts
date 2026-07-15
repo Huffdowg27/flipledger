@@ -3,17 +3,26 @@
  * enum from the PRODUCT product type schema.
  *
  * Amazon shipping templates are account-specific. The SP-API exposes them as
- * enum values inside the PRODUCT type definition schema. The key (e.g.
- * "DEFAULT_MFN") is what must be written to Amazon; the enumName is the
- * display label. This helper is read-only — no Amazon writes.
+ * enum values inside the PRODUCT type definition schema. FlipLedger stores the
+ * enum key and display name; push paths resolve either local form to the exact
+ * template name before sending merchant_shipping_group. This helper is
+ * read-only — no Amazon writes.
  */
 
+import type Database from 'better-sqlite3';
 import { getAccessToken, getEndpoint } from './auth';
+import { getSellerId } from './listingsItems';
 import type { SPAPICredentials } from './types';
+import {
+  AMAZON_SHIPPING_TEMPLATE_CACHE_KEY,
+  isAmazonShippingTemplateCacheStale,
+  loadAmazonShippingTemplateCache,
+  type AmazonShippingTemplateCache,
+} from '../amazonShippingTemplates';
 
 export interface ShippingTemplate {
-  key: string;   // enum value — write this to Amazon
-  name: string;  // enumName — display label only
+  key: string;
+  name: string;
 }
 
 /**
@@ -82,4 +91,49 @@ export async function fetchShippingTemplates(
     key,
     name: names[i] ?? key,
   }));
+}
+
+/**
+ * Refresh the settings-cached shipping template list when it's older than
+ * AMAZON_SHIPPING_TEMPLATE_CACHE_FRESH_MS, so live pushes validate against a
+ * current list instead of one synced weeks ago.
+ *
+ * Fail-safe by design: a failed or empty refresh NEVER wipes a usable cache —
+ * the caller gets the existing cache plus a refreshError to log/surface.
+ * Amazon remains the final arbiter (an unknown template name is rejected and
+ * the push fails closed), so serving a stale list here degrades UX, not safety.
+ */
+export async function refreshShippingTemplateCacheIfStale(
+  db: Database.Database,
+  credentials: SPAPICredentials,
+): Promise<{ cache: AmazonShippingTemplateCache; refreshed: boolean; refreshError: string | null }> {
+  const cache = loadAmazonShippingTemplateCache(db);
+  if (!isAmazonShippingTemplateCacheStale(cache)) {
+    return { cache, refreshed: false, refreshError: null };
+  }
+
+  try {
+    const sellerId = await getSellerId(credentials);
+    const templates = await fetchShippingTemplates(credentials, sellerId);
+    if (templates.length === 0) {
+      return {
+        cache,
+        refreshed: false,
+        refreshError: 'template refresh returned no templates; kept the cached list',
+      };
+    }
+
+    const fetchedAt = new Date().toISOString();
+    db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(
+      AMAZON_SHIPPING_TEMPLATE_CACHE_KEY,
+      JSON.stringify({ templates, marketplaceId: credentials.marketplaceId, fetchedAt }),
+    );
+    return {
+      cache: { templates, marketplaceId: credentials.marketplaceId, fetchedAt },
+      refreshed: true,
+      refreshError: null,
+    };
+  } catch (err) {
+    return { cache, refreshed: false, refreshError: String(err) };
+  }
 }

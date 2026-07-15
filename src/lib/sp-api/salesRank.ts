@@ -16,6 +16,7 @@ import path from 'path';
 
 const SLEEP_MS_BETWEEN_CALLS = 600;
 const ACTIVE_LOOKBACK_DAYS = 90;
+const DEFAULT_MAX_RUN_MS = 7 * 60 * 1000;
 
 interface CatalogSalesRanksResponse {
   asin?: string;
@@ -24,6 +25,39 @@ interface CatalogSalesRanksResponse {
     classificationRanks?: Array<{ classificationId?: string; title?: string; link?: string; rank?: number }>;
     displayGroupRanks?: Array<{ websiteDisplayGroup?: string; title?: string; link?: string; rank?: number }>;
   }>;
+}
+
+type SalesRankFetchResult = {
+  rank: number | null;
+  category: string | null;
+  status?: 'ok' | 'notFound' | 'noRank' | 'error';
+};
+
+type NowProvider = Date | (() => Date);
+
+interface SalesRankSyncOptions {
+  db?: Database.Database;
+  closeDb?: boolean;
+  maxAsins?: number;
+  maxRunMs?: number;
+  sleepMs?: number;
+  now?: NowProvider;
+  fetchRank?: (credentials: SPAPICredentials, asin: string) => Promise<SalesRankFetchResult>;
+  logger?: Pick<Console, 'log' | 'warn'>;
+}
+
+export interface SalesRankSyncResult {
+  asinsChecked: number;
+  asinsUpdated: number;
+  errors: number;
+  asinsEligible: number;
+  asinsSkippedToday: number;
+  asinsAttempted: number;
+  asinsDeferred: number;
+  asinsNotFound: number;
+  asinsWithoutRank: number;
+  elapsedMs: number;
+  stoppedReason: 'complete' | 'maxAsins' | 'timeBudget';
 }
 
 function getDb() {
@@ -37,6 +71,15 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function currentDate(now: NowProvider | undefined): Date {
+  if (typeof now === 'function') return now();
+  return now || new Date();
+}
+
+function capturedDateKey(now: NowProvider | undefined): string {
+  return currentDate(now).toISOString().slice(0, 10);
+}
+
 /**
  * Fetch sales ranks for a single ASIN. Returns the top-level rank
  * (the highest-priority displayGroupRank) plus its category title.
@@ -44,7 +87,7 @@ function sleep(ms: number) {
 export async function fetchSalesRank(
   credentials: SPAPICredentials,
   asin: string
-): Promise<{ rank: number | null; category: string | null }> {
+): Promise<SalesRankFetchResult> {
   try {
     const response = (await spApiRequest(
       credentials,
@@ -56,24 +99,25 @@ export async function fetchSalesRank(
     )) as CatalogSalesRanksResponse;
 
     const ranks = response?.salesRanks?.[0];
-    if (!ranks) return { rank: null, category: null };
+    if (!ranks) return { rank: null, category: null, status: 'noRank' };
 
     // Prefer displayGroupRanks (top-level "Toys & Games", "Electronics") over
     // classificationRanks (the deep-tree leaves like "Toys & Games > Action
     // Figures > Vehicles"). Display group is what shoppers see.
     const display = ranks.displayGroupRanks?.[0];
     if (display && typeof display.rank === 'number') {
-      return { rank: display.rank, category: display.title || null };
+      return { rank: display.rank, category: display.title || null, status: 'ok' };
     }
     const classification = ranks.classificationRanks?.[0];
     if (classification && typeof classification.rank === 'number') {
-      return { rank: classification.rank, category: classification.title || null };
+      return { rank: classification.rank, category: classification.title || null, status: 'ok' };
     }
-    return { rank: null, category: null };
+    return { rank: null, category: null, status: 'noRank' };
   } catch (err) {
     // ASIN not found, suppressed, etc. — skip silently
     console.warn(`[salesRank] ${asin} fetch failed: ${err}`);
-    return { rank: null, category: null };
+    const status = String(err).includes('SP-API 404') ? 'notFound' : 'error';
+    return { rank: null, category: null, status };
   }
 }
 
@@ -81,23 +125,39 @@ export async function fetchSalesRank(
  * Sync sales ranks for every active ASIN. Called from auto-sync daily.
  * Returns counts.
  */
-export async function syncSalesRanks(credentials: SPAPICredentials): Promise<{
-  asinsChecked: number;
-  asinsUpdated: number;
-  errors: number;
-}> {
-  const db = getDb();
+export async function syncSalesRanks(
+  credentials: SPAPICredentials,
+  options: SalesRankSyncOptions = {}
+): Promise<SalesRankSyncResult> {
+  const db = options.db || getDb();
+  const closeDb = options.closeDb ?? !options.db;
+  const logger = options.logger || console;
+  const fetchRank = options.fetchRank || fetchSalesRank;
+  const sleepMs = options.sleepMs ?? SLEEP_MS_BETWEEN_CALLS;
+  const maxRunMs = options.maxRunMs ?? DEFAULT_MAX_RUN_MS;
+  const startedAt = currentDate(options.now).getTime();
+  const capturedDate = capturedDateKey(options.now);
+  const capturedAt = currentDate(options.now).toISOString();
+
   let asinsUpdated = 0;
   let errors = 0;
+  let asinsAttempted = 0;
+  let asinsNotFound = 0;
+  let asinsWithoutRank = 0;
+  let stoppedReason: SalesRankSyncResult['stoppedReason'] = 'complete';
 
-  const activeSince = new Date(Date.now() - ACTIVE_LOOKBACK_DAYS * 86400000).toISOString();
+  const activeSince = new Date(currentDate(options.now).getTime() - ACTIVE_LOOKBACK_DAYS * 86400000).toISOString();
 
   // Active ASINs = anything in live_inventory with stock OR sold recently
-  const activeAsins = db
-    .prepare(
-      `
+  const activeAsins = db.prepare(`
+    SELECT
+      active.asin,
+      CASE WHEN today.asin IS NULL THEN 0 ELSE 1 END AS captured_today
+    FROM (
       SELECT DISTINCT asin FROM (
-        SELECT asin FROM live_inventory WHERE asin IS NOT NULL AND asin != '' AND fulfillable_qty > 0
+        SELECT asin
+        FROM live_inventory
+        WHERE asin IS NOT NULL AND asin != '' AND fulfillable_qty > 0
         UNION
         SELECT DISTINCT oi.asin
         FROM order_items oi
@@ -108,35 +168,81 @@ export async function syncSalesRanks(credentials: SPAPICredentials): Promise<{
       )
       WHERE asin LIKE 'B0%' OR asin LIKE 'B1%' OR asin LIKE 'B2%' OR asin LIKE 'B3%'
         OR length(asin) = 10
-    `
-    )
-    .all(activeSince) as { asin: string }[];
+    ) active
+    LEFT JOIN sales_rank_history today
+      ON today.asin = active.asin
+     AND today.marketplace = 'amazon'
+     AND today.captured_date = ?
+    ORDER BY active.asin
+  `).all(activeSince, capturedDate) as { asin: string; captured_today: 0 | 1 }[];
+
+  const candidates = activeAsins.filter((row) => row.captured_today === 0);
+  const asinsSkippedToday = activeAsins.length - candidates.length;
 
   const insert = db.prepare(`
     INSERT INTO sales_rank_history (asin, marketplace, category, rank, captured_date, captured_at)
-    VALUES (?, 'amazon', ?, ?, date('now'), datetime('now'))
+    VALUES (?, 'amazon', ?, ?, ?, ?)
     ON CONFLICT(asin, marketplace, captured_date) DO UPDATE SET
       category = excluded.category,
       rank = excluded.rank,
       captured_at = excluded.captured_at
   `);
 
-  for (const { asin } of activeAsins) {
+  for (const { asin } of candidates) {
+    if (options.maxAsins !== undefined && asinsAttempted >= options.maxAsins) {
+      stoppedReason = 'maxAsins';
+      break;
+    }
+    if (maxRunMs > 0 && currentDate(options.now).getTime() - startedAt >= maxRunMs) {
+      stoppedReason = 'timeBudget';
+      break;
+    }
+
     try {
-      const { rank, category } = await fetchSalesRank(credentials, asin);
+      asinsAttempted++;
+      const { rank, category, status } = await fetchRank(credentials, asin);
       if (rank !== null) {
-        insert.run(asin, category, rank);
+        insert.run(asin, category, rank, capturedDate, capturedAt);
         asinsUpdated++;
+      } else if (status === 'notFound') {
+        asinsNotFound++;
+      } else if (status === 'error') {
+        errors++;
+      } else {
+        asinsWithoutRank++;
       }
     } catch (err) {
       errors++;
-      console.warn(`[salesRank] ${asin} failed: ${err}`);
+      logger.warn(`[salesRank] ${asin} failed: ${err}`);
     }
-    await sleep(SLEEP_MS_BETWEEN_CALLS);
+
+    if (sleepMs > 0) {
+      await sleep(sleepMs);
+    }
   }
 
-  db.close();
-  return { asinsChecked: activeAsins.length, asinsUpdated, errors };
+  const asinsDeferred = candidates.length - asinsAttempted;
+  const elapsedMs = currentDate(options.now).getTime() - startedAt;
+  logger.log(
+    `[salesRank] eligible=${activeAsins.length} skipped_today=${asinsSkippedToday} attempted=${asinsAttempted} ` +
+    `updated=${asinsUpdated} not_found=${asinsNotFound} no_rank=${asinsWithoutRank} errors=${errors} ` +
+    `deferred=${asinsDeferred} stopped=${stoppedReason} elapsed_ms=${elapsedMs}`
+  );
+
+  if (closeDb) db.close();
+  return {
+    asinsChecked: asinsAttempted,
+    asinsUpdated,
+    errors,
+    asinsEligible: activeAsins.length,
+    asinsSkippedToday,
+    asinsAttempted,
+    asinsDeferred,
+    asinsNotFound,
+    asinsWithoutRank,
+    elapsedMs,
+    stoppedReason,
+  };
 }
 
 /**

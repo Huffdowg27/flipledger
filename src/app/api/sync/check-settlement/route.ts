@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { spApiRequest } from '@/lib/sp-api/auth';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { requireDiagnosticRoute } from '@/lib/diagnostic-routes';
 
 function getCredentials() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -20,6 +21,9 @@ function getCredentials() {
 }
 
 export async function GET(request: Request) {
+  const disabled = requireDiagnosticRoute();
+  if (disabled) return disabled;
+
   const credentials = getCredentials();
   // Order IDs to inspect come from ?orders=ID1,ID2,... (no hardcoded order data)
   const ordersParam = new URL(request.url).searchParams.get('orders') || '';

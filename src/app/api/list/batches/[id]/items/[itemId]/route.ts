@@ -8,15 +8,12 @@
  * Quantity edits on a batch item just change the listed qty, not the purchase history.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
 import { recalculateFIFO } from '@/lib/fifo';
+import { deleteListingBatchItemChildren } from '@/lib/listing-batch-cleanup';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 export async function PATCH(
@@ -254,6 +251,9 @@ export async function DELETE(
         }
       }
 
+      // Be explicit instead of relying only on ON DELETE CASCADE; this route
+      // has historically been used by connections with foreign_keys disabled.
+      deleteListingBatchItemChildren(db, itemIdNum);
       db.prepare('DELETE FROM listing_batch_items WHERE id = ? AND batch_id = ?').run(itemIdNum, batchId);
       db.prepare('UPDATE listing_batches SET updated_at = ? WHERE id = ?').run(new Date().toISOString(), batchId);
       return item;

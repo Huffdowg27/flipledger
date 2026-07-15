@@ -23,16 +23,11 @@ export async function GET(request: NextRequest) {
   if (!endDate) {
     endDate = new Date().toISOString().split('T')[0];
   }
-  const cutoff = startDate + 'T00:00:00Z';
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
-
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
-  const cutoffEnd = endDateNext + 'T00:00:00Z';
 
   try {
-    // Fulfilled Sales: FBA (Amazon) + WFS (Walmart)
+    // Fixed-channel Walmart WFS endpoint; marketplace is determined by
+    // fulfillment_channel rather than a caller-provided SQL filter.
     const rows = db.prepare(`
       SELECT
         o.purchase_date as date,

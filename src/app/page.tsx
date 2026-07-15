@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { formatCurrency, centsToDollars, formatNumber } from '@/lib/formatters';
+import { buildSnapshotDrilldownHref, type SnapshotChannel } from '@/lib/snapshot-drilldown';
 
 interface DashboardData {
   stats: {
@@ -86,7 +87,6 @@ interface OpsPulse {
   // Fixed-window operational cards — independent of the user's date picker.
   // "today" uses accrual basis (purchase_date) because cash settles ~10 days later.
   // "7d" uses cash basis (posted_date) to match P&L.
-  week7d: { revenue: number; profit: number; prevRevenue: number; prevProfit: number };
   mfn7d: {
     estimated: { count: number; revenue: number };
     reconciled: { count: number; revenue: number };
@@ -113,13 +113,327 @@ interface DailySales {
   pendingUnknownOrders: number;
   syncedAt: string | null;
   knownTotal: number;            // itemizedRevenue + pendingAmazonTotalRevenue  = stats.totalRevenue
-  // Drawer rows (cents). All sourced from today's purchase-basis data via /api/data/dashboard.
-  // Promo, shipping-charged, and shipping-cost are NOT surfaced — the existing dashboard
-  // endpoint doesn't expose them; they'll earn rows in a later phase if needed.
-  estimatedFees: number;
-  cogs: number;
   refundsTodayCount: number;
   refundsTodayNet: number;
+}
+
+// ── SellerBoard-style period snapshot strip ───────────────────────────────────
+type SnapCard = {
+  key: string; label: string; start: string; end: string;
+  sales: number; netProfit: number; cogs: number; margin: number;
+  refunds: number; refundCount: number; refundUnits: number; orders: number; units: number; roi: number;
+  salesDelta: number | null; profitDelta: number | null;
+};
+
+type CustomRangePreset =
+  | 'this-month'
+  | 'last-month'
+  | 'last-7-days'
+  | 'last-14-days'
+  | 'last-30-days'
+  | 'qtd'
+  | 'ytd'
+  | 'custom';
+
+type CustomRangeState = {
+  preset: CustomRangePreset;
+  startDate: string;
+  endDate: string;
+};
+
+const SNAP_BASES: { value: string; label: string }[] = [
+  { value: 'purchase', label: 'Operating' },
+  { value: 'posted', label: 'Settled' },
+  { value: 'reconciled', label: 'Accounting' },
+];
+// Fulfillment-channel filter. Channel views show order-level economics only
+// (business-wide costs like ads/storage/reimbursements live in the All view).
+const SNAP_CHANNELS: { value: 'all' | 'fba' | 'mfn'; label: string }[] = [
+  { value: 'all', label: 'All' },
+  { value: 'fba', label: 'FBA' },
+  { value: 'mfn', label: 'FBM' },
+];
+const SNAP_BARS = [
+  'linear-gradient(90deg,#3b82f6,#60a5fa)',
+  'linear-gradient(90deg,#14b8a6,#2dd4bf)',
+  'linear-gradient(90deg,#10b981,#34d399)',
+  'linear-gradient(90deg,#22c55e,#4ade80)',
+  'linear-gradient(90deg,#16a34a,#22c55e)',
+  'linear-gradient(90deg,#475569,#64748b)',
+];
+const CUSTOM_RANGE_STORAGE_KEY = 'fl_dashboard_custom_range';
+const CUSTOM_RANGE_PRESETS: { value: CustomRangePreset; label: string }[] = [
+  { value: 'this-month', label: 'This month' },
+  { value: 'last-month', label: 'Last month' },
+  { value: 'last-7-days', label: 'Last 7 days' },
+  { value: 'last-14-days', label: 'Last 14 days' },
+  { value: 'last-30-days', label: 'Last 30 days' },
+  { value: 'qtd', label: 'Quarter to date' },
+  { value: 'ytd', label: 'Year to date' },
+  { value: 'custom', label: 'Custom...' },
+];
+
+function addCalendarDaysString(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
+}
+
+function pacificToday(): string {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(new Date()).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
+function quarterStartFor(date: string): string {
+  const month = Number(date.slice(5, 7));
+  const quarterMonth = Math.floor((month - 1) / 3) * 3 + 1;
+  return `${date.slice(0, 5)}${String(quarterMonth).padStart(2, '0')}-01`;
+}
+
+function rangeForPreset(preset: CustomRangePreset, fallback?: CustomRangeState): CustomRangeState {
+  const today = pacificToday();
+  const thisMonthStart = `${today.slice(0, 7)}-01`;
+  const lastMonthEnd = addCalendarDaysString(thisMonthStart, -1);
+  const lastMonthStart = `${lastMonthEnd.slice(0, 7)}-01`;
+  if (preset === 'custom') {
+    return {
+      preset,
+      startDate: fallback?.startDate || lastMonthStart,
+      endDate: fallback?.endDate || lastMonthEnd,
+    };
+  }
+  if (preset === 'this-month') return { preset, startDate: thisMonthStart, endDate: today };
+  if (preset === 'last-month') return { preset, startDate: lastMonthStart, endDate: lastMonthEnd };
+  if (preset === 'last-7-days') return { preset, startDate: addCalendarDaysString(today, -6), endDate: today };
+  if (preset === 'last-14-days') return { preset, startDate: addCalendarDaysString(today, -13), endDate: today };
+  if (preset === 'last-30-days') return { preset, startDate: addCalendarDaysString(today, -29), endDate: today };
+  if (preset === 'qtd') return { preset, startDate: quarterStartFor(today), endDate: today };
+  return { preset, startDate: `${today.slice(0, 4)}-01-01`, endDate: today };
+}
+
+function isCustomRangePreset(value: unknown): value is CustomRangePreset {
+  return typeof value === 'string' && CUSTOM_RANGE_PRESETS.some((preset) => preset.value === value);
+}
+
+function isIsoDate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function loadCustomRange(): CustomRangeState {
+  const fallback = rangeForPreset('last-month');
+  if (typeof window === 'undefined') return fallback;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CUSTOM_RANGE_STORAGE_KEY) || 'null');
+    if (!parsed || !isCustomRangePreset(parsed.preset)) return fallback;
+    if (parsed.preset === 'custom') {
+      return isIsoDate(parsed.startDate) && isIsoDate(parsed.endDate)
+        ? { preset: 'custom', startDate: parsed.startDate, endDate: parsed.endDate }
+        : fallback;
+    }
+    return rangeForPreset(parsed.preset);
+  } catch {
+    return fallback;
+  }
+}
+
+function snapRange(start: string, end: string): string {
+  const s = new Date(start + 'T00:00:00'), e = new Date(end + 'T00:00:00');
+  const long = (d: Date) => d.toLocaleDateString('en-US', { month: 'long' });
+  const short = (d: Date) => d.toLocaleDateString('en-US', { month: 'short' });
+  if (start === end) return `${long(s)} ${s.getDate()}, ${s.getFullYear()}`;
+  if (s.getMonth() === e.getMonth()) return `${short(s)} ${s.getDate()}-${e.getDate()}`;
+  return `${short(s)} ${s.getDate()} - ${short(e)} ${e.getDate()}`;
+}
+
+function SnapDelta({ v }: { v: number | null }) {
+  if (v === null || !isFinite(v)) return null;
+  const up = v >= 0;
+  return <span className={`ml-2 text-xs font-semibold ${up ? 'text-positive' : 'text-warning'}`}>{up ? '+' : ''}{v.toFixed(1)}%</span>;
+}
+
+function SnapStat({ label, value, valueClass = 'text-text-primary' }: { label: string; value: React.ReactNode; valueClass?: string }) {
+  return (
+    <div>
+      <div className="text-[11px] uppercase tracking-wide text-text-tertiary">{label}</div>
+      <div className={`font-mono text-sm font-semibold ${valueClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function PeriodCard({ card, bar, basis, channel, header }: {
+  card: SnapCard;
+  bar: string;
+  basis: string;
+  channel: SnapshotChannel;
+  header?: React.ReactNode;
+}) {
+  // "More" opens the full P&L scoped to this card's exact range + basis. Use a
+  // real preset where one exists, else a custom range. A plain <a> (full nav,
+  // below) is used on purpose so the P&L re-reads these params on arrival even
+  // if its route is already in Next's client router cache.
+  const plHref = buildSnapshotDrilldownHref({
+    key: card.key,
+    start: card.start,
+    end: card.end,
+    dateBasis: basis,
+    channel,
+  });
+  return (
+    <div className="rounded-lg border border-border-default bg-bg-surface overflow-hidden flex flex-col">
+      <div style={{ background: bar }} className="px-4 py-2.5">
+        {header || (
+          <>
+            <div className="text-sm font-bold text-white">{card.label}</div>
+            <div className="text-[11px] text-white/85">{snapRange(card.start, card.end)}</div>
+          </>
+        )}
+      </div>
+      <div className="p-4 space-y-3 flex-1">
+        <div>
+          <div className="text-[11px] uppercase tracking-wide text-text-tertiary">Sales</div>
+          <div className="text-xl font-bold font-mono text-text-primary">{formatCurrency(card.sales)}<SnapDelta v={card.salesDelta} /></div>
+        </div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+          <SnapStat label="Orders / Units" value={`${formatNumber(card.orders)} / ${formatNumber(card.units)}`} />
+          <SnapStat
+            label="Refunds"
+            value={<>{formatNumber(card.refundCount)}<span className="ml-1.5 text-[11px] font-normal text-text-tertiary">{card.units > 0 ? ((card.refundUnits / card.units) * 100).toFixed(1) : '0.0'}%</span></>}
+            valueClass={card.refundCount > 0 ? 'text-accent' : 'text-text-primary'}
+          />
+          <SnapStat label="Net profit" value={<>{formatCurrency(card.netProfit)}<SnapDelta v={card.profitDelta} /></>} valueClass={card.netProfit >= 0 ? 'text-positive' : 'text-negative'} />
+          <SnapStat label="Cost of goods" value={formatCurrency(-card.cogs)} valueClass="text-negative" />
+          <SnapStat label="Margin" value={`${card.margin.toFixed(2)}%`} valueClass={card.margin >= 0 ? 'text-positive' : 'text-negative'} />
+          <SnapStat label="ROI" value={`${card.roi.toFixed(2)}%`} />
+        </div>
+      </div>
+      <a
+        href={plHref}
+        className="block border-t border-border-default px-4 py-2 text-center text-sm font-medium text-accent hover:bg-bg-hover transition-colors"
+      >
+        More
+      </a>
+    </div>
+  );
+}
+
+function PeriodSnapshot() {
+  const [basis, setBasis] = useState('posted');
+  const [channel, setChannel] = useState<'all' | 'fba' | 'mfn'>('all');
+  const [customRange, setCustomRange] = useState<CustomRangeState>(loadCustomRange);
+  const [cards, setCards] = useState<SnapCard[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const customRangeValid = isIsoDate(customRange.startDate)
+    && isIsoDate(customRange.endDate)
+    && customRange.startDate <= customRange.endDate;
+
+  useEffect(() => {
+    window.localStorage.setItem(CUSTOM_RANGE_STORAGE_KEY, JSON.stringify(customRange));
+  }, [customRange]);
+
+  useEffect(() => {
+    if (!customRangeValid) return;
+    let live = true; setLoading(true);
+    const cf = channel !== 'all' ? `&channel=${channel}` : '';
+    const customQs = `&startDate=${customRange.startDate}&endDate=${customRange.endDate}&customPreset=${customRange.preset}`;
+    fetch(`/api/data/snapshot?dateBasis=${basis}${cf}${customQs}`)
+      .then((r) => r.json())
+      .then((j) => { if (live) { setCards(j.cards); setLoading(false); } })
+      .catch(() => { if (live) setLoading(false); });
+    return () => { live = false; };
+  }, [basis, channel, customRange, customRangeValid]);
+
+  const customHeader = (card: SnapCard) => (
+    <div className="space-y-2">
+      <select
+        aria-label="Custom snapshot period"
+        value={customRange.preset}
+        onChange={(event) => {
+          const preset = event.target.value as CustomRangePreset;
+          setCustomRange((current) => rangeForPreset(preset, current));
+        }}
+        className="h-7 w-full rounded-md border border-white/30 bg-bg-surface px-2 text-xs font-semibold text-text-primary outline-none"
+      >
+        {CUSTOM_RANGE_PRESETS.map((preset) => (
+          <option key={preset.value} value={preset.value}>{preset.label}</option>
+        ))}
+      </select>
+      {customRange.preset === 'custom' && (
+        <div className="grid grid-cols-2 gap-2">
+          <input
+            aria-label="Custom snapshot start date"
+            type="date"
+            value={customRange.startDate}
+            onChange={(event) => setCustomRange((current) => ({ ...current, startDate: event.target.value }))}
+            className="h-7 min-w-0 rounded-md border border-white/30 bg-bg-surface px-1.5 text-[11px] text-text-primary outline-none"
+          />
+          <input
+            aria-label="Custom snapshot end date"
+            type="date"
+            value={customRange.endDate}
+            onChange={(event) => setCustomRange((current) => ({ ...current, endDate: event.target.value }))}
+            className="h-7 min-w-0 rounded-md border border-white/30 bg-bg-surface px-1.5 text-[11px] text-text-primary outline-none"
+          />
+        </div>
+      )}
+      <div className="text-[11px] text-white/85">{customRangeValid ? snapRange(card.start, card.end) : 'Choose a valid range'}</div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-sm font-semibold text-text-secondary">Snapshot</div>
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-lg border border-border-default overflow-hidden">
+            {SNAP_CHANNELS.map((c) => (
+              <button
+                key={c.value}
+                onClick={() => setChannel(c.value)}
+                title={c.value === 'all' ? 'All fulfillment channels' : 'Order-level economics only (ads/storage/reimbursements are business-wide, shown under All)'}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${channel === c.value ? 'bg-accent/15 text-accent' : 'text-text-tertiary hover:bg-bg-hover'}`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <div className="inline-flex rounded-lg border border-border-default overflow-hidden">
+            {SNAP_BASES.map((b) => (
+              <button
+                key={b.value}
+                onClick={() => setBasis(b.value)}
+                className={`px-3 py-1.5 text-xs font-medium transition-colors ${basis === b.value ? 'bg-accent/15 text-accent' : 'text-text-tertiary hover:bg-bg-hover'}`}
+              >
+                {b.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+      {channel !== 'all' && (
+        <div className="mb-3 -mt-1 text-[11px] text-text-tertiary">
+          {channel === 'fba' ? 'FBA' : 'FBM'} view: order-level sales, COGS, fees, refunds &amp; shipping only. Ads, storage &amp; reimbursements are business-wide — see the All view.
+        </div>
+      )}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+        {loading && !cards
+          ? Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-60 rounded-lg border border-border-default bg-bg-surface animate-pulse" />)
+          : (cards || []).map((c, i) => (
+            <PeriodCard
+              key={c.key}
+              card={c}
+              bar={SNAP_BARS[i % SNAP_BARS.length]}
+              basis={basis}
+              channel={channel === 'all' ? null : channel}
+              header={c.key === 'custom' ? customHeader(c) : undefined}
+            />
+          ))}
+      </div>
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -156,7 +470,12 @@ export default function Dashboard() {
         if (raw) {
           try {
             const parsed = JSON.parse(raw);
-            setLayout({ order: parsed.order || [], hidden: parsed.hidden || [], sizes: parsed.sizes || {} });
+            const order: string[] = parsed.order || [];
+            // Seed the snapshot strip into an existing saved layout once, at the
+            // top, so it becomes an ordinary ordered card (no sticky-top render
+            // special-case) and drags exactly like every other card.
+            if (order.length > 0 && !order.includes('snapshot')) order.unshift('snapshot');
+            setLayout({ order, hidden: parsed.hidden || [], sizes: parsed.sizes || {} });
           } catch { /* ignore malformed */ }
         }
       })
@@ -180,13 +499,12 @@ export default function Dashboard() {
 
     Promise.all([
       fetch(`/api/data/dashboard?startDate=${today}&endDate=${today}&dateBasis=purchase`).then(r => r.json()),
-      fetch(`/api/data/dashboard?startDate=${sevenDaysAgo}&endDate=${today}`).then(r => r.json()),
       fetch(`/api/data/merchant-sales?startDate=${sevenDaysAgo}&endDate=${today}`).then(r => r.json()),
       fetch(`/api/data/merchant-sales?openOnly=1`).then(r => r.json()),
       fetch(`/api/data/refunds?days=${daysSinceMonthStart}`).then(r => r.json()),
       fetch(`/api/list/batches`).then(r => r.json()),
     ])
-      .then(([todayRes, week7dRes, mfn7dRes, openMfnRes, refundsRes, batchesRes]) => {
+      .then(([todayRes, mfn7dRes, openMfnRes, refundsRes, batchesRes]) => {
         const monthRefunds = (refundsRes.items || []).filter(
           (r: any) => r.refundDate >= monthStart
         );
@@ -200,12 +518,6 @@ export default function Dashboard() {
         );
 
         setOpsPulse({
-          week7d: {
-            revenue: week7dRes.stats?.totalRevenue ?? 0,
-            profit: week7dRes.stats?.totalProfit ?? 0,
-            prevRevenue: week7dRes.stats?.prevRevenue ?? 0,
-            prevProfit: week7dRes.stats?.prevProfit ?? 0,
-          },
           mfn7d: {
             estimated: {
               count: mfnEst.length,
@@ -252,12 +564,6 @@ export default function Dashboard() {
         const knownTotal = Math.max(totalRevenue, pulseRevenue);
         const salesReportAdjustment = Math.max(0, knownTotal - totalRevenue);
 
-        // Drawer rows. stats.totalCogs and stats.totalFees are today-scoped already
-        // and are itemized-only by construction (PENDING placeholders have no
-        // cogs_per_unit and no fee_details rows tied to them).
-        const cogs = stats.totalCogs ?? 0;
-        const estimatedFees = stats.totalFees ?? 0;
-
         // Today's refunds — refundDate's date portion === today.
         const todayRefunds = (refundsRes.items || []).filter(
           (r: any) => (r.refundDate || '').slice(0, 10) === today
@@ -275,8 +581,6 @@ export default function Dashboard() {
           pendingUnknownOrders: unknownOrders,
           syncedAt: todayRes.salesPulse?.syncedAt ?? null,
           knownTotal,
-          estimatedFees,
-          cogs,
           refundsTodayCount: todayRefunds.length,
           refundsTodayNet: todayRefunds.reduce((s: number, r: any) => s + (r.netImpact || 0), 0),
         });
@@ -480,6 +784,11 @@ export default function Dashboard() {
   const plUrl = (r: { start: string; end: string }) => `/api/data/profitloss?startDate=${r.start}&endDate=${r.end}&dateBasis=purchase&summaryOnly=1`;
   const cardRegistry: { id: string; label: string; span: 1 | 'full'; defaultHidden?: boolean; node: React.ReactNode }[] = [
     {
+      id: 'snapshot', label: 'Snapshot · period cards', span: 'full', node: (
+        <PeriodSnapshot />
+      ),
+    },
+    {
       id: 'daily-sales', label: 'Daily Sales', span: 1, node: (
         <Link
           href="/bookkeep/fba-sales"
@@ -657,9 +966,9 @@ export default function Dashboard() {
     { id: 'm-mfn-oos', label: 'Merchant: Out of Stock', span: 1, defaultHidden: true, node: (
       <MetricTile title="Merchant Out of Stock" href="/analyze/merchant-inventory" accent="text-warning" fetchUrl="/api/dashboard/metrics"
         pick={(j) => ({ value: formatNumber(j.mfnOos || 0), sub: 'active listing, 0 qty' })} /> ) },
-    { id: 'm-mfn-notlisted', label: 'Merchant: Not Listed', span: 1, defaultHidden: true, node: (
-      <MetricTile title="Not Listed Yet" href="/analyze/merchant-inventory" accent="text-text-primary" fetchUrl="/api/dashboard/metrics"
-        pick={(j) => ({ value: formatNumber(j.mfnNotListed || 0), sub: 'local stock, no Amazon listing' })} /> ) },
+    { id: 'm-mfn-notlisted', label: 'Merchant: Incoming', span: 1, defaultHidden: true, node: (
+      <MetricTile title="Incoming (on order)" href="/incoming" accent="text-text-primary" fetchUrl="/api/dashboard/metrics"
+        pick={(j) => ({ value: formatNumber(j.mfnIncoming || 0), sub: 'units bought, not yet landed' })} /> ) },
     { id: 'm-mfn-inactive', label: 'Merchant: Inactive', span: 1, defaultHidden: true, node: (
       <MetricTile title="Merchant Inactive" href="/analyze/merchant-inventory" accent="text-text-tertiary" fetchUrl="/api/dashboard/metrics"
         pick={(j) => ({ value: formatNumber(j.mfnInactive || 0), sub: 'inactive / incomplete' })} /> ) },

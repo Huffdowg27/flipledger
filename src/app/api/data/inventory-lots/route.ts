@@ -154,9 +154,18 @@ export async function PATCH(request: NextRequest) {
 
   const db = getDb();
   try {
-    const existing = db.prepare(
-      'SELECT sku, asin, received_at, inspected_at FROM inventory_ledger WHERE id = ?'
-    ).get(id) as { sku: string | null; asin: string | null; received_at: string | null; inspected_at: string | null } | undefined;
+    const existing = db.prepare(`
+      SELECT sku, asin, quantity, quantity_received, received_at, inspected_at
+      FROM inventory_ledger
+      WHERE id = ?
+    `).get(id) as {
+      sku: string | null;
+      asin: string | null;
+      quantity: number;
+      quantity_received: number | null;
+      received_at: string | null;
+      inspected_at: string | null;
+    } | undefined;
     if (!existing) {
       db.close();
       return NextResponse.json({ error: 'lot not found' }, { status: 404 });
@@ -224,6 +233,21 @@ export async function PATCH(request: NextRequest) {
       }
       fields.push('quantity_received = ?');
       params.push(q);
+    }
+    if (body.quantity !== undefined || body.quantityReceived !== undefined) {
+      const resultingQuantity = body.quantity !== undefined
+        ? Number(body.quantity)
+        : existing.quantity;
+      const resultingReceived = body.quantityReceived !== undefined
+        ? Number(body.quantityReceived)
+        : Number(existing.quantity_received ?? 0);
+      if (resultingReceived > resultingQuantity) {
+        db.close();
+        return NextResponse.json(
+          { error: `quantityReceived (${resultingReceived}) cannot exceed purchased quantity (${resultingQuantity})` },
+          { status: 400 },
+        );
+      }
     }
     if (body.receiveNotes !== undefined) {
       fields.push('receive_notes = ?');

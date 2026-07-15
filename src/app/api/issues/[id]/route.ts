@@ -7,7 +7,10 @@
  *   kept_partial_refund — kept the units at a reduced basis: lot created at
  *                         (cost − refund)/qty, plus refund recorded.
  *   kept_as_is          — kept and sellable after all: lot at full basis.
- *   no_impact           — note-only close.
+ *   no_impact           — note-only close. For lot-shrunk issues (MFN batch
+ *                         path) this RESTORES the shrunk lot — "no impact"
+ *                         means the report was a false alarm, so the units
+ *                         and their basis go back on the books.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
@@ -37,9 +40,11 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
   const db = getDb();
   try {
     const issue = db.prepare(`
-      SELECT ri.*, ip.unit_cost_cents as unitCostCents, ip.ordered_at as orderedAt, ip.product_name as productName
+      SELECT ri.*, ip.unit_cost_cents as unitCostCents, il.buy_price as lotUnitCostCents,
+             ip.ordered_at as orderedAt, ip.product_name as productName
       FROM receiving_issues ri
       LEFT JOIN incoming_purchases ip ON ip.id = ri.incoming_purchase_id
+      LEFT JOIN inventory_ledger il ON il.id = ri.inventory_ledger_id
       WHERE ri.id = ?
     `).get(issueId) as any;
     if (!issue) return NextResponse.json({ error: 'Issue not found' }, { status: 404 });
@@ -47,7 +52,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
     const now = new Date().toISOString();
     const refundCents = Math.max(0, Math.round(Number(body.refundCents) || 0));
-    const unitCost: number = issue.unitCostCents || 0;
+    // Cost basis: for lot-shrunk issues (MFN batch path) the report
+    // snapshotted the exact per-unit basis it removed, so use that — a later
+    // buy_price edit or a blank (0) Airtable cost on the incoming row must
+    // not change what resolution restores or writes off. /incoming-originated
+    // issues keep pricing from the purchase.
+    const unitCost: number = issue.lot_shrunk
+      ? (issue.removed_unit_cost_cents ?? issue.lotUnitCostCents ?? issue.unitCostCents ?? 0)
+      : (issue.unitCostCents ?? issue.lotUnitCostCents ?? 0);
     const totalCost = unitCost * issue.quantity;
     const sku = (typeof body.sku === 'string' && body.sku.trim()) ? body.sku.trim() : issue.sku;
     let recalcSku: string | null = null;
@@ -78,6 +90,26 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           now
         );
         recalcSku = sku;
+      }
+
+      if (body.resolution === 'no_impact' && issue.lot_shrunk) {
+        // False alarm on a lot-shrunk issue: put the units and their basis
+        // back. Without this, closing "no impact" would silently lose the
+        // basis the report removed.
+        const restore = db.prepare(`
+          UPDATE inventory_ledger
+          SET quantity = quantity + ?, quantity_remaining = quantity_remaining + ?
+          WHERE id = ?
+        `).run(issue.quantity, issue.quantity, issue.inventory_ledger_id);
+        if (restore.changes !== 1) {
+          throw new Error(
+            'Cannot close as no-impact: the original lot no longer exists to restore the units to. Resolve as kept/disposed/refunded instead.',
+          );
+        }
+        // The lot is whole again — clear the flag so the buy-list
+        // conservation carve-out stops adding these units back.
+        db.prepare('UPDATE receiving_issues SET lot_shrunk = 0 WHERE id = ?').run(issueId);
+        if (issue.sku) recalcSku = issue.sku;
       }
 
       db.prepare(`

@@ -6,16 +6,14 @@
  * DELETE /api/list/batches/[id]  - delete a draft batch
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
 import { recalculateFIFO } from '@/lib/fifo';
 import { pushBatchCostToInformed } from '@/lib/informed';
+import { deleteListingBatchChildren } from '@/lib/listing-batch-cleanup';
+import { manualBatchTransitionError } from '@/lib/listing-batch-lifecycle';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -158,6 +156,30 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   const body = await request.json();
   const db = getDb();
   try {
+    if (body.status !== undefined) {
+      if (Object.keys(body).some((key) => key !== 'status')) {
+        return NextResponse.json({
+          error: 'A manual status transition must be requested by itself',
+        }, { status: 400 });
+      }
+      const existing = db.prepare(`
+        SELECT status, channel
+        FROM listing_batches
+        WHERE id = ?
+      `).get(batchId) as { status: string; channel: 'FBA' | 'MFN' } | undefined;
+      if (!existing) {
+        return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+      }
+      const transitionError = manualBatchTransitionError({
+        from: existing.status,
+        to: String(body.status),
+        channel: existing.channel,
+      });
+      if (transitionError) {
+        return NextResponse.json({ error: transitionError }, { status: 409 });
+      }
+    }
+
     // Build a dynamic update — only patch the columns present in the body
     const fieldMap: Record<string, string> = {
       name: 'name',
@@ -170,7 +192,6 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
       shipFromPostalCode: 'ship_from_postal_code',
       shipFromCountryCode: 'ship_from_country_code',
       shipFromPhone: 'ship_from_phone',
-      inboundPlanId: 'inbound_plan_id',
       notes: 'notes',
     };
 
@@ -241,14 +262,61 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
   // inventory to satisfy a delete.
   const LOT_CONSUMED = 'LOT_CONSUMED_FIFO_ALREADY_RAN';
   try {
-    // Allow deleting batches that haven't been successfully sent to Amazon.
-    // Draft: never sent. Failed: send attempt didn't complete. Both are safe
-    // to delete — no Amazon state was committed. Block delete on ready/sending
-    // so we don't accidentally nuke a batch Amazon already has.
-    const batch = db.prepare('SELECT status FROM listing_batches WHERE id = ?').get(batchId) as any;
-    if (!batch) return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+    // Draft/failed batches are deletable only when no remote workflow step has
+    // succeeded. A draft may already have prepared listings, and a failed send
+    // may have created some listings or an inbound plan before a later step
+    // failed. Preserve those batches as the local audit trail.
+    const batch = db.prepare(`
+      SELECT status, inbound_plan_id, inbound_operation_id, plan_status,
+             packing_operation_id, packing_option_id, packing_status,
+             placement_operation_id, placement_option_id, placement_status,
+             transportation_operation_id, transportation_option_id, transportation_status,
+             confirmed_shipment_ids
+      FROM listing_batches
+      WHERE id = ?
+    `).get(batchId) as {
+      status: string;
+      inbound_plan_id: string | null;
+      inbound_operation_id: string | null;
+      plan_status: string | null;
+      packing_operation_id: string | null;
+      packing_option_id: string | null;
+      packing_status: string | null;
+      placement_operation_id: string | null;
+      placement_option_id: string | null;
+      placement_status: string | null;
+      transportation_operation_id: string | null;
+      transportation_option_id: string | null;
+      transportation_status: string | null;
+      confirmed_shipment_ids: string | null;
+    } | undefined;
+    if (!batch) {
+      db.close();
+      return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+    }
     if (batch.status !== 'draft' && batch.status !== 'failed') {
+      db.close();
       return NextResponse.json({ error: `Cannot delete batch in status: ${batch.status}` }, { status: 400 });
+    }
+    const remoteBatchState = Object.entries(batch)
+      .some(([key, value]) => key !== 'status' && value != null && value !== '');
+    // Replenishment drafts can prefill fnsku before any Amazon work. Treat
+    // fnsku as remote evidence only once Amazon has accepted a submission.
+    const remoteItemState = !!db.prepare(`
+      SELECT 1
+      FROM listing_batch_items
+      WHERE batch_id = ?
+        AND (
+          listing_submission_id IS NOT NULL
+          OR listing_status IN ('PROCESSING', 'ACTIVE')
+        )
+      LIMIT 1
+    `).get(batchId);
+    if (remoteBatchState || remoteItemState) {
+      db.close();
+      return NextResponse.json({
+        error: 'Cannot delete this batch because Amazon/listing work has already partially succeeded. Preserve the audit trail; use Cancel & Edit or close the batch instead.',
+      }, { status: 409 });
     }
 
     // Roll back each item's inventory contribution using the SAME lot-aware
@@ -329,13 +397,9 @@ export async function DELETE(_request: NextRequest, { params }: { params: Promis
         }
       }
 
-      // Delete the batch and its associated rows. This connection does not
-      // enable foreign_keys, so ON DELETE CASCADE won't fire — remove children
-      // explicitly, child-first, to avoid orphaned box/pack-group rows.
-      db.prepare('DELETE FROM listing_batch_box_items WHERE box_id IN (SELECT id FROM listing_batch_boxes WHERE batch_id = ?)').run(batchId);
-      db.prepare('DELETE FROM listing_batch_boxes WHERE batch_id = ?').run(batchId);
-      db.prepare('DELETE FROM listing_batch_pack_group_items WHERE pack_group_id IN (SELECT id FROM listing_batch_pack_groups WHERE batch_id = ?)').run(batchId);
-      db.prepare('DELETE FROM listing_batch_pack_groups WHERE batch_id = ?').run(batchId);
+      // Delete explicit children first. This mirrors the item-level route and
+      // keeps cleanup safe even if a future connection forgets foreign_keys.
+      deleteListingBatchChildren(db, batchId);
       db.prepare('DELETE FROM listing_batch_items WHERE batch_id = ?').run(batchId);
       db.prepare('DELETE FROM listing_batches WHERE id = ?').run(batchId);
     });

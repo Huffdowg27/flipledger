@@ -15,6 +15,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { requireDiagnosticRoute } from '@/lib/diagnostic-routes';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -44,6 +45,9 @@ function parseMskuCost(sku: string | null): number | null {
 }
 
 export async function GET(req: NextRequest) {
+  const disabled = requireDiagnosticRoute();
+  if (disabled) return disabled;
+
   const { searchParams } = req.nextUrl;
   const startDate = searchParams.get('startDate') ?? '2026-04-11';
   const endDate   = searchParams.get('endDate')   ?? '2026-05-11';

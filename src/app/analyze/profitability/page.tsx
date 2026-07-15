@@ -75,7 +75,7 @@ export default function ProfitabilityReportsPage() {
     setRows(data.rows || []);
     setTotals(data.totals || null);
     setLoading(false);
-  }, [dateRange, marketplace, groupBy]);
+  }, [dateRange, marketplaceParam, groupBy]);
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -108,19 +108,19 @@ export default function ProfitabilityReportsPage() {
       size: 240,
     },
     { id: 'qty', header: 'Qty', accessorKey: 'unitsSold', cell: ({ getValue }) => <span className="font-mono text-text-primary">{formatNumber(getValue() as number)}</span>, size: 70 },
-    { id: 'fees', header: 'Platform Fees', accessorKey: 'fees', cell: ({ getValue }) => feePill(getValue() as number), size: 120 },
+    { id: 'fees', header: 'Order Fees', accessorKey: 'fees', cell: ({ getValue }) => feePill(getValue() as number), size: 120 },
     { id: 'mfnShipping', header: 'MFN Shipping', accessorKey: 'shippingCost', cell: ({ getValue }) => money(getValue() as number), size: 110 },
     { id: 'cogs', header: 'Total COGS', accessorKey: 'cogs', cell: ({ getValue }) => money(getValue() as number), size: 110 },
     { id: 'revenue', header: 'Revenue', accessorKey: 'revenue', cell: ({ getValue }) => money(getValue() as number), size: 110 },
-    { id: 'profit', header: 'Gross Profit', accessorKey: 'profit', cell: ({ getValue }) => signed(getValue() as number), size: 110 },
-    { id: 'roi', header: 'Gross ROI%', accessorKey: 'roi', cell: ({ getValue }) => pct(getValue() as number), size: 100 },
-    { id: 'margin', header: 'Margin%', accessorKey: 'margin', cell: ({ getValue }) => pct(getValue() as number), size: 100 },
+    { id: 'profit', header: 'Contribution', accessorKey: 'profit', cell: ({ getValue }) => signed(getValue() as number), size: 110 },
+    { id: 'roi', header: 'Contribution ROI%', accessorKey: 'roi', cell: ({ getValue }) => pct(getValue() as number), size: 130 },
+    { id: 'margin', header: 'Contribution Margin%', accessorKey: 'margin', cell: ({ getValue }) => pct(getValue() as number), size: 150 },
     { id: 'inbound', header: 'Inbound', accessorKey: 'inbound', cell: ({ getValue }) => <span className="font-mono text-accent">{formatNumber(getValue() as number)}</span>, size: 80 },
     { id: 'warehouse', header: 'Warehouse', accessorKey: 'warehouse', cell: ({ getValue }) => { const v = getValue() as number; return <span className={`font-mono ${v > 0 ? 'text-warning' : 'text-text-tertiary'}`}>{formatNumber(v)}</span>; }, size: 90 },
   ], [groupBy]);
 
   function handleExport() {
-    const headers = [DIM_LABEL[groupBy], 'Qty', 'Platform Fees', 'MFN Shipping', 'Total COGS', 'Revenue', 'Gross Profit', 'Gross ROI %', 'Margin %', 'Inbound', 'Warehouse'];
+    const headers = [DIM_LABEL[groupBy], 'Qty', 'Order Fees', 'MFN Shipping', 'Total COGS', 'Revenue', 'Contribution Profit', 'Contribution ROI %', 'Contribution Margin %', 'Inbound', 'Warehouse'];
     const csvRows = rows.map(r => [
       `"${r.groupKey}"`, r.unitsSold, (r.fees / 100).toFixed(2), (r.shippingCost / 100).toFixed(2),
       (r.cogs / 100).toFixed(2), (r.revenue / 100).toFixed(2), (r.profit / 100).toFixed(2),
@@ -181,12 +181,18 @@ export default function ProfitabilityReportsPage() {
       <div className="mb-6 grid grid-cols-2 gap-4 lg:grid-cols-6">
         <StatCard label="Units Sold" value={totals?.unitsSold || 0} format="number" />
         <StatCard label="Revenue" value={totals?.revenue || 0} format="currency" />
-        <StatCard label="Gross Profit" value={totals?.profit || 0} format="currency" accentColor={(totals?.profit || 0) >= 0 ? 'positive' : 'negative'} />
-        <StatCard label="Gross ROI" value={totals?.roi || 0} format="percent" accentColor={(totals?.roi || 0) >= 0 ? 'positive' : 'negative'} />
-        <StatCard label="Margin" value={totals?.margin || 0} format="percent" accentColor={(totals?.margin || 0) >= 0 ? 'positive' : 'negative'} />
+        <StatCard label="Contribution Profit" value={totals?.profit || 0} format="currency" accentColor={(totals?.profit || 0) >= 0 ? 'positive' : 'negative'} />
+        <StatCard label="Contribution ROI" value={totals?.roi || 0} format="percent" accentColor={(totals?.roi || 0) >= 0 ? 'positive' : 'negative'} />
+        <StatCard label="Contribution Margin" value={totals?.margin || 0} format="percent" accentColor={(totals?.margin || 0) >= 0 ? 'positive' : 'negative'} />
         <StatCard label="On Hand Qty" value={totals?.onHand || 0} format="number" />
         <StatCard label="On Hand Value" value={totals?.onHandValueCents || 0} format="currency" accentColor="amazon" />
       </div>
+
+      <p className="mb-4 text-xs text-text-tertiary">
+        Contribution profit = product revenue + shipping charged − recognized COGS − order-linked fees − shipping cost.
+        Recognized COGS includes confirmed sellable-return and disposition-restock reversals.
+        Refund dollars, reimbursements, service fees, inventory write-offs, and business-wide expenses appear in Profit &amp; Loss, not here.
+      </p>
 
       {loading ? (
         <div className="rounded-lg border border-border-subtle bg-bg-surface p-4">

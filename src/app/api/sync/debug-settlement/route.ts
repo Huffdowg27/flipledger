@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSettlementReports, downloadReport } from '@/lib/sp-api/reports';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { requireDiagnosticRoute } from '@/lib/diagnostic-routes';
 
 function getCredentials() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -25,6 +26,9 @@ function getCredentials() {
  * so we can understand the format for service fee extraction.
  */
 export async function GET() {
+  const disabled = requireDiagnosticRoute();
+  if (disabled) return disabled;
+
   const credentials = getCredentials();
 
   try {
@@ -36,7 +40,7 @@ export async function GET() {
     }
 
     // List all reports first
-    const reportList = reports.map((r: any) => ({
+    const reportList = reports.map((r) => ({
       id: r.reportId,
       start: r.dataStartTime,
       end: r.dataEndTime,
@@ -45,7 +49,10 @@ export async function GET() {
 
     // Try a biweekly report with actual order volume
     const targetId = '921179020519'; // Feb 22 - Mar 7
-    const report = reports.find((r: any) => r.reportId === targetId) || reports[0];
+    const report = reports.find((r) => r.reportId === targetId) || reports[0];
+    if (!report.reportDocumentId) {
+      return NextResponse.json({ error: 'Selected settlement report has no document id', report }, { status: 502 });
+    }
     const content = await downloadReport(credentials, report.reportDocumentId);
 
     const lines = content.split('\n');

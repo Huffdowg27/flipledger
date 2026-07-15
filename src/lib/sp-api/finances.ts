@@ -8,6 +8,8 @@ import { spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { storeRemovalShipmentEvent } from '../removal-events';
+import { storeShippingLabelFee } from '../shipping-label-events';
 
 interface FinancialEventGroup {
   ShipmentEventList?: any[];
@@ -205,7 +207,7 @@ export async function syncFinancialEvents(
       if (eventGroup.RemovalShipmentEventList) {
         for (const event of eventGroup.RemovalShipmentEventList) {
           try {
-            processRemovalEvent(db, event);
+            storeRemovalShipmentEvent(db, event);
             eventsProcessed++;
           } catch (err) {
             errors.push(`RemovalEvent error: ${err}`);
@@ -656,7 +658,9 @@ function processGenericFinancialEvent(db: Database.Database, event: any, eventTy
 function processShippingLabelEvent(db: Database.Database, event: any) {
   const orderId = event.AmazonOrderId;
   const postedDate = event.PostedDate;
-  if (!orderId) return;
+  if (!orderId || !postedDate) {
+    throw new Error('shipping-label event missing AmazonOrderId or PostedDate');
+  }
 
   const fees = event.FeeList || [];
   for (const fee of fees) {
@@ -665,30 +669,13 @@ function processShippingLabelEvent(db: Database.Database, event: any) {
 
     // PostageBilling = shipping label cost, PostageRefund = refund of label
     if (fee.FeeType === 'PostageBilling' || fee.FeeType === 'PostageRefund') {
-      // Update the order_item's shipping_cost
-      db.prepare(`
-        UPDATE order_items SET shipping_cost = shipping_cost + ? WHERE order_id = ?
-      `).run(fee.FeeType === 'PostageBilling' ? amount : -amount, orderId);
+      storeShippingLabelFee(db, {
+        orderId,
+        postedDate,
+        feeType: fee.FeeType,
+        amountCents: amount,
+        rawData: JSON.stringify(event),
+      });
     }
-  }
-}
-
-function processRemovalEvent(db: Database.Database, event: any) {
-  const now = new Date().toISOString();
-  const postedDate = event.PostedDate || now;
-  const orderId = event.OrderId;
-  const items = event.RemovalShipmentItemList || [];
-
-  for (const item of items) {
-    const fee = toCents(item.FeeAmount);
-
-    db.prepare(`
-      INSERT OR IGNORE INTO removals (removal_order_id, asin, sku, quantity, removal_type, reason, status, date_requested, fee, marketplace, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      orderId || `REM-${Date.now()}`, item.ASIN || null, item.SellerSKU || null,
-      item.Quantity || 1, item.RemovalDisposition || 'Return',
-      'FBA Removal', 'Completed', postedDate, fee, 'amazon', now
-    );
   }
 }

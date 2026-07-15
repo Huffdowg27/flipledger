@@ -1,6 +1,21 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { isIsoCalendarDate, parseMarketplaceFilter } from '@/lib/request-filters';
+
+interface RemovalQueryRow {
+  removalOrderId: string;
+  asin: string | null;
+  sku: string | null;
+  productName: string;
+  quantity: number;
+  removalType: string;
+  reason: string | null;
+  status: string | null;
+  dateRequested: string;
+  dateCompleted: string | null;
+  fee: number;
+}
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -11,20 +26,43 @@ function getDb() {
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
-  const days = parseInt(searchParams.get('days') || '30');
 
-  const db = getDb();
-  const marketplace = searchParams.get('marketplace');
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
+  const marketplaceResult = parseMarketplaceFilter(searchParams.get('marketplace'));
+  if (!marketplaceResult.ok) {
+    return NextResponse.json({ error: 'Invalid marketplace' }, { status: 400 });
+  }
+  const marketplace = marketplaceResult.marketplace;
 
   let cutoff: string;
   const startDate = searchParams.get('startDate');
+  const endDate = searchParams.get('endDate');
+  if (
+    (startDate !== null && !isIsoCalendarDate(startDate))
+    || (endDate !== null && !isIsoCalendarDate(endDate))
+    || (startDate !== null && endDate !== null && startDate > endDate)
+  ) {
+    return NextResponse.json({ error: 'Invalid date range' }, { status: 400 });
+  }
+
   if (startDate) {
     cutoff = startDate;
   } else {
+    const rawDays = searchParams.get('days') || '30';
+    if (!/^\d+$/.test(rawDays)) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
+    const days = Number(rawDays);
+    if (!Number.isSafeInteger(days) || days < 1 || days > 3650) {
+      return NextResponse.json({ error: 'Invalid days' }, { status: 400 });
+    }
     cutoff = new Date(Date.now() - days * 86400000).toISOString();
   }
 
+  const cutoffEnd = endDate
+    ? new Date(new Date(`${endDate}T00:00:00Z`).getTime() + 86400000).toISOString().split('T')[0]
+    : null;
+
+  const db = getDb();
   try {
     const rows = db.prepare(`
       SELECT
@@ -42,9 +80,11 @@ export async function GET(request: NextRequest) {
       FROM removals r
       LEFT JOIN products p ON r.asin = p.asin
       LEFT JOIN products p2 ON r.sku = p2.asin
-      WHERE r.date_requested >= ? ${MF_R}
+      WHERE r.date_requested >= ?
+        AND (? IS NULL OR r.date_requested < ?)
+        AND (? IS NULL OR r.marketplace = ?)
       ORDER BY r.date_requested DESC
-    `).all(cutoff) as any[];
+    `).all(cutoff, cutoffEnd, cutoffEnd, marketplace, marketplace) as RemovalQueryRow[];
 
     const items = rows.map((row) => ({
       removalOrderId: row.removalOrderId,

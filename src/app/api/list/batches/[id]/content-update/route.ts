@@ -31,11 +31,18 @@ import {
   type ContentUpdateItemInput,
 } from '@/lib/sp-api/inboundPlansV2';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import {
+  applyShipmentQuantityPlan,
+  planShipmentQuantityUpdate,
+  type ShipmentItemQuantity,
+  type ShipmentQuantityPlanItem,
+} from '@/lib/shipment-content-quantities';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   return db;
 }
 
@@ -124,6 +131,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
 
   if (body.action === 'confirm') {
     if (!body.contentUpdatePreviewId) return NextResponse.json({ error: 'contentUpdatePreviewId required' }, { status: 400 });
+    if (!body.items?.length) return NextResponse.json({ error: 'items required for confirm' }, { status: 400 });
     return handleConfirm(creds, batchId, batch.inboundPlanId, body.shipmentId, body.contentUpdatePreviewId, body.items);
   }
 
@@ -233,6 +241,10 @@ async function handlePreview(
     }
   }
   const itemInputs = [...itemTotals.values()];
+  const requestedItems = [...currentBySku.keys()].map((msku) => ({
+    msku,
+    quantity: itemTotals.get(msku)?.quantity || 0,
+  }));
 
   // 4. Generate + poll + fetch the preview.
   let op: { operationId: string };
@@ -261,7 +273,7 @@ async function handlePreview(
     contentUpdatePreviewId: preview.contentUpdatePreviewId,
     expiration: preview.expiration,
     transportationOption: preview.transportationOption ?? null,
-    requestedItems: itemInputs.map((i) => ({ msku: i.msku, quantity: i.quantity })),
+    requestedItems,
     boxCount: boxInputs.length,
   });
 }
@@ -272,8 +284,37 @@ async function handleConfirm(
   inboundPlanId: string,
   shipmentId: string,
   contentUpdatePreviewId: string,
-  items?: Array<{ msku: string; quantity: number }>,
+  items: ShipmentItemQuantity[],
 ): Promise<NextResponse> {
+  // Read the shipment baseline immediately before confirmation. The local
+  // batch stores totals across every shipment, so reconciliation must apply
+  // this shipment's delta instead of replacing the whole-batch quantity.
+  let quantityPlan: ShipmentQuantityPlanItem[];
+  try {
+    const boxes = await listShipmentBoxes(creds, inboundPlanId, shipmentId);
+    const currentTotals = new Map<string, number>();
+    for (const box of boxes) {
+      for (const item of box.items || []) {
+        currentTotals.set(
+          item.msku,
+          (currentTotals.get(item.msku) || 0) + (item.quantity || 0) * (box.quantity || 1),
+        );
+      }
+    }
+    const beforeItems = [...currentTotals.entries()].map(([msku, quantity]) => ({ msku, quantity }));
+    const db = getDb();
+    try {
+      quantityPlan = planShipmentQuantityUpdate(db, batchId, beforeItems, items);
+    } finally {
+      db.close();
+    }
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Cannot safely reconcile shipment quantities: ${err}` },
+      { status: 409 },
+    );
+  }
+
   let op: { operationId: string };
   try {
     op = await confirmShipmentContentUpdatePreview(creds, inboundPlanId, shipmentId, contentUpdatePreviewId);
@@ -288,23 +329,21 @@ async function handleConfirm(
   // Sync local batch item quantities so totals, labels, and profit numbers
   // match what's actually shipping. Inventory lots stay untouched — the units
   // are still owned either way; only the shipment contents changed.
-  let itemsUpdated = 0;
-  if (items?.length) {
-    const db = getDb();
-    try {
-      const upd = db.prepare(`
-        UPDATE listing_batch_items SET quantity = ?, listing_updated_at = ?
-        WHERE batch_id = ? AND sku = ?
-      `);
-      const now = new Date().toISOString();
-      for (const it of items) {
-        if (!it.msku || !Number.isFinite(it.quantity) || it.quantity < 0) continue;
-        itemsUpdated += upd.run(it.quantity, now, batchId, it.msku).changes;
-      }
+  const db = getDb();
+  let itemsUpdated: number;
+  try {
+    const now = new Date().toISOString();
+    itemsUpdated = applyShipmentQuantityPlan(db, quantityPlan, now);
+    if (itemsUpdated > 0) {
       db.prepare('UPDATE listing_batches SET updated_at = ? WHERE id = ?').run(now, batchId);
-    } finally {
-      db.close();
     }
+  } catch (err) {
+    return NextResponse.json(
+      { error: `Amazon confirmed, but local batch reconciliation failed: ${err}` },
+      { status: 500 },
+    );
+  } finally {
+    db.close();
   }
 
   return NextResponse.json({ success: true, itemsUpdated });

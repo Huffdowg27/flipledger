@@ -23,16 +23,12 @@ export async function GET(request: NextRequest) {
   if (!endDate) {
     endDate = new Date().toISOString().split('T')[0];
   }
-  const cutoff = startDate + 'T00:00:00Z';
-  const marketplace = searchParams.get('marketplace');
-  const MF = marketplace ? `AND o.marketplace = '${marketplace}'` : '';
-  const MF_R = marketplace ? `AND marketplace = '${marketplace}'` : '';
-
   const endDateNext = new Date(new Date(endDate).getTime() + 86400000).toISOString().split('T')[0];
-  const cutoffEnd = endDateNext + 'T00:00:00Z';
 
   try {
-    // FBA Sales — date range filtered by purchase_date (sold date) so
+    // This is a fixed-channel Amazon FBA endpoint; marketplace is determined
+    // by fulfillment_channel rather than a caller-provided SQL filter.
+    // Date range is filtered by purchase_date (sold date) so
     // recently-placed orders that Amazon hasn't yet posted a ShipmentEvent
     // for are visible as Estimated/Pending. LEFT JOIN on ShipmentEvent;
     // status='reconciled' when joined, 'estimated' otherwise. Per-row

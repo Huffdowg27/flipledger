@@ -41,3 +41,14 @@ export function isCogsEncodedSku(sku: string | null | undefined): boolean {
   const s = unwrapAmazonGlobalSku(sku);
   return s.startsWith('LV_') || s.startsWith('ZTPC_');
 }
+
+/**
+ * True if this SKU is an Amazon-graded resale (global `amzn.gr.` wrapper).
+ * These are the second life of a unit whose buy cost was already expensed on
+ * its first sale — they must NEVER create an inventory lot or carry COGS.
+ * (Distinct from the display-only `unwrapAmazonGlobalSku`, which recovers the
+ * embedded cost for other purposes; this guard blocks cost/lot assignment.)
+ */
+export function isAmazonGradedSku(sku: string | null | undefined): boolean {
+  return !!sku && sku.startsWith('amzn.gr.');
+}

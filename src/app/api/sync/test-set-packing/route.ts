@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { requireSpApiDiagnosticRoute } from '@/lib/diagnostic-routes';
 import { clearTokenCache, getAccessToken, getEndpoint } from '@/lib/sp-api/auth';
 
 interface SPAPICredentials {
@@ -27,9 +28,8 @@ interface SPAPICredentials {
  * whether the same token has read access (auth vs body issue).
  */
 export async function POST(req: NextRequest) {
-  if (process.env.FLIPLEDGER_ENABLE_SPAPI_DIAGNOSTICS !== 'true') {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 });
-  }
+  const disabled = requireSpApiDiagnosticRoute();
+  if (disabled) return disabled;
 
   const { searchParams } = new URL(req.url);
   const batchId = parseInt(searchParams.get('batchId') || '');

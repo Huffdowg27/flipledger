@@ -22,6 +22,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import { parseBuyListCsv, type ColumnMapping } from '@/lib/imports/airtable-buylist';
 import { recalculateFIFO } from '@/lib/fifo';
 import { backfillBatchImages } from '@/lib/sp-api/catalog';
@@ -31,6 +32,7 @@ function getAmazonCredentials(): SPAPICredentials | null {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath, { readonly: true });
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   try {
     const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
     const settings: Record<string, string> = {};
@@ -51,6 +53,7 @@ function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   return db;
 }
 
@@ -137,15 +140,54 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
     }
   }
 
+  const normalizedRows = rows
+    .map(row => ({
+      asin: row.asin,
+      msku: row.msku,
+      productName: row.productName,
+      quantity: row.quantity,
+      costCents: row.costCents,
+      listPriceCents: row.listPriceCents,
+      supplier: row.supplier,
+      purchaseDate: row.purchaseDate,
+      condition: row.condition,
+      shippingTemplate: row.shippingTemplate,
+      mode: decisions[String(row.rowIndex)]?.mode || 'CREATE_NEW',
+    }))
+    .sort((a, b) => a.msku.localeCompare(b.msku));
+  const rowsImported = rows.length;
+  const totalUnits = rows.reduce((sum, row) => sum + row.quantity, 0);
+  const totalCostCents = rows.reduce((sum, row) => sum + row.costCents * row.quantity, 0);
+  const totalListValueCents = rows.reduce((sum, row) => sum + row.listPriceCents * row.quantity, 0);
+
   const db = getDb();
   try {
     const batch = db.prepare('SELECT id, channel, status FROM listing_batches WHERE id = ?')
       .get(batchId) as { id: number; channel: string; status: string } | undefined;
     if (!batch) return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
+    const isMfn = batch.channel === 'MFN';
+    const contentHash = createHash('sha256')
+      .update(JSON.stringify(normalizedRows.map(row => (
+        isMfn ? { ...row, mode: undefined } : row
+      ))))
+      .digest('hex');
+
+    // A completed request remains replayable even if the batch transitioned
+    // after the client lost the original response.
+    const completedImport = db.prepare(`
+      SELECT response_json
+      FROM listing_batch_imports
+      WHERE batch_id = ? AND content_hash = ?
+    `).get(batchId, contentHash) as { response_json: string } | undefined;
+    if (completedImport) {
+      return NextResponse.json({
+        ...JSON.parse(completedImport.response_json),
+        replayed: true,
+      });
+    }
     if (batch.status !== 'draft') {
       return NextResponse.json({ error: `Cannot import into batch in status: ${batch.status}` }, { status: 400 });
     }
-    const isMfn = batch.channel === 'MFN';
 
     const now = new Date();
     const nowIso = now.toISOString();
@@ -159,14 +201,15 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         asin, sku, buy_price, quantity, quantity_remaining,
         supplier_id, date_purchased, bin_location, condition, list_price_cents,
         merchant_shipping_group_name, received_at, inspected_at, quantity_received,
-        batch_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, ?, ?)
+        batch_id, listing_batch_import_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)
     `);
     const insertLotFba = db.prepare(`
       INSERT INTO inventory_ledger (
         asin, sku, buy_price, quantity, quantity_remaining,
-        supplier_id, date_purchased, condition, list_price_cents, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        supplier_id, date_purchased, condition, list_price_cents,
+        listing_batch_import_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     const insertBatchItem = db.prepare(`
       INSERT INTO listing_batch_items (
@@ -174,8 +217,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         quantity, list_price_cents, buy_price_cents, supplier, purchase_date,
         estimated_fee_cents, estimated_ship_cents, listing_mode, fnsku,
         fulfillment_channel, listing_source, amazon_inventory_status,
-        inventory_ledger_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, 'CSV_IMPORT', NULL, ?, ?)
+        inventory_ledger_id, listing_batch_import_id, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, NULL, ?, 'CSV_IMPORT', NULL, ?, ?, ?)
     `);
 
     const selectProduct = db.prepare('SELECT id FROM products WHERE asin = ? LIMIT 1');
@@ -186,11 +229,49 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       INSERT INTO products (asin, sku, name, marketplace, created_at, updated_at) VALUES (?, ?, ?, 'amazon', ?, ?)
     `);
 
-    const affectedSkus = new Set<string>();
-    let rowsImported = 0, totalUnits = 0, totalCostCents = 0, totalListValueCents = 0;
+    const response = {
+      success: true,
+      batchId,
+      channel: batch.channel,
+      rowsImported,
+      totalUnits,
+      totalCostCents,
+      totalListValueCents,
+      replayed: false,
+    };
 
     const tx = db.transaction(() => {
+      const prior = db.prepare(`
+        SELECT response_json
+        FROM listing_batch_imports
+        WHERE batch_id = ? AND content_hash = ?
+      `).get(batchId, contentHash) as { response_json: string } | undefined;
+      if (prior) {
+        return {
+          response: { ...JSON.parse(prior.response_json), replayed: true },
+          affectedSkus: [] as string[],
+          replayed: true,
+        };
+      }
+
+      const importResult = db.prepare(`
+        INSERT INTO listing_batch_imports (
+          batch_id, content_hash, rows_imported, total_units, total_cost_cents,
+          total_list_value_cents, response_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        batchId,
+        contentHash,
+        rowsImported,
+        totalUnits,
+        totalCostCents,
+        totalListValueCents,
+        JSON.stringify(response),
+        nowIso,
+      );
+      const listingBatchImportId = Number(importResult.lastInsertRowid);
       const supplierIdByName = new Map<string, number>();
+      const affectedSkus = new Set<string>();
 
       for (const row of rows) {
         // ── Supplier ──────────────────────────────────────────────────────
@@ -215,13 +296,14 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           const res = insertLotMfn.run(
             row.asin, row.msku, row.costCents, row.quantity, row.quantity,
             supplierId, datePurchased, codeToLedgerLabel(row.condition), row.listPriceCents,
-            row.shippingTemplate || null, batchId, nowIso,
+            row.shippingTemplate || null, batchId, listingBatchImportId, nowIso,
           );
           lotId = Number(res.lastInsertRowid);
         } else {
           const res = insertLotFba.run(
             row.asin, row.msku, row.costCents, row.quantity, row.quantity,
-            supplierId, datePurchased, codeToLedgerLabel(row.condition), row.listPriceCents, nowIso,
+            supplierId, datePurchased, codeToLedgerLabel(row.condition), row.listPriceCents,
+            listingBatchImportId, nowIso,
           );
           lotId = Number(res.lastInsertRowid);
 
@@ -230,7 +312,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
           insertBatchItem.run(
             batchId, row.asin, row.msku, row.msku, row.productName || null, null,
             row.condition, row.quantity, row.listPriceCents, row.costCents,
-            row.supplier || null, datePurchased, 0, mode, 'FBA', lotId, nowIso,
+            row.supplier || null, datePurchased, 0, mode, 'FBA', lotId,
+            listingBatchImportId, nowIso,
           );
         }
         affectedSkus.add(row.msku);
@@ -240,20 +323,25 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         if (existing?.id) updateProduct.run(row.productName || '', row.msku || '', nowIso, existing.id);
         else insertProduct.run(row.asin, row.msku || null, row.productName || null, nowIso, nowIso);
 
-        rowsImported += 1;
-        totalUnits += row.quantity;
-        totalCostCents += row.costCents * row.quantity;
-        totalListValueCents += row.listPriceCents * row.quantity;
       }
 
       db.prepare('UPDATE listing_batches SET updated_at = ? WHERE id = ?').run(nowIso, batchId);
+      return {
+        response,
+        affectedSkus: [...affectedSkus],
+        replayed: false,
+      };
     });
 
-    tx();
+    const outcome = tx.immediate();
     db.close();
 
+    if (outcome.replayed) {
+      return NextResponse.json(outcome.response);
+    }
+
     // FIFO recalculation per affected SKU (lots changed).
-    for (const sku of affectedSkus) {
+    for (const sku of outcome.affectedSkus) {
       try { recalculateFIFO({ sku }); } catch (e) { console.warn('[buylist import] FIFO recalc skipped for', sku, e); }
     }
 
@@ -269,10 +357,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       }
     }
 
-    return NextResponse.json({
-      success: true, batchId, channel: batch.channel,
-      rowsImported, totalUnits, totalCostCents, totalListValueCents,
-    });
+    return NextResponse.json(outcome.response);
   } catch (err) {
     try { db.close(); } catch { /* already closed */ }
     return NextResponse.json({ error: String(err) }, { status: 500 });

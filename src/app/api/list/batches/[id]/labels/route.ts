@@ -43,6 +43,7 @@ function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
   const db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   return db;
 }
 
@@ -115,7 +116,9 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     }
     creds = getAmazonCredentials(db);
     inboundPlanId = batch.inboundPlanId;
-    printerName = getSetting(db, 'listing_rollo_printer_name') || 'Printer ThermalPrinter';
+    // Empty (not a hardcoded default) so printPdfBuffer can auto-pick a
+    // detected 4x6 label printer when no queue is configured.
+    printerName = getSetting(db, 'listing_rollo_printer_name') || '';
   } finally {
     db.close();
   }

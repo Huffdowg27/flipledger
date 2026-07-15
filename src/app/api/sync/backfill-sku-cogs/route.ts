@@ -16,7 +16,7 @@
 import { NextResponse } from 'next/server';
 import Database from 'better-sqlite3';
 import path from 'path';
-import { extractCogsFromSku, isCogsEncodedSku } from '@/lib/sku-cogs';
+import { extractCogsFromSku, isCogsEncodedSku, isAmazonGradedSku } from '@/lib/sku-cogs';
 import { recalculateFIFO } from '@/lib/fifo';
 
 function getDb() {
@@ -51,15 +51,16 @@ function getAffectedRows(db: ReturnType<typeof getDb>): AffectedRow[] {
     JOIN orders o ON oi.order_id = o.order_id
     WHERE oi.cogs_per_unit = 0
       AND oi.sku IS NOT NULL AND oi.sku != '' AND oi.sku != 'PENDING'
+      AND oi.sku NOT LIKE 'amzn.gr.%'  -- graded resales never get a cost lot
       AND NOT EXISTS (
         SELECT 1 FROM inventory_ledger il WHERE il.sku = oi.sku
       )
     GROUP BY oi.sku, oi.asin, DATE(o.purchase_date)
     ORDER BY oi.sku, date_purchased
-  `).all() as any[];
+  `).all() as Omit<AffectedRow, 'cogs_cents'>[];
 
   return rows
-    .filter(r => isCogsEncodedSku(r.sku))
+    .filter(r => isCogsEncodedSku(r.sku) && !isAmazonGradedSku(r.sku))
     .map(r => ({
       ...r,
       cogs_cents: extractCogsFromSku(r.sku),

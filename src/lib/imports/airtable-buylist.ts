@@ -167,8 +167,10 @@ function parseQty(s: string | undefined): number | null {
   if (s == null) return null;
   const trimmed = String(s).trim();
   if (!trimmed) return null;
-  // Tolerate "5", "5.0", "5 units"; reject anything with no leading integer.
-  const m = trimmed.match(/^(\d+)(?:\.0+)?/);
+  // Tolerate "5", "5.0", and "5 units", but require the entire cell to
+  // describe one whole-unit count. Prefix parsing would silently turn a
+  // fractional value such as "1.5" into 1.
+  const m = trimmed.match(/^(\d+)(?:\.0+)?(?:\s+units?)?$/i);
   if (!m) return null;
   const v = parseInt(m[1], 10);
   return Number.isFinite(v) ? v : null;

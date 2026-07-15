@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { formatCurrency, formatRelativeTime } from '@/lib/formatters';
 import { Search, ScanBarcode, Package, X, Plus, CheckCircle2, AlertCircle, Loader2, Save, PackagePlus, Printer, Send, Pencil, Info, Image as ImageIcon, Lock } from 'lucide-react';
 import { PreviewModal, type ActivationPreviewRow } from '@/components/activation/PreviewModal';
+import { PrintLabelIcon } from '@/components/ui/PrintLabel';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,6 +28,8 @@ interface SearchResult {
   condition: string | null;
   quantity_received: number | null;
   quantity_remaining: number | null;
+  lot_quantity?: number | null;
+  open_issue_count?: number | null;
   received_at: string | null;
   inspected_at: string | null;
   merchant_shipping_group_name: string | null;
@@ -38,10 +41,25 @@ interface SearchResult {
   referral_fee_cents: number | null;
   fee_list_price_cents: number | null;
   upc?: string | null;
+  open_incoming_purchases?: IncomingPurchaseCandidate[];
 }
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 type CreateLotState = 'idle' | 'creating' | 'error';
+type IssueType = 'damaged' | 'wrong_item' | 'not_as_described' | 'other';
+
+interface IncomingPurchaseCandidate {
+  id: number;
+  order_ref: string | null;
+  order_source: string | null;
+  asin: string | null;
+  sku: string | null;
+  quantity: number;
+  quantity_received: number;
+  unit_cost_cents: number;
+  ordered_at: string | null;
+  status: string;
+}
 
 interface BatchItem extends SearchResult {
   draft_qty: string;
@@ -54,11 +72,14 @@ interface BatchItem extends SearchResult {
   save_state: SaveState;
   save_error: string | null;
   slow_save: boolean;            // true once save has been in-flight > 3s
+  auto_print_error?: string | null; // last auto-print failure (never blocks the save)
   create_lot_state: CreateLotState;
   create_lot_error: string | null;
   slow_create_lot: boolean;      // true once create-lot has been in-flight > 3s
   marking_inspected: boolean;
   mark_inspect_error: string | null;
+  incoming_receive_choice: 'new' | number | null;
+  incoming_reconcile_warning?: string | null;
 }
 
 const CONDITIONS = [
@@ -67,6 +88,13 @@ const CONDITIONS = [
   'Used - Very Good',
   'Used - Good',
   'Used - Acceptable',
+];
+
+const ISSUE_TYPE_OPTIONS: Array<{ value: IssueType; label: string }> = [
+  { value: 'damaged', label: 'Damaged' },
+  { value: 'wrong_item', label: 'Wrong item' },
+  { value: 'not_as_described', label: 'Not as described' },
+  { value: 'other', label: 'Other' },
 ];
 
 interface ShippingTemplate { key: string; name: string; }
@@ -167,6 +195,25 @@ function listingFreshness(results: SearchResult[]) {
   };
 }
 
+// Sticky receiving defaults: remember the operator's last-used shipping
+// template and condition, prefill them on items that don't carry their own.
+// Change either on any card and the new value becomes the default.
+const STICKY_TEMPLATE_KEY = 'fl_mfn_default_shipping_template';
+const STICKY_CONDITION_KEY = 'fl_mfn_default_condition';
+// Auto-print ASIN stickers on save ('1'/'0'). It arms a physical printer, so
+// the header toggle shows a loud accent while enabled.
+const STICKY_AUTOPRINT_KEY = 'fl_mfn_autoprint_label';
+
+function stickyDefault(key: string, fallback: string): string {
+  if (typeof window === 'undefined') return fallback;
+  try { return localStorage.getItem(key) || fallback; } catch { return fallback; }
+}
+
+export function rememberStickyDefault(key: string, value: string) {
+  if (typeof window === 'undefined' || !value.trim()) return;
+  try { localStorage.setItem(key, value.trim()); } catch { /* storage unavailable */ }
+}
+
 function makeBatchItem(r: SearchResult): BatchItem {
   const costCents = r.buy_price ?? r.parsed_cost_cents;
   const priceCents = r.il_list_price_cents ?? r.amazon_list_price_cents ?? r.parsed_list_price_cents;
@@ -174,10 +221,10 @@ function makeBatchItem(r: SearchResult): BatchItem {
     ...r,
     draft_qty:               String(r.quantity_received ?? r.quantity_remaining ?? 1),
     draft_bin:               r.bin_location ?? '',
-    draft_condition:         r.condition ?? '',
+    draft_condition:         r.condition ?? stickyDefault(STICKY_CONDITION_KEY, 'New'),
     draft_list_price:        priceCents != null ? (priceCents / 100).toFixed(2) : '',
     draft_buy_price:         costCents   != null ? (costCents  / 100).toFixed(2) : '',
-    draft_shipping_template: r.merchant_shipping_group_name ?? '',
+    draft_shipping_template: r.merchant_shipping_group_name ?? stickyDefault(STICKY_TEMPLATE_KEY, ''),
     draft_shipping_est:      '8.00',
     save_state:              'idle',
     save_error:              null,
@@ -187,6 +234,8 @@ function makeBatchItem(r: SearchResult): BatchItem {
     slow_create_lot:         false,
     marking_inspected:       false,
     mark_inspect_error:      null,
+    incoming_receive_choice: (r.open_incoming_purchases?.length ?? 0) > 0 ? null : 'new',
+    incoming_reconcile_warning: null,
   };
 }
 
@@ -888,6 +937,20 @@ function UpcChip({ upc }: { upc: string }) {
   );
 }
 
+function OpenIssueChip({ count }: { count: number | null | undefined }) {
+  const issueCount = Math.max(0, Number(count ?? 0) || 0);
+  if (issueCount <= 0) return null;
+  return (
+    <a
+      href="/incoming"
+      className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/15 transition-colors"
+      title="Resolve receiving issues on Incoming"
+    >
+      {issueCount} issue{issueCount === 1 ? '' : 's'} open → resolve on Incoming
+    </a>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // SearchResultCard
 // ---------------------------------------------------------------------------
@@ -992,6 +1055,34 @@ function getSavedDisplay(item: BatchItem) {
   };
 }
 
+function openIncomingCandidates(item: BatchItem): IncomingPurchaseCandidate[] {
+  return Array.isArray(item.open_incoming_purchases)
+    ? item.open_incoming_purchases.filter(candidate => {
+        const quantity = Number(candidate.quantity) || 0;
+        const received = Number(candidate.quantity_received) || 0;
+        return candidate.status === 'on_order' || candidate.status === 'partial'
+          ? quantity > received
+          : false;
+      })
+    : [];
+}
+
+function selectedIncomingCandidate(item: BatchItem): IncomingPurchaseCandidate | null {
+  if (typeof item.incoming_receive_choice !== 'number') return null;
+  return openIncomingCandidates(item).find(candidate => candidate.id === item.incoming_receive_choice) ?? null;
+}
+
+function mfnReceiptKey(item: BatchItem, candidate: IncomingPurchaseCandidate, quantity: number, batchId: number | null): string {
+  return [
+    'mfn-batch-receive',
+    candidate.id,
+    item.sku,
+    batchId ?? 'standalone',
+    quantity,
+    candidate.quantity_received,
+  ].join(':');
+}
+
 // ---------------------------------------------------------------------------
 // BatchItemRow — collapsed view for saved items
 // ---------------------------------------------------------------------------
@@ -1041,7 +1132,19 @@ function BatchItemRow({ item, onRemove, onPrintLabel, onEdit, onSaveQty, onImage
           <AsinLink asin={item.asin} className="font-mono text-sm text-blue-400/80 shrink-0 hover:text-blue-300 hover:underline" />
           <ChannelBadge channel={item.fulfillment_channel} />
         </div>
-        <MskuLink sku={item.sku} className="font-mono text-xs text-blue-400/80 truncate block mt-0.5 hover:text-blue-300 hover:underline" />
+        <div className="flex items-center gap-2 mt-0.5">
+          <MskuLink sku={item.sku} className="font-mono text-xs text-blue-400/80 truncate hover:text-blue-300 hover:underline" />
+          <PrintLabelIcon
+            item={{ title: item.product_name, asin: item.asin, sku: item.sku, bin: item.draft_bin, condition: item.draft_condition }}
+            qty={Math.max(1, parseInt(item.draft_qty, 10) || 1)}
+          />
+          <OpenIssueChip count={item.open_issue_count} />
+          {item.incoming_reconcile_warning && (
+            <span className="inline-flex items-center px-1.5 h-4 rounded text-[9px] font-medium border bg-amber-500/10 text-amber-300 border-amber-500/30" title={item.incoming_reconcile_warning}>
+              Airtable sync failed
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Zone 4 — Qty (w-32 fixed): InlineQtyEdit + optional receive progress */}
@@ -1102,6 +1205,7 @@ interface BatchItemCardProps {
 function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintLabel, onEdit, onSaveQty, onMarkInspected, onImageClick, onShowDetail, focusQty, onQtyFocused, amazonTemplates, locked = false }: BatchItemCardProps) {
   const noLot = item.il_id == null;
   const profit = calcProfit(item);
+  const incomingCandidates = openIncomingCandidates(item);
 
   const qtyRef              = useRef<HTMLInputElement>(null);
   const listPriceRef        = useRef<HTMLInputElement>(null);
@@ -1111,6 +1215,13 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
   const shippingEstRef      = useRef<HTMLInputElement>(null);
   const shippingTemplateRef = useRef<HTMLSelectElement>(null);
   const primaryActionRef    = useRef<HTMLButtonElement>(null);
+  const [issueExpanded, setIssueExpanded] = useState(false);
+  const [issueQty, setIssueQty] = useState('1');
+  const [issueType, setIssueType] = useState<IssueType>('damaged');
+  const [issueNote, setIssueNote] = useState('');
+  const [issueState, setIssueState] = useState<'idle' | 'saving' | 'error'>('idle');
+  const [issueError, setIssueError] = useState<string | null>(null);
+  const [slowIssue, setSlowIssue] = useState(false);
 
   useEffect(() => {
     if (focusQty && qtyRef.current) {
@@ -1147,6 +1258,84 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       ? 'border-border-subtle bg-slate-800 border-l-2 border-l-sky-500/30'
       : 'border-border-subtle bg-slate-800';
 
+  async function logIssue() {
+    if (item.il_id == null) return;
+    const qty = parseInt(issueQty, 10);
+    if (!Number.isInteger(qty) || qty < 1) {
+      setIssueState('error');
+      setIssueError('Issue qty must be at least 1');
+      return;
+    }
+
+    // Expected-state guard: the server rejects the request if the lot changed
+    // since load (e.g. a retry after a lost response), so a double-submit can
+    // never shrink the lot twice.
+    const expectedLotQuantity = Number(item.lot_quantity);
+    if (!Number.isInteger(expectedLotQuantity)) {
+      setIssueState('error');
+      setIssueError('Lot quantity not loaded — refresh the page and try again');
+      return;
+    }
+
+    const body: Record<string, unknown> = {
+      ilId: item.il_id,
+      quantity: qty,
+      issueType,
+      expectedLotQuantity,
+    };
+    if (issueNote.trim()) body.note = issueNote.trim();
+
+    setIssueState('saving');
+    setIssueError(null);
+    setSlowIssue(false);
+    const slowTimer = setTimeout(() => setSlowIssue(true), 3000);
+
+    try {
+      const res = await fetch('/api/data/inventory-lots/report-issue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const bodyText = await res.text().catch(() => '');
+      let data: Record<string, unknown> = {};
+      try { data = JSON.parse(bodyText) as Record<string, unknown>; } catch { /* keep empty */ }
+
+      if (!res.ok) {
+        const errMsg = (data.error as string | undefined) || 'Issue log failed';
+        setIssueState('error');
+        setIssueError(`${errMsg} (HTTP ${res.status})`);
+        return;
+      }
+
+      const newLotQuantity = data.lotQuantity != null ? Number(data.lotQuantity) : item.lot_quantity;
+      const mirror: Partial<BatchItem> = {
+        lot_quantity: newLotQuantity,
+        quantity_remaining: data.lotQuantityRemaining != null ? Number(data.lotQuantityRemaining) : item.quantity_remaining,
+        open_issue_count: Math.max(0, Number(item.open_issue_count ?? 0) || 0) + 1,
+      };
+      // Clamp the receive-qty draft to the shrunk lot so the next Save can't
+      // trip the "received exceeds purchased" guard.
+      const draftQty = parseInt(item.draft_qty, 10);
+      if (newLotQuantity != null && Number.isInteger(draftQty) && draftQty > newLotQuantity) {
+        mirror.draft_qty = String(newLotQuantity);
+        mirror.save_state = 'idle';
+      }
+      onChange(mirror);
+      setIssueExpanded(false);
+      setIssueQty('1');
+      setIssueNote('');
+      setIssueState('idle');
+      setIssueError(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setIssueState('error');
+      setIssueError(`Network error: ${msg}`);
+    } finally {
+      clearTimeout(slowTimer);
+      setSlowIssue(false);
+    }
+  }
+
   return (
     <div className={`rounded-xl border p-4 transition-colors ${borderClass}`}>
 
@@ -1177,6 +1366,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
               <span className="text-[10px] text-text-tertiary">Amz qty: {item.amazon_qty}</span>
             )}
             {item.upc && <UpcChip upc={item.upc} />}
+            <OpenIssueChip count={item.open_issue_count} />
           </div>
           {(() => {
             const blockers = chipsForBatchItem(item).filter(c => c.tone === 'blocker');
@@ -1285,6 +1475,49 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       {/* Receive progress — only when there's a lot AND a usable total signal */}
       {(() => { const p = getReceiveProgress(item); return p ? <ReceiveProgressBar progress={p} variant="full" /> : null; })()}
 
+      {incomingCandidates.length > 0 && (
+        <div className="mb-3 rounded-md border border-amber-500/25 bg-amber-500/5 px-2.5 py-2">
+          <div className="flex items-center gap-1.5 mb-1.5">
+            <AlertCircle size={12} className="text-amber-300 shrink-0" />
+            <span className="text-[11px] font-medium text-amber-200">Open buy-sheet order</span>
+            <span className="text-[10px] text-text-tertiary">Choose one to link, or keep this as a new lot.</span>
+          </div>
+          <div className="space-y-1">
+            {incomingCandidates.map(candidate => {
+              const remaining = Math.max(0, Number(candidate.quantity) - Number(candidate.quantity_received));
+              const label = [
+                candidate.ordered_at ? candidate.ordered_at.slice(0, 10) : 'No date',
+                `${remaining}/${candidate.quantity} open`,
+                formatCurrency(Number(candidate.unit_cost_cents) || 0),
+                candidate.order_source || candidate.order_ref || null,
+              ].filter(Boolean).join(' · ');
+              return (
+                <label key={candidate.id} className="flex items-center gap-2 text-[11px] text-text-secondary">
+                  <input
+                    type="radio"
+                    name={`incoming-${item.sku}`}
+                    checked={item.incoming_receive_choice === candidate.id}
+                    onChange={() => onChange({ incoming_receive_choice: candidate.id, save_state: 'idle', create_lot_error: null, save_error: null })}
+                    className="accent-amber-400"
+                  />
+                  <span>{label}</span>
+                </label>
+              );
+            })}
+            <label className="flex items-center gap-2 text-[11px] text-text-secondary">
+              <input
+                type="radio"
+                name={`incoming-${item.sku}`}
+                checked={item.incoming_receive_choice === 'new'}
+                onChange={() => onChange({ incoming_receive_choice: 'new', save_state: 'idle', create_lot_error: null, save_error: null })}
+                className="accent-amber-400"
+              />
+              <span>Receive as new lot</span>
+            </label>
+          </div>
+        </div>
+      )}
+
       {/* Mark inspected — only when received but not yet inspected */}
       {item.il_id != null && (item.quantity_received ?? 0) > 0 && !item.inspected_at && (
         <div className="flex items-center gap-2 mb-2">
@@ -1340,7 +1573,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           <select
             ref={conditionRef}
             value={item.draft_condition}
-            onChange={e => onChange({ draft_condition: e.target.value, save_state: 'idle' })}
+            onChange={e => { rememberStickyDefault(STICKY_CONDITION_KEY, e.target.value); onChange({ draft_condition: e.target.value, save_state: 'idle' }); }}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); noLot ? buyCostRef.current?.focus() : binRef.current?.focus(); } }}
             className="w-full h-9 px-2.5 bg-slate-800 border border-border-default rounded-md text-sm text-text-primary focus:border-blue-500 focus:outline-none"
           >
@@ -1394,6 +1627,88 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
         </div>
       </div>
 
+      {item.il_id != null && (
+        <div className="mb-3">
+          {!issueExpanded ? (
+            <button
+              type="button"
+              onClick={() => {
+                setIssueExpanded(true);
+                setIssueState('idle');
+                setIssueError(null);
+              }}
+              className="text-[11px] text-amber-300/80 hover:text-amber-200 transition-colors"
+            >
+              Report issue…
+            </button>
+          ) : (
+            <div className="flex items-end gap-2 rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-2 flex-wrap">
+              <div className="w-20">
+                <label className="block text-[10px] text-text-tertiary/60 mb-1 uppercase tracking-wide">Issue qty</label>
+                <input
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={issueQty}
+                  onChange={e => {
+                    setIssueQty(e.target.value);
+                    setIssueState('idle');
+                    setIssueError(null);
+                  }}
+                  className="w-full h-8 px-2 bg-slate-800 border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+              <div className="w-40">
+                <label className="block text-[10px] text-text-tertiary/60 mb-1 uppercase tracking-wide">Issue type</label>
+                <select
+                  value={issueType}
+                  onChange={e => setIssueType(e.target.value as IssueType)}
+                  className="w-full h-8 px-2 bg-slate-800 border border-border-default rounded-md text-xs text-text-primary focus:border-amber-500 focus:outline-none"
+                >
+                  {ISSUE_TYPE_OPTIONS.map(option => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-[10px] text-text-tertiary/60 mb-1 uppercase tracking-wide">Note</label>
+                <input
+                  value={issueNote}
+                  onChange={e => setIssueNote(e.target.value)}
+                  placeholder="e.g. return started on eBay"
+                  className="w-full h-8 px-2 bg-slate-800 border border-border-default rounded-md text-xs text-text-primary placeholder:text-text-tertiary/60 focus:border-amber-500 focus:outline-none"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={logIssue}
+                disabled={issueState === 'saving'}
+                className="h-8 px-3 inline-flex items-center gap-1.5 rounded-md text-xs font-semibold bg-amber-500/15 text-amber-200 border border-amber-500/30 hover:bg-amber-500/20 transition-colors disabled:opacity-60"
+              >
+                {issueState === 'saving' ? <><Loader2 size={11} className="animate-spin" /> Logging…</> : 'Log issue'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIssueExpanded(false);
+                  setIssueState('idle');
+                  setIssueError(null);
+                }}
+                className="h-8 px-2 text-[11px] text-text-tertiary hover:text-text-secondary transition-colors"
+              >
+                Cancel
+              </button>
+              {issueState === 'error' && (
+                <div className="basis-full text-[10px] text-red-400">{issueError || 'Issue log failed'}</div>
+              )}
+              {issueState === 'saving' && slowIssue && (
+                <div className="basis-full text-[10px] text-text-tertiary italic">Still working — logging issue…</div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="mb-2">
         <label className="block text-[10px] text-text-tertiary/50 mb-1 uppercase tracking-wide">Shipping Template</label>
         {amazonTemplates === null ? (
@@ -1408,7 +1723,7 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
           <select
             ref={shippingTemplateRef}
             value={resolveShippingTemplate(item.draft_shipping_template, amazonTemplates)?.key ?? item.draft_shipping_template}
-            onChange={e => onChange({ draft_shipping_template: e.target.value, save_state: 'idle' })}
+            onChange={e => { rememberStickyDefault(STICKY_TEMPLATE_KEY, e.target.value); onChange({ draft_shipping_template: e.target.value, save_state: 'idle' }); }}
             onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); primaryActionRef.current?.click(); } }}
             className="w-full h-8 px-2.5 bg-slate-800 border border-border-default rounded-md text-xs font-mono text-text-primary focus:border-blue-500 focus:outline-none appearance-none cursor-pointer"
           >
@@ -1428,6 +1743,30 @@ function BatchItemCard({ item, onChange, onRemove, onSave, onCreateLot, onPrintL
       {(item.save_state === 'error' || item.create_lot_state === 'error') && (
         <p className="text-[10px] text-red-400 mt-1">
           {item.save_state === 'error' ? (item.save_error || 'Save failed') : (item.create_lot_error || 'Create failed')}
+        </p>
+      )}
+      {item.auto_print_error && (
+        <p className="text-[10px] text-amber-400/90 mt-1">
+          Label print failed: {item.auto_print_error} — use the print icon to retry.
+          <button
+            type="button"
+            onClick={() => onChange({ auto_print_error: null })}
+            className="ml-1.5 text-text-tertiary hover:text-text-secondary underline"
+          >
+            dismiss
+          </button>
+        </p>
+      )}
+      {item.incoming_reconcile_warning && (
+        <p className="text-[10px] text-amber-400/90 mt-1">
+          {item.incoming_reconcile_warning}
+          <button
+            type="button"
+            onClick={() => onChange({ incoming_reconcile_warning: null })}
+            className="ml-1.5 text-text-tertiary hover:text-text-secondary underline"
+          >
+            dismiss
+          </button>
         </p>
       )}
       {item.create_lot_state === 'creating' && item.slow_create_lot && (
@@ -1470,6 +1809,10 @@ export interface MfnBatchReceiveWorkflowProps {
 export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false }: MfnBatchReceiveWorkflowProps = {}) {
   const searchInputRef     = useRef<HTMLInputElement>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
+  // SKUs whose received count has been driven by scanning this session. Lets a
+  // re-scan increment the running draft count instead of re-reading the
+  // (possibly pre-seeded) expected quantity.
+  const scanTouchedRef     = useRef<Set<string>>(new Set());
   const multiMatchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [query, setQuery]           = useState('');
   const [results, setResults]       = useState<SearchResult[]>([]);
@@ -1477,6 +1820,26 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
   const [searchOpen, setSearchOpen] = useState(false);
   const [multiMatchNote, setMultiMatchNote] = useState(false);
   const [batch, setBatch]           = useState<Map<string, BatchItem>>(new Map());
+  // Ref, not state: the sticky bin default is never rendered, and async save
+  // completions must always read/advance the LATEST value — a render-closure
+  // capture goes stale under overlapping saves (review finding on 2d5284a:
+  // save A→B and B→C in flight together left auto-painted rows stuck on B).
+  const sessionBinDefaultRef = useRef('');
+  // Auto-print ASIN stickers on save. Initialized false and hydrated from
+  // localStorage in an effect (avoids an SSR hydration mismatch). Printed
+  // SKUs are tracked per screen session so a re-save never burns a second
+  // sticker; the per-card print icon stays the reprint path.
+  const [autoPrintLabels, setAutoPrintLabels] = useState(false);
+  const autoPrintedSkusRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    setAutoPrintLabels(stickyDefault(STICKY_AUTOPRINT_KEY, '0') === '1');
+  }, []);
+  function toggleAutoPrintLabels() {
+    setAutoPrintLabels(prev => {
+      rememberStickyDefault(STICKY_AUTOPRINT_KEY, prev ? '0' : '1');
+      return !prev;
+    });
+  }
   const [savingAll, setSavingAll]   = useState(false);
   const [focusQtySku, setFocusQtySku] = useState<string | null>(null);
   const [printAllMsg, setPrintAllMsg] = useState<string | null>(null);
@@ -1610,14 +1973,36 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
     return () => window.removeEventListener('keydown', onKey);
   }, [detailDrawer]);
 
+  // Scanner race protection: a barcode scanner sends Enter in the same
+  // instant as the last character, before the debounced search returns — so
+  // Enter must never act on results from a PREVIOUS query (that silently
+  // +1'd the prior item). Track which query the results belong to, and let a
+  // premature Enter become a pending action that fires when results land.
+  const resultsQueryRef = useRef('');
+  const pendingEnterRef = useRef<string | null>(null);
+  const scanReceiveRef = useRef<(r: SearchResult) => void>(() => {});
+
   // Debounced search
   const doSearch = useCallback(async (q: string) => {
-    if (q.trim().length < 2) { setResults([]); return; }
+    const trimmed = q.trim();
+    if (trimmed.length < 2) { setResults([]); resultsQueryRef.current = ''; return; }
     setSearching(true);
     try {
-      const res = await fetch(`/api/data/mfn-search?q=${encodeURIComponent(q.trim())}`);
+      const res = await fetch(`/api/data/mfn-search?q=${encodeURIComponent(trimmed)}`);
       const data = await res.json();
-      setResults(data.results || []);
+      const list = data.results || [];
+      setResults(list);
+      resultsQueryRef.current = trimmed;
+      if (pendingEnterRef.current === trimmed) {
+        pendingEnterRef.current = null;
+        if (list.length === 1) {
+          scanReceiveRef.current(list[0]);
+        } else if (list.length > 1) {
+          if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
+          setMultiMatchNote(true);
+          multiMatchTimerRef.current = setTimeout(() => setMultiMatchNote(false), 2000);
+        }
+      }
     } catch {
       setResults([]);
     } finally {
@@ -1634,12 +2019,50 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
     setBatch(prev => {
       if (prev.has(result.sku)) return prev;
       const next = new Map(prev);
-      next.set(result.sku, makeBatchItem(result));
+      next.set(result.sku, applySessionBinDefault(makeBatchItem(result)));
       return next;
     });
     setReceiveFilter('all');
     if (focusOnAdd) setFocusQtySku(result.sku);
   }
+
+  // Scan-to-receive: each scan of an item adds 1 to its received count and
+  // KEEPS THE CURSOR IN THE SEARCH BAR, so the scanner's next barcode lands
+  // here and never in a row's quantity field. The count is updated locally
+  // (no per-scan API call — that would re-run FIFO on every scan); it persists
+  // on Save like any other edit.
+  function scanReceive(result: SearchResult) {
+    setReceiveFilter('all');
+    const sku = result.sku;
+    const existing = batch.get(sku);
+    // First scan of a SKU this session counts from what's actually received;
+    // subsequent scans increment the running draft count.
+    const touched = scanTouchedRef.current.has(sku);
+    const base = touched
+      ? (parseInt(existing?.draft_qty ?? '0', 10) || 0)
+      : (existing?.quantity_received ?? 0);
+    const nextQty = base + 1;
+    scanTouchedRef.current.add(sku);
+
+    if (existing) {
+      updateBatchItem(sku, { draft_qty: String(nextQty), save_state: 'idle' });
+    } else {
+      const seeded: BatchItem = applySessionBinDefault({ ...makeBatchItem(result), draft_qty: String(nextQty), save_state: 'idle' });
+      setBatch(prev => {
+        if (prev.has(sku)) return prev;
+        const next = new Map(prev);
+        next.set(sku, seeded);
+        return next;
+      });
+    }
+
+    setQuery('');
+    setResults([]);
+    resultsQueryRef.current = '';
+    // Keep scanning anchored to the search bar.
+    searchInputRef.current?.focus();
+  }
+  scanReceiveRef.current = scanReceive;
 
   function updateBatchItem(sku: string, updates: Partial<BatchItem>) {
     setBatch(prev => {
@@ -1647,6 +2070,45 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
       if (!item) return prev;
       const next = new Map(prev);
       next.set(sku, { ...item, ...updates });
+      return next;
+    });
+  }
+
+  function applySessionBinDefault(item: BatchItem): BatchItem {
+    const sessionBinDefault = sessionBinDefaultRef.current;
+    if (!sessionBinDefault) return item;
+    if (item.draft_bin.trim() || (item.bin_location ?? '').trim()) return item;
+    return { ...item, draft_bin: sessionBinDefault };
+  }
+
+  function applySuccessfulSaveMirror(sku: string, mirror: Partial<BatchItem>, savedBin: string) {
+    // Read + advance the ref atomically at completion time: rows still holding
+    // this value were auto-painted by an earlier save and follow the new bin.
+    const previousBinDefault = sessionBinDefaultRef.current;
+    if (savedBin) sessionBinDefaultRef.current = savedBin;
+    setBatch(prev => {
+      const current = prev.get(sku);
+      if (!current) return prev;
+      const next = new Map(prev);
+      next.set(sku, { ...current, ...mirror });
+      if (savedBin) {
+        for (const [otherSku, other] of next) {
+          if (otherSku === sku) continue;
+          // Skip saved AND in-flight items: a parallel Save All must not
+          // paint a bin onto a row whose PATCH already left without one.
+          if (other.save_state === 'saved' || other.save_state === 'saving') continue;
+          if ((other.bin_location ?? '').trim()) continue;
+          const otherBin = other.draft_bin.trim();
+          // Repaint rows that are empty OR still carry the previous sticky
+          // default (i.e. were auto-painted, not hand-edited). A bin the
+          // operator typed themselves (≠ previous default) is never touched —
+          // so moving to a new shelf mid-batch updates the whole queue, but
+          // deliberate per-item bins survive.
+          if (otherBin && otherBin !== previousBinDefault) continue;
+          if (otherBin === savedBin) continue;
+          next.set(otherSku, { ...other, draft_bin: savedBin });
+        }
+      }
       return next;
     });
   }
@@ -1659,9 +2121,70 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
     });
   }
 
+  function receiveChoiceError(item: BatchItem): string | null {
+    const candidates = openIncomingCandidates(item);
+    if (candidates.length === 0) return null;
+    return item.incoming_receive_choice == null
+      ? 'Choose an open buy-sheet order to link, or choose receive as new lot.'
+      : null;
+  }
+
+  async function reconcileExistingLotFromChoice(item: BatchItem, qtyNum: number): Promise<{ ok: boolean; warning?: string; error?: string }> {
+    if (item.il_id == null) return { ok: false, error: 'Save this item before reconciling an incoming order' };
+    const candidate = selectedIncomingCandidate(item);
+    if (!candidate) return { ok: true };
+    if (!Number.isInteger(qtyNum) || qtyNum <= 0) {
+      return { ok: false, error: 'Qty received must be a positive whole number when linking an incoming order' };
+    }
+    const receiptKey = mfnReceiptKey(item, candidate, qtyNum, batchId);
+    const res = await fetch(`/api/incoming/${candidate.id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'reconcile',
+        receiptKey,
+        expectedQuantityReceived: candidate.quantity_received,
+        inventoryLedgerId: item.il_id,
+        quantity: qtyNum,
+        confirmMismatch: true,
+      }),
+    });
+    const data = await res.json().catch(() => ({} as Record<string, unknown>));
+    if (!res.ok) {
+      return { ok: false, error: String(data.error || `Incoming reconcile failed (HTTP ${res.status})`) };
+    }
+
+    if (candidate.ordered_at) {
+      const dateRes = await fetch('/api/data/inventory-lots', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: item.il_id, datePurchased: candidate.ordered_at }),
+      });
+      if (!dateRes.ok) {
+        const text = await dateRes.text().catch(() => '');
+        let errMsg = 'Purchase date update failed';
+        try { errMsg = JSON.parse(text).error || errMsg; } catch { /* keep default */ }
+        return { ok: false, error: `${errMsg} (HTTP ${dateRes.status})` };
+      }
+    }
+
+    return {
+      ok: true,
+      warning: data.airtableSynced === false
+        ? 'Local receive saved, but Airtable write-back did not sync.'
+        : undefined,
+    };
+  }
+
   async function saveItem(sku: string) {
     const item = batch.get(sku);
     if (!item || item.il_id == null) return;
+
+    const choiceError = receiveChoiceError(item);
+    if (choiceError) {
+      updateBatchItem(sku, { save_state: 'error', save_error: choiceError });
+      return;
+    }
 
     const t0 = Date.now();
     console.log(`[saveItem] start sku=${sku} il_id=${item.il_id}`);
@@ -1700,11 +2223,20 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
         updateBatchItem(sku, { save_state: 'error', save_error: `${errMsg} (HTTP ${res.status})` });
       } else {
         console.log(`[saveItem] ok sku=${sku} elapsed=${elapsed}ms`);
+        const reconcileResult = await reconcileExistingLotFromChoice(item, qtyNum);
+        if (!reconcileResult.ok) {
+          updateBatchItem(sku, { save_state: 'error', save_error: reconcileResult.error || 'Incoming reconcile failed' });
+          return;
+        }
         // Mirror just-saved drafts back onto the local row so the
         // collapsed view and batch summary reflect the new values
         // without waiting for a refetch. Only mirror fields that were
         // actually sent (same conditionals as the PATCH body above).
-        const mirror: Partial<BatchItem> = { save_state: 'saved', save_error: null };
+        const mirror: Partial<BatchItem> = {
+          save_state: 'saved',
+          save_error: null,
+          incoming_reconcile_warning: reconcileResult.warning ?? null,
+        };
         if (Number.isFinite(qtyNum) && qtyNum >= 0) {
           mirror.quantity_received = qtyNum;
           if (qtyNum > 0) {
@@ -1713,7 +2245,8 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
             if (!item.inspected_at) mirror.inspected_at = now;
           }
         }
-        if (item.draft_bin.trim())       mirror.bin_location = item.draft_bin.trim();
+        const savedBin = item.draft_bin.trim();
+        if (savedBin)                    mirror.bin_location = savedBin;
         if (item.draft_condition.trim()) mirror.condition    = item.draft_condition.trim();
         if (Number.isFinite(priceNum) && priceNum > 0) {
           mirror.il_list_price_cents = Math.round(priceNum * 100);
@@ -1722,7 +2255,10 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
           mirror.merchant_shipping_group_name = templateStorage;
           mirror.draft_shipping_template      = templateStorage;
         }
-        updateBatchItem(sku, mirror);
+        applySuccessfulSaveMirror(sku, mirror, savedBin);
+        if (autoPrintLabels && Number.isFinite(qtyNum) && qtyNum >= 1) {
+          void autoPrintLabelForItem(item, qtyNum);
+        }
       }
     } catch (err) {
       const elapsed = Date.now() - t0;
@@ -1736,9 +2272,49 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
     }
   }
 
+  // Fire-and-forget silent sticker print after a successful save. Never
+  // affects the save result: failures only set auto_print_error on the card.
+  // Once per SKU per screen session — a failed print re-arms so the next
+  // save can retry.
+  async function autoPrintLabelForItem(item: BatchItem, copies: number) {
+    if (!item.asin) return;
+    if (autoPrintedSkusRef.current.has(item.sku)) return;
+    autoPrintedSkusRef.current.add(item.sku);
+    const spec = {
+      asin: item.asin,
+      title: item.product_name || undefined,
+      condition: item.draft_condition.trim() || item.condition || undefined,
+      bin: item.draft_bin.trim() || item.bin_location || undefined,
+      copies: Math.min(50, Math.max(1, copies)),
+    };
+    try {
+      const res = await fetch('/api/labels/print-direct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ specs: [spec] }),
+      });
+      const data = await res.json().catch(() => ({} as Record<string, unknown>));
+      if (!res.ok || data.success !== true) {
+        autoPrintedSkusRef.current.delete(item.sku);
+        updateBatchItem(item.sku, { auto_print_error: String(data.error || `HTTP ${res.status}`) });
+      } else {
+        updateBatchItem(item.sku, { auto_print_error: null });
+      }
+    } catch (err) {
+      autoPrintedSkusRef.current.delete(item.sku);
+      updateBatchItem(item.sku, { auto_print_error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
   async function createLot(sku: string) {
     const item = batch.get(sku);
     if (!item || item.il_id != null) return;
+
+    const choiceError = receiveChoiceError(item);
+    if (choiceError) {
+      updateBatchItem(sku, { create_lot_state: 'error', create_lot_error: choiceError });
+      return;
+    }
 
     const t0 = Date.now();
     console.log(`[createLot] start sku=${sku} asin=${item.asin}`);
@@ -1753,6 +2329,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
     const qtyNum      = parseInt(item.draft_qty, 10);
     const buyNum      = parseFloat(item.draft_buy_price);
     const priceNum    = parseFloat(item.draft_list_price);
+    const incomingCandidate = selectedIncomingCandidate(item);
 
     const body: Record<string, unknown> = {
       sku,
@@ -1768,6 +2345,12 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
     if (batchId != null && batchId > 0)            body.batchId        = batchId;
     const templateStorageLot = storageShippingTemplate(item.draft_shipping_template.trim(), amazonTemplates);
     if (templateStorageLot)                        body.merchantShippingGroupName = templateStorageLot;
+    if (incomingCandidate) {
+      const receiptQty = Number.isFinite(qtyNum) && qtyNum > 0 ? qtyNum : 1;
+      body.incomingPurchaseId = incomingCandidate.id;
+      body.expectedQuantityReceived = incomingCandidate.quantity_received;
+      body.receiptKey = mfnReceiptKey(item, incomingCandidate, receiptQty, batchId);
+    }
 
     try {
       const res = await fetch('/api/data/inventory-lots/create-mfn-local-lot', {
@@ -1791,6 +2374,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
       }
       console.log(`[createLot] ok sku=${sku} elapsed=${elapsed}ms existingLotUsed=${d.existingLotUsed}`);
       const lot = d.lot as Record<string, unknown>;
+      const incomingReconcile = d.incomingReconcile as Record<string, unknown> | null | undefined;
       updateBatchItem(sku, {
         il_id:                        Number(lot.id),
         buy_price:                    lot.buy_price != null ? Number(lot.buy_price) : item.buy_price,
@@ -1805,7 +2389,14 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
         create_lot_state:             'idle',
         create_lot_error:             null,
         save_state:                   'saved',
+        incoming_reconcile_warning:   incomingReconcile?.airtableSynced === false
+          ? 'Local receive saved, but Airtable write-back did not sync.'
+          : null,
       });
+      // createLot receives units too (markReceived) — same auto-print rules.
+      if (autoPrintLabels && Number.isFinite(qtyNum) && qtyNum >= 1) {
+        void autoPrintLabelForItem(item, qtyNum);
+      }
     } catch (err) {
       const elapsed = Date.now() - t0;
       const msg = err instanceof Error ? err.message : String(err);
@@ -1960,7 +2551,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
       }
       console.log(`[previewAndPush] ok elapsed=${elapsed}ms rows=${(data.rows ?? []).length}`);
       setPreviewRows(data.rows || []);
-      setPreviewTemplate(data.shippingTemplate || '');
+      setPreviewTemplate(data.rows?.find((row: ActivationPreviewRow) => row.proposed_shipping_template)?.proposed_shipping_template || data.shippingTemplate || '');
       setPreviewOpen(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -2017,6 +2608,20 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
         </div>
         {batchArray.length > 0 && (
           <div className="flex items-center gap-1.5 shrink-0 ml-4">
+            {!locked && (
+              <button
+                onClick={toggleAutoPrintLabels}
+                title="When on, each saved item silently prints its ASIN stickers (one per unit) to the label printer. Once per item per session — the card's print icon reprints."
+                className={`flex items-center gap-1.5 h-8 px-3 rounded-md border text-xs transition-colors ${
+                  autoPrintLabels
+                    ? 'border-amber-500/50 bg-amber-500/10 text-amber-300 font-medium'
+                    : 'border-border-subtle text-text-tertiary hover:bg-bg-hover hover:text-text-primary'
+                }`}
+              >
+                <Printer size={13} />
+                Auto-print {autoPrintLabels ? 'ON' : 'off'}
+              </button>
+            )}
             {savedCount > 0 && (
               <button onClick={printAll} className="flex items-center gap-1.5 h-8 px-3 rounded-md border border-border-subtle text-xs text-text-tertiary hover:bg-bg-hover hover:text-text-primary transition-colors">
                 <Printer size={13} />Print All ({savedCount})
@@ -2073,6 +2678,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
             onFocus={() => setSearchOpen(true)}
             onChange={e => {
               setQuery(e.target.value);
+              pendingEnterRef.current = null;
               setSearchOpen(true);
               if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
               setMultiMatchNote(false);
@@ -2080,6 +2686,14 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
             onKeyDown={e => {
               if (e.key !== 'Enter') return;
               e.preventDefault();
+              const entered = query.trim();
+              if (entered.length >= 2 && (searching || resultsQueryRef.current !== entered)) {
+                // Results are stale or still loading (scanner Enter beats the
+                // debounce) — act when THIS query's results arrive.
+                pendingEnterRef.current = entered;
+                doSearch(entered);
+                return;
+              }
               if (results.length > 1) {
                 if (multiMatchTimerRef.current) clearTimeout(multiMatchTimerRef.current);
                 setMultiMatchNote(true);
@@ -2087,18 +2701,10 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
                 return;
               }
               if (results.length !== 1) return;
-              const sole = results[0];
-              if (batch.has(sole.sku)) {
-                // Clear any active filter so the row is visible before focus fires.
-                setReceiveFilter('all');
-                // Both expanded and saved/collapsed: setFocusQtySku drives focus.
-                // Expanded cards use qtyRef; saved cards use InlineQtyEdit forceOpen.
-                setFocusQtySku(sole.sku);
-              } else {
-                addToBatch(sole, true);
-              }
-              setQuery('');
-              setResults([]);
+              // Scan-to-receive: +1 to the matched item and keep the cursor in
+              // the search bar so the next scan is captured here (not in a
+              // row's quantity field).
+              scanReceive(results[0]);
             }}
             placeholder="Scan barcode, ASIN, MSKU, or title…"
             className="w-full h-11 pl-9 pr-9 bg-slate-800 border border-border-default rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus:border-blue-500 focus:outline-none"
@@ -2343,6 +2949,7 @@ export default function MfnBatchReceiveWorkflow({ batchId = null, locked = false
         <PreviewModal
           rows={previewRows}
           shippingTemplate={previewTemplate}
+          shippingTemplates={amazonTemplates ?? []}
           onClose={() => setPreviewOpen(false)}
           onPushComplete={() => { setPreviewOpen(false); }}
           onAllEligibleAccepted={

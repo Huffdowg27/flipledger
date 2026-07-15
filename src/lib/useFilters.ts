@@ -12,16 +12,42 @@ export function useFilters(defaultPreset: string = '30d') {
   const router = useRouter();
   const pathname = usePathname();
 
+  type InitialFilters = {
+    preset: string;
+    startDate: string;
+    endDate: string;
+    marketplace: string;
+    dateBasis: string;
+    channel: 'fba' | 'mfn' | null;
+    localDays: boolean;
+    salesMetric: 'orderTotal' | null;
+  };
+
   // Read initial values from URL on mount (client-side only)
-  const getInitialParams = () => {
-    if (typeof window === 'undefined') return { preset: defaultPreset, startDate: '', endDate: '', marketplace: 'all', dateBasis: 'posted' };
+  const getInitialParams = (): InitialFilters => {
+    if (typeof window === 'undefined') {
+      return {
+        preset: defaultPreset,
+        startDate: '',
+        endDate: '',
+        marketplace: 'all',
+        dateBasis: 'posted',
+        channel: null as 'fba' | 'mfn' | null,
+        localDays: false,
+        salesMetric: null as 'orderTotal' | null,
+      };
+    }
     const params = new URLSearchParams(window.location.search);
+    const rawChannel = params.get('channel');
     return {
       preset: params.get('preset') || defaultPreset,
       startDate: params.get('startDate') || '',
       endDate: params.get('endDate') || '',
       marketplace: params.get('marketplace') || 'all',
       dateBasis: params.get('dateBasis') || 'posted',
+      channel: rawChannel === 'fba' || rawChannel === 'mfn' ? rawChannel : null,
+      localDays: params.get('localDays') === '1',
+      salesMetric: params.get('salesMetric') === 'orderTotal' ? 'orderTotal' as const : null,
     };
   };
 
@@ -31,6 +57,9 @@ export function useFilters(defaultPreset: string = '30d') {
   const initialEndDate = initial.endDate || '';
   const initialMarketplace = initial.marketplace;
   const initialDateBasis = initial.dateBasis;
+  const channel = initial.channel;
+  const localDays = initial.localDays;
+  const salesMetric = initial.salesMetric;
 
   const [marketplace, setMarketplaceState] = useState(initialMarketplace);
   const [dateBasis, setDateBasisState] = useState(initialDateBasis);
@@ -53,8 +82,11 @@ export function useFilters(defaultPreset: string = '30d') {
     if (newDateBasis !== 'posted') {
       params.set('dateBasis', newDateBasis);
     }
+    if (channel) params.set('channel', channel);
+    if (localDays) params.set('localDays', '1');
+    if (salesMetric) params.set('salesMetric', salesMetric);
     router.replace(`${pathname}?${params.toString()}`, { scroll: false });
-  }, [router, pathname]);
+  }, [router, pathname, channel, localDays, salesMetric]);
 
   const setDateRange = useCallback((range: DateRange) => {
     setDateRangeState(range);
@@ -74,6 +106,8 @@ export function useFilters(defaultPreset: string = '30d') {
   // Build query params for fetch URLs
   const marketplaceParam = marketplace !== 'all' ? `&marketplace=${marketplace}` : '';
   const dateBasisParam = dateBasis !== 'posted' ? `&dateBasis=${dateBasis}` : '';
+  const channelParam = channel ? `&channel=${channel}` : '';
+  const localDaysParam = localDays ? '&localDays=1' : '';
 
   return {
     dateRange,
@@ -84,5 +118,10 @@ export function useFilters(defaultPreset: string = '30d') {
     dateBasis,
     setDateBasis,
     dateBasisParam,
+    channel,
+    channelParam,
+    localDays,
+    localDaysParam,
+    salesMetric,
   };
 }

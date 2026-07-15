@@ -1,19 +1,12 @@
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import * as schema from './schema';
-import path from 'path';
-import fs from 'fs';
+import { openFlipLedgerDb } from './sqlite';
+import { migrateRemovalIdentities } from './removal-events';
+import { removeAmazonGradedGhostLots } from './graded-ghost-lots';
+import { failInterruptedSyncLogs } from './sync-log-reaper';
 
-const DB_PATH = path.join(process.cwd(), 'data', 'flipledger.db');
-
-// Ensure the data dir exists before opening the DB. A fresh clone has no
-// data/ (it's gitignored), so without this better-sqlite3 can't create the
-// file and the app crashes on first boot. Idempotent (no-op if it exists).
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-
-const sqlite = new Database(DB_PATH);
-sqlite.pragma('journal_mode = WAL');
-sqlite.pragma('foreign_keys = ON');
+const sqlite: Database.Database = openFlipLedgerDb();
 
 export const db = drizzle(sqlite, { schema });
 
@@ -184,6 +177,9 @@ export function initializeDatabase() {
       refund_amount INTEGER NOT NULL,
       reason TEXT,
       item_returned INTEGER DEFAULT 0,
+      inventory_restored_quantity INTEGER NOT NULL DEFAULT 0,
+      inventory_restore_error TEXT,
+      inventory_restore_checked_at TEXT,
       fee_clawback INTEGER DEFAULT 0,
       marketplace TEXT DEFAULT 'amazon',
       created_at TEXT NOT NULL
@@ -265,10 +261,48 @@ export function initializeDatabase() {
       resolution TEXT,
       refund_cents INTEGER,
       resolved_at TEXT,
+      lot_shrunk INTEGER NOT NULL DEFAULT 0,
+      removed_unit_cost_cents INTEGER,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_receiving_issues_status ON receiving_issues(status);
+
+    -- Immutable identity for each receive action. Receipt keys make retries
+    -- replay-safe; expected-state checks prevent distinct keys from applying
+    -- the same purchase version twice.
+    CREATE TABLE IF NOT EXISTS incoming_receipt_allocations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      receipt_key TEXT NOT NULL UNIQUE,
+      payload_hash TEXT NOT NULL,
+      incoming_purchase_id INTEGER NOT NULL,
+      inventory_ledger_id INTEGER,
+      receiving_issue_id INTEGER,
+      quantity_good INTEGER NOT NULL CHECK(quantity_good >= 0),
+      quantity_issue INTEGER NOT NULL CHECK(quantity_issue >= 0),
+      sku TEXT,
+      source TEXT NOT NULL CHECK(source IN ('receive', 'operator_reconciliation')),
+      result_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      CHECK(quantity_good + quantity_issue > 0),
+      FOREIGN KEY (incoming_purchase_id) REFERENCES incoming_purchases(id),
+      FOREIGN KEY (inventory_ledger_id) REFERENCES inventory_ledger(id),
+      FOREIGN KEY (receiving_issue_id) REFERENCES receiving_issues(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_receipt_allocations_purchase
+      ON incoming_receipt_allocations(incoming_purchase_id);
+    CREATE INDEX IF NOT EXISTS idx_receipt_allocations_lot
+      ON incoming_receipt_allocations(inventory_ledger_id);
+    CREATE TRIGGER IF NOT EXISTS incoming_receipt_allocations_no_update
+      BEFORE UPDATE ON incoming_receipt_allocations
+      BEGIN
+        SELECT RAISE(ABORT, 'incoming receipt allocations are immutable');
+      END;
+    CREATE TRIGGER IF NOT EXISTS incoming_receipt_allocations_no_delete
+      BEFORE DELETE ON incoming_receipt_allocations
+      BEGIN
+        SELECT RAISE(ABORT, 'incoming receipt allocations are immutable');
+      END;
 
     CREATE TABLE IF NOT EXISTS inbound_shipments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -615,6 +649,34 @@ export function initializeDatabase() {
     CREATE INDEX IF NOT EXISTS idx_listing_batch_items_batch ON listing_batch_items(batch_id);
     CREATE INDEX IF NOT EXISTS idx_listing_batches_status ON listing_batches(status);
 
+    -- One immutable receipt per normalized buy-list payload and batch. Import
+    -- created lots/items point back to this identity.
+    CREATE TABLE IF NOT EXISTS listing_batch_imports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      batch_id INTEGER NOT NULL,
+      content_hash TEXT NOT NULL,
+      rows_imported INTEGER NOT NULL,
+      total_units INTEGER NOT NULL,
+      total_cost_cents INTEGER NOT NULL,
+      total_list_value_cents INTEGER NOT NULL,
+      response_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (batch_id) REFERENCES listing_batches(id) ON DELETE RESTRICT,
+      UNIQUE(batch_id, content_hash)
+    );
+    CREATE INDEX IF NOT EXISTS idx_listing_batch_imports_batch
+      ON listing_batch_imports(batch_id);
+    CREATE TRIGGER IF NOT EXISTS listing_batch_imports_no_update
+      BEFORE UPDATE ON listing_batch_imports
+      BEGIN
+        SELECT RAISE(ABORT, 'listing batch imports are immutable');
+      END;
+    CREATE TRIGGER IF NOT EXISTS listing_batch_imports_no_delete
+      BEFORE DELETE ON listing_batch_imports
+      BEGIN
+        SELECT RAISE(ABORT, 'listing batch imports are immutable');
+      END;
+
     -- Phase 3: Boxes the seller has actually packed for an FBA batch.
     -- The user enters dimensions/weight here and assigns items to each box.
     -- This is what gets sent to setPackingInformation on the SP-API.
@@ -711,7 +773,43 @@ export function initializeDatabase() {
     );
     CREATE INDEX IF NOT EXISTS idx_merchant_listings_sku ON merchant_listings(sku);
     CREATE INDEX IF NOT EXISTS idx_merchant_listings_status ON merchant_listings(status);
+
+    -- Synced-era (2026+) disposition ledger — twin of historical_dispositions,
+    -- fed from InventoryLab's Disposition Management export. Drives the COGS
+    -- reversal / inventory write-off split that matches IL:
+    --   buy_cost_adj > 0  → unit restocked (MFN Return sellable) → reverses COGS
+    --   buy_cost_adj < 0  → unit lost (Removal/Liquidate/Disposal unsellable) → write-off
+    --   buy_cost_adj = 0  → no inventory value change (sellable removal, unsellable
+    --                       MFN return, or amzn.gr items IL has no cost for)
+    -- buy_cost_adj is signed integer CENTS. The historical (<2026) equivalent
+    -- lives in historical_dispositions; the P&L cutover is 2026-01-01.
+    CREATE TABLE IF NOT EXISTS dispositions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      disp_date TEXT NOT NULL,            -- YYYY-MM-DD (from the export's timestamp)
+      type TEXT NOT NULL,                 -- Removal | MFN Return | Liquidate | Disposal
+      ref_id TEXT,                        -- IL "ID" column (order id or internal ref)
+      title TEXT,
+      msku TEXT,
+      asin TEXT,
+      az_disposition TEXT,                -- "YES" | "n/a"
+      sellable_qty INTEGER NOT NULL DEFAULT 0,
+      unsellable_qty INTEGER NOT NULL DEFAULT 0,
+      buy_cost_adj INTEGER NOT NULL DEFAULT 0,  -- signed cents (see above)
+      edited_at TEXT,
+      source_file TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      -- One logical disposition row per (ref_id, msku, type). Re-importing the
+      -- same export updates rather than duplicates.
+      UNIQUE(ref_id, msku, type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_dispositions_date ON dispositions(disp_date);
+    CREATE INDEX IF NOT EXISTS idx_dispositions_msku ON dispositions(msku);
   `);
+
+  // RemovalShipmentEvent pages overlap heavily across sync windows. Collapse
+  // historical replays before creating the source-identity index that makes
+  // future INSERT OR IGNORE writes genuinely idempotent.
+  migrateRemovalIdentities(sqlite);
 
   // Column migrations — SQLite has no ALTER TABLE ... ADD COLUMN IF NOT EXISTS,
   // so we use try/catch. Safe to run on every startup.
@@ -722,6 +820,7 @@ export function initializeDatabase() {
     `ALTER TABLE listing_batch_items ADD COLUMN listing_source TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN amazon_inventory_status TEXT`,
     `ALTER TABLE listing_batch_items ADD COLUMN inventory_ledger_id INTEGER`,
+    `ALTER TABLE listing_batch_items ADD COLUMN listing_batch_import_id INTEGER`,
     // 1 when the item add INSERTed its linked lot (CREATE_NEW always; the
     // REPLENISH_EXISTING restock fallback when no open lot existed). DELETE
     // uses this — not listing_mode — to decide whether to roll the lot back.
@@ -729,6 +828,16 @@ export function initializeDatabase() {
     // Anticipated economics from the Airtable purchase row (per unit).
     `ALTER TABLE incoming_purchases ADD COLUMN sales_price_cents INTEGER`,
     `ALTER TABLE incoming_purchases ADD COLUMN profit_cents INTEGER`,
+    `ALTER TABLE incoming_purchases ADD COLUMN receipt_allocation_baseline INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE incoming_purchases ADD COLUMN receipt_identity_started_at TEXT`,
+    // Marks issues whose report REMOVED basis from an existing lot (MFN batch
+    // "report issue" path). /incoming-originated issues never shrink a lot, so
+    // this stays 0 for them. Drives resolution cost preference and the
+    // buy-list conservation carve-out.
+    `ALTER TABLE receiving_issues ADD COLUMN lot_shrunk INTEGER NOT NULL DEFAULT 0`,
+    // Snapshot of the per-unit basis a lot-shrunk issue removed, so a later
+    // buy_price edit can't change what resolution restores/writes off.
+    `ALTER TABLE receiving_issues ADD COLUMN removed_unit_cost_cents INTEGER`,
     // MFN fulfillment deadline from the Orders API (LatestShipDate) — the date
     // by which a merchant-fulfilled order must ship to stay on time. Shown on
     // /mfn/orders so the operator sees "ship by" alongside the service level.
@@ -745,10 +854,17 @@ export function initializeDatabase() {
     // for Merchant Fulfilled batches. FBA batches use listing_batch_items instead; this
     // column is only populated by /api/data/inventory-lots/create-mfn-local-lot.
     `ALTER TABLE inventory_ledger ADD COLUMN batch_id INTEGER`,
+    `ALTER TABLE inventory_ledger ADD COLUMN listing_batch_import_id INTEGER`,
     // Batch lifecycle: closed_at stamps when a batch is finalized (all eligible
     // SKUs pushed/accepted, or manually closed) so it surfaces in History.
     `ALTER TABLE listing_batches ADD COLUMN closed_at TEXT`,
     `CREATE INDEX IF NOT EXISTS idx_inventory_ledger_batch ON inventory_ledger(batch_id)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_inventory_ledger_import_sku
+       ON inventory_ledger(listing_batch_import_id, sku)
+       WHERE listing_batch_import_id IS NOT NULL`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_listing_batch_items_import_sku
+       ON listing_batch_items(listing_batch_import_id, sku)
+       WHERE listing_batch_import_id IS NOT NULL`,
     `ALTER TABLE orders ADD COLUMN order_total INTEGER DEFAULT 0`,
     `ALTER TABLE orders ADD COLUMN order_total_currency TEXT`,
     // Ship-service level from Amazon Orders API (ShipmentServiceLevelCategory):
@@ -797,6 +913,12 @@ export function initializeDatabase() {
     // worse, the dedup-critical unique indexes were absent — syncs would
     // re-duplicate refunds/products/reimbursements on a new machine).
     `ALTER TABLE refunds ADD COLUMN disposition TEXT`,
+    // `item_returned` is Amazon's confirmed SELLABLE-return signal and drives
+    // the accounting reversal. These separate fields record whether FIFO could
+    // actually put every confirmed unit back into recorded inventory.
+    `ALTER TABLE refunds ADD COLUMN inventory_restored_quantity INTEGER NOT NULL DEFAULT 0`,
+    `ALTER TABLE refunds ADD COLUMN inventory_restore_error TEXT`,
+    `ALTER TABLE refunds ADD COLUMN inventory_restore_checked_at TEXT`,
     `ALTER TABLE listing_batches ADD COLUMN transportation_operation_id TEXT`,
     `ALTER TABLE listing_batches ADD COLUMN transportation_option_id TEXT`,
     `ALTER TABLE listing_batches ADD COLUMN transportation_status TEXT`,
@@ -809,7 +931,7 @@ export function initializeDatabase() {
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_products_asin_unique ON products(asin)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_reimbursements_unique ON reimbursements(
        marketplace, COALESCE(reason,''), date(reimbursement_date), amount, COALESCE(sku,''), COALESCE(asin,''))`,
-    // Historical era (pre sync-coverage, < 2024-07-01): settlement truth imported
+    // Historical accounting era (< 2026-01-01): settlement truth imported
     // from Amazon Date Range Transaction Reports + InventoryLab exports by
     // scripts/import-history.js. The P&L reads these for pre-cutover dates, so
     // the tables must exist (empty is fine) on fresh installs.
@@ -838,5 +960,19 @@ export function initializeDatabase() {
   ];
   for (const sql of colMigrations) {
     try { sqlite.prepare(sql).run(); } catch { /* already exists */ }
+  }
+
+  // Historical imports and the former SKU auto-lot path created cost lots for
+  // amzn.gr.* resales. Their basis was already expensed on the original sale,
+  // so keep the ledger aligned with the FIFO/valuation exclusion. Run after
+  // column repair so legacy databases have every reference column we inspect.
+  removeAmazonGradedGhostLots(sqlite);
+
+  const interruptedSyncs = failInterruptedSyncLogs(sqlite);
+  if (interruptedSyncs > 0) {
+    console.warn(JSON.stringify({
+      event: 'interrupted_sync_logs_reaped',
+      count: interruptedSyncs,
+    }));
   }
 }

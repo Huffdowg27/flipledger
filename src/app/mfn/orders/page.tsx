@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { Search, RefreshCw, Package, ExternalLink, ImageOff, Copy, X } from 'lucide-react';
+import { Search, RefreshCw, Package, ImageOff, Printer, X } from 'lucide-react';
 import StatusBadge, { StatusBadgeTone } from '@/components/ui/StatusBadge';
+import { IdentifierChip, OrderReference } from '@/components/ui/IdentifierLinks';
+import { PrintLabelIcon } from '@/components/ui/PrintLabel';
 
 interface MfnOrderRow {
   orderId: string;
@@ -64,57 +66,10 @@ function shipLevelBadge(level: string | null | undefined): { label: string; tone
   }
 }
 
-function amazonOrderUrl(orderId: string): string {
-  return `https://sellercentral.amazon.com/orders-v3/order/${encodeURIComponent(orderId)}`;
-}
-
-// Deep-link an MSKU to its listing in Seller Central inventory. (matches /analyze/merchant-inventory)
-function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
-  const value = (sku ?? '').trim();
-  return value
-    ? `https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${encodeURIComponent(value)}`
-    : null;
-}
-
-// Link an ASIN to its public Amazon product page.
-function amazonAsinUrl(asin: string | null | undefined): string | null {
-  const value = (asin ?? '').trim();
-  return value ? `https://www.amazon.com/dp/${encodeURIComponent(value)}` : null;
-}
-
 // Only surface a real barcode (8-14 digits); the backfill stores '-' for "checked, none".
 function cleanUpc(upc: string | null | undefined): string | null {
   const value = (upc ?? '').trim();
   return /^\d{8,14}$/.test(value) ? value : null;
-}
-
-// Labeled identifier with copy button. When `href` is set, the value links out (new tab).
-function IdentifierChip({ label, value, href }: { label: string; value: string | null | undefined; href?: string | null }) {
-  if (!value) return null;
-  return (
-    <div className="flex items-center gap-1 min-w-0">
-      <span className="text-text-tertiary/60 uppercase tracking-wide shrink-0">{label}</span>
-      {href
-        ? <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={e => e.stopPropagation()}
-            className="text-accent truncate hover:underline"
-            title={`Open ${label}: ${value}`}
-          >
-            {value}
-          </a>
-        : <span className="text-text-secondary truncate" title={value}>{value}</span>}
-      <button
-        onClick={e => { e.stopPropagation(); navigator.clipboard.writeText(value); }}
-        title={`Copy ${label}: ${value}`}
-        className="shrink-0 text-text-tertiary/40 hover:text-text-tertiary transition-colors"
-      >
-        <Copy size={10} />
-      </button>
-    </div>
-  );
 }
 
 /** Operator-friendly age: "Today", "1 day", "5 days". */
@@ -156,6 +111,8 @@ export default function MfnOrdersPage() {
   const [counts, setCounts] = useState<Counts>({ all: 0, amazon: 0, walmart: 0, ebay: 0, shopify: 0 });
   const [statusCounts, setStatusCounts] = useState<StatusCounts>({ awaiting: 0, pending: 0, shipped: 0, canceled: 0, all: 0 });
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [status, setStatus] = useState<StatusFilter>('awaiting');
   const [search, setSearch] = useState('');
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
@@ -178,6 +135,33 @@ export default function MfnOrdersPage() {
     } finally {
       setLoading(false);
     }
+  }
+
+  // Refresh = ask Amazon for live state (new orders + reconcile shipped/canceled),
+  // then reload the list. Falls back to a plain reload if the sync call fails —
+  // but a failed live sync must never masquerade as fresh data, so any errors
+  // from the sync are surfaced in a banner above the list.
+  async function refresh() {
+    setSyncing(true);
+    setSyncWarning(null);
+    try {
+      const res = await fetch('/api/sync/mfn-refresh', { method: 'POST' });
+      const data = await res.json().catch(() => null);
+      const errors: string[] = Array.isArray(data?.errors) ? data.errors : [];
+      if (!res.ok) {
+        setSyncWarning('Live Amazon refresh failed — showing local data, which may be stale.');
+      } else if (errors.length > 0) {
+        setSyncWarning(
+          `Live Amazon refresh had ${errors.length === 1 ? 'an error' : `${errors.length} errors`} — some orders may be stale. First: ${errors[0]}`
+        );
+      }
+    } catch {
+      /* sync unreachable — still reload local data below so the button never dead-ends */
+      setSyncWarning('Live Amazon refresh failed — showing local data, which may be stale.');
+    } finally {
+      setSyncing(false);
+    }
+    await load();
   }
 
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [status]);
@@ -230,14 +214,37 @@ export default function MfnOrdersPage() {
             <h1 className="text-lg font-semibold text-text-primary">MFN Orders</h1>
             <p className="text-sm text-text-tertiary">Merchant-fulfilled orders awaiting shipment</p>
           </div>
-          <button
-            onClick={load}
-            className="flex items-center gap-2 rounded-md border border-border-default bg-bg-surface px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-elevated"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <a
+              href="/labels?mode=warehouse"
+              className="flex items-center gap-2 rounded-md border border-border-default bg-bg-surface px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-elevated"
+            >
+              <Printer size={14} />
+              Print labels
+            </a>
+            <button
+              onClick={refresh}
+              disabled={syncing || loading}
+              className="flex items-center gap-2 rounded-md border border-border-default bg-bg-surface px-3 py-1.5 text-sm text-text-secondary hover:bg-bg-elevated disabled:opacity-60"
+            >
+              <RefreshCw size={14} className={syncing || loading ? 'animate-spin' : ''} />
+              {syncing ? 'Checking Amazon…' : 'Refresh'}
+            </button>
+          </div>
         </div>
+
+        {syncWarning && (
+          <div className="mb-3 flex items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm text-warning">
+            <span>{syncWarning}</span>
+            <button
+              onClick={() => setSyncWarning(null)}
+              className="shrink-0 text-warning/70 hover:text-warning"
+              aria-label="Dismiss refresh warning"
+            >
+              <X size={14} />
+            </button>
+          </div>
+        )}
 
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <div className="relative flex-1 min-w-[220px]">
@@ -331,23 +338,16 @@ export default function MfnOrdersPage() {
                     )}
                   </button>
                   <div className="min-w-0">
-                    <a
-                      href={amazonOrderUrl(o.orderId)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 font-mono text-sm font-semibold text-accent hover:underline"
-                    >
-                      #{o.orderId}
-                      <ExternalLink size={12} className="opacity-70" />
-                    </a>
+                    <OrderReference orderId={o.orderId} marketplace={o.marketplace} prefix="#" className="font-mono text-sm font-semibold" />
                     <div className="truncate text-sm text-text-primary" title={o.productName || ''}>
                       {o.productName || '—'}
                     </div>
                     <div className="mt-0.5 flex items-center gap-2 text-xs font-mono text-text-tertiary">
-                      <IdentifierChip label="MSKU" value={o.sku || o.asin} href={sellerCentralSkuUrl(o.sku || o.asin)} />
-                      <IdentifierChip label="ASIN" value={o.asin} href={amazonAsinUrl(o.asin)} />
-                      <IdentifierChip label="UPC" value={cleanUpc(o.upc)} />
+                      <IdentifierChip label="MSKU" value={o.sku || o.asin} kind="sku" />
+                      <IdentifierChip label="ASIN" value={o.asin} kind="asin" />
+                      <IdentifierChip label="UPC" value={cleanUpc(o.upc)} kind="text" />
                       {o.bin && <span className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-semibold text-accent">Bin {o.bin}</span>}
+                      <PrintLabelIcon item={{ title: o.productName, asin: o.asin, sku: o.sku, bin: o.bin }} />
                       {o.itemCount > 1 && <span className="shrink-0">· {o.itemCount} items</span>}
                     </div>
                   </div>
@@ -419,12 +419,8 @@ export default function MfnOrdersPage() {
               <div className="min-w-0">
                 <div className="text-text-primary text-base font-semibold leading-snug line-clamp-2">{lightbox.title}</div>
                 <div className="mt-1 flex gap-4 text-[11px] font-mono text-text-tertiary">
-                  {lightbox.asin && <span>ASIN {lightbox.asin}</span>}
-                  {lightbox.sku && (
-                    sellerCentralSkuUrl(lightbox.sku)
-                      ? <a href={sellerCentralSkuUrl(lightbox.sku)!} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline" title={`Open MSKU in Seller Central: ${lightbox.sku}`}>MSKU {lightbox.sku}</a>
-                      : <span>MSKU {lightbox.sku}</span>
-                  )}
+                  <IdentifierChip label="ASIN" value={lightbox.asin} kind="asin" />
+                  <IdentifierChip label="MSKU" value={lightbox.sku} kind="sku" />
                 </div>
               </div>
               <button

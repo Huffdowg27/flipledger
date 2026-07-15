@@ -15,17 +15,24 @@
  * because the batch is now in 'shipping' status.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
+import type Database from 'better-sqlite3';
 import { clearTokenCache } from '@/lib/sp-api/auth';
-import { getInboundPlan, listShipments } from '@/lib/sp-api/inboundPlansV2';
+import {
+  getInboundPlan,
+  listInboundPlanItems,
+  listInboundPlans,
+  listShipments,
+} from '@/lib/sp-api/inboundPlansV2';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import {
+  buildInboundPlanName,
+  compareInboundPlanManifest,
+  selectRecoverableInboundPlan,
+} from '@/lib/inbound-plan-recovery';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 function getAmazonCredentials(db: Database.Database): SPAPICredentials | null {
@@ -48,37 +55,87 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
 
   const db = getDb();
   let creds: SPAPICredentials | null;
-  let inboundPlanId: string;
+  let inboundPlanId: string | null;
+  let inboundPlanName: string;
+  let expectedItems: Array<{ msku: string; quantity: number }>;
   try {
     const batch = db.prepare(`
-      SELECT id, status, channel, inbound_plan_id as inboundPlanId
+      SELECT id, name, status, channel, inbound_plan_id as inboundPlanId
       FROM listing_batches WHERE id = ?
-    `).get(batchId) as { id: number; status: string; channel: string; inboundPlanId: string | null } | undefined;
+    `).get(batchId) as {
+      id: number;
+      name: string;
+      status: string;
+      channel: string;
+      inboundPlanId: string | null;
+    } | undefined;
     if (!batch) {
-      db.close();
       return NextResponse.json({ error: 'Batch not found' }, { status: 404 });
     }
     if (batch.channel !== 'FBA') {
-      db.close();
       return NextResponse.json({ error: 'Sync only applies to FBA batches' }, { status: 400 });
-    }
-    if (!batch.inboundPlanId) {
-      db.close();
-      return NextResponse.json({ error: 'Batch has no inbound plan to sync from' }, { status: 400 });
     }
     creds = getAmazonCredentials(db);
     inboundPlanId = batch.inboundPlanId;
-  } catch (e) {
+    inboundPlanName = buildInboundPlanName(batchId, batch.name);
+    expectedItems = db.prepare(`
+      SELECT sku AS msku, quantity
+      FROM listing_batch_items
+      WHERE batch_id = ?
+      ORDER BY id
+    `).all(batchId) as Array<{ msku: string; quantity: number }>;
+  } finally {
     db.close();
-    throw e;
   }
 
   if (!creds) {
-    db.close();
     return NextResponse.json({ error: 'Amazon SP-API credentials not configured' }, { status: 400 });
   }
 
   clearTokenCache();
+  let recovered = false;
+
+  if (!inboundPlanId) {
+    let recoveryMatch;
+    try {
+      recoveryMatch = selectRecoverableInboundPlan(
+        await listInboundPlans(creds, { status: 'ACTIVE' }),
+        inboundPlanName,
+      );
+    } catch (err) {
+      return NextResponse.json({
+        error: `Could not search Amazon for the missing inbound plan: ${err}`,
+      }, { status: 502 });
+    }
+
+    if (recoveryMatch.kind === 'none') {
+      return NextResponse.json({
+        error: `Amazon has no active inbound plan named "${inboundPlanName}".`,
+      }, { status: 404 });
+    }
+    if (recoveryMatch.kind === 'ambiguous') {
+      return NextResponse.json({
+        error: `Amazon has multiple active plans named "${inboundPlanName}". `
+          + 'Recovery is ambiguous and was stopped without changing FlipLedger.',
+        planIds: recoveryMatch.plans.map((plan) => plan.inboundPlanId),
+      }, { status: 409 });
+    }
+
+    inboundPlanId = recoveryMatch.plan.inboundPlanId;
+    let remoteItems;
+    try {
+      remoteItems = await listInboundPlanItems(creds, inboundPlanId);
+    } catch (err) {
+      return NextResponse.json({
+        error: `Found the Amazon plan but could not verify its contents: ${err}`,
+      }, { status: 502 });
+    }
+    const manifestCheck = compareInboundPlanManifest(expectedItems, remoteItems);
+    if (!manifestCheck.ok) {
+      return NextResponse.json({ error: manifestCheck.error }, { status: 409 });
+    }
+    recovered = true;
+  }
 
   let plan: {
     status?: string;
@@ -89,7 +146,6 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   try {
     plan = await getInboundPlan(creds, inboundPlanId);
   } catch (err) {
-    db.close();
     return NextResponse.json({ error: `getInboundPlan failed: ${err}` }, { status: 500 });
   }
 
@@ -112,7 +168,7 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
   const confirmedPlacement = (plan.placementOptions || []).some((p) => isDone(p.status));
   const confirmedPacking = (plan.packingOptions || []).some((p) => isDone(p.status));
 
-  let newStatus: string | null = null;
+  let newStatus: string | null = recovered ? 'ready' : null;
   let newPackingStatus: string | null = null;
   let newPlacementStatus: string | null = null;
 
@@ -129,23 +185,38 @@ export async function POST(_req: NextRequest, { params }: { params: Promise<{ id
     newPackingStatus = 'SUCCESS';
   }
 
-  if (newStatus) {
-    db.prepare(`
+  if (newStatus || recovered) {
+    const db2 = getDb();
+    try {
+      db2.prepare(`
       UPDATE listing_batches
       SET status = ?,
+          inbound_plan_id = COALESCE(?, inbound_plan_id),
+          inbound_operation_id = CASE WHEN ? THEN NULL ELSE inbound_operation_id END,
+          plan_status = CASE WHEN ? THEN 'SUCCESS' ELSE plan_status END,
           packing_status = COALESCE(?, packing_status),
           placement_status = COALESCE(?, placement_status),
           packing_error = NULL,
           placement_error = NULL,
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(newStatus, newPackingStatus, newPlacementStatus, batchId);
+      `).run(
+        newStatus,
+        inboundPlanId,
+        recovered ? 1 : 0,
+        recovered ? 1 : 0,
+        newPackingStatus,
+        newPlacementStatus,
+        batchId,
+      );
+    } finally {
+      db2.close();
+    }
   }
-
-  db.close();
 
   return NextResponse.json({
     success: true,
+    recovered,
     planStatus: plan.status,
     confirmedPacking,
     confirmedPlacement,

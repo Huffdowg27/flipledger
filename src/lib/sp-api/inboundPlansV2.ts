@@ -8,6 +8,7 @@
  */
 import { getAccessToken, getEndpoint, spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
+import type { InboundPlanSummary } from '../inbound-plan-recovery';
 
 export interface SourceAddress {
   name: string;
@@ -43,6 +44,71 @@ export interface CreateInboundPlanParams {
 export interface CreateInboundPlanResult {
   inboundPlanId: string;
   operationId: string;
+}
+
+/**
+ * Retrieve recent inbound plans. Amazon requires every pagination request to
+ * repeat the original filters, so the token is added to (not substituted for)
+ * the same parameter set on each page.
+ */
+export async function listInboundPlans(
+  credentials: SPAPICredentials,
+  options: {
+    status?: 'ACTIVE' | 'VOIDED' | 'SHIPPED';
+    maxPages?: number;
+  } = {},
+): Promise<InboundPlanSummary[]> {
+  const plans: InboundPlanSummary[] = [];
+  const maxPages = Math.max(1, Math.min(options.maxPages ?? 10, 20));
+  let paginationToken: string | undefined;
+
+  for (let page = 0; page < maxPages; page++) {
+    const params: Record<string, string> = {
+      pageSize: '30',
+      sortBy: 'CREATION_TIME',
+      sortOrder: 'DESC',
+    };
+    if (options.status) params.status = options.status;
+    if (paginationToken) params.paginationToken = paginationToken;
+
+    const data = await spApiRequest(
+      credentials,
+      '/inbound/fba/2024-03-20/inboundPlans',
+      params,
+    );
+    plans.push(...(Array.isArray(data?.inboundPlans) ? data.inboundPlans : []));
+
+    paginationToken = data?.pagination?.nextToken
+      || data?.pagination?.paginationToken
+      || undefined;
+    if (!paginationToken) break;
+  }
+
+  return plans;
+}
+
+export async function listInboundPlanItems(
+  credentials: SPAPICredentials,
+  inboundPlanId: string,
+): Promise<Array<{ msku: string; quantity: number }>> {
+  const items: Array<{ msku: string; quantity: number }> = [];
+  let paginationToken: string | undefined;
+
+  do {
+    const params: Record<string, string> = { pageSize: '1000' };
+    if (paginationToken) params.paginationToken = paginationToken;
+    const data = await spApiRequest(
+      credentials,
+      `/inbound/fba/2024-03-20/inboundPlans/${
+        encodeURIComponent(inboundPlanId)
+      }/items`,
+      params,
+    );
+    items.push(...(Array.isArray(data?.items) ? data.items : []));
+    paginationToken = data?.pagination?.nextToken || undefined;
+  } while (paginationToken);
+
+  return items;
 }
 
 /**
@@ -1085,26 +1151,19 @@ export async function confirmDeliveryWindowOptions(
   shipmentId: string,
   deliveryWindowOptionId: string,
 ): Promise<{ operationId: string }> {
+  // Amazon models the selected option as a path parameter, not a request body:
+  // https://developer-docs.amazon.com/sp-api/reference/confirmdeliverywindowoptions
   const endpoint = getEndpoint(credentials.marketplaceId);
   const accessToken = await getAccessToken(credentials);
-  const body = { deliveryWindowOptionId };
   const response = await fetch(
-    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/deliveryWindowOptions/confirmation`,
+    `${endpoint}/inbound/fba/2024-03-20/inboundPlans/${encodeURIComponent(inboundPlanId)}/shipments/${encodeURIComponent(shipmentId)}/deliveryWindowOptions/${encodeURIComponent(deliveryWindowOptionId)}/confirmation`,
     {
       method: 'POST',
-      headers: { 'x-amz-access-token': accessToken, 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      headers: { 'x-amz-access-token': accessToken },
     }
   );
   const text = await response.text();
   console.log('[confirmDeliveryWindowOptions]', shipmentId, deliveryWindowOptionId, response.status, text.slice(0, 500));
-  // 403 here means the account type or shipment mode doesn't require delivery
-  // window confirmation via API (common for parcel/non-LTL non-partnered accounts).
-  // Treat as a no-op: skip and proceed to confirmTransportationOptions.
-  if (response.status === 403) {
-    console.warn('[confirmDeliveryWindowOptions] 403 — skipping (not required for this account/shipment type)');
-    return { operationId: '' };
-  }
   if (!response.ok) throw new Error(`SP-API confirmDeliveryWindowOptions ${response.status}: ${text}`);
   const data = JSON.parse(text);
   return { operationId: data.operationId || '' };

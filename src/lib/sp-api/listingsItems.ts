@@ -11,6 +11,10 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { getAccessToken, getEndpoint, spApiRequest } from './auth';
 import type { SPAPICredentials } from './types';
+import {
+  isMerchantShippingGroupIssue,
+  makeTemplateRejectedIssue,
+} from '@/lib/amazonShippingTemplates';
 
 function getDb() {
   const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
@@ -273,6 +277,8 @@ export interface CreateListingParams {
   listPriceCents: number;
   channel: 'FBA' | 'MFN';
   productType: string;         // from getProductType
+  merchantShippingGroupName?: string | null;  // display label — messages/logs only
+  merchantShippingGroupValue?: string | null; // the ENUM KEY Amazon requires; falls back to name
 }
 
 export interface CreateListingResult {
@@ -309,6 +315,8 @@ export async function createOrUpdateListing(
   // verified by diff'ing a working SC-fixed listing vs a stuck FlipLedger
   // submission: the only meaningful difference was start_at/end_at.
   const nowIso = new Date().toISOString();
+
+  const shippingTemplateName = params.merchantShippingGroupName?.trim() || null;
 
   const attributes: any = {
     condition_type: [
@@ -383,10 +391,25 @@ export async function createOrUpdateListing(
     ],
   };
 
-  const body = {
-    productType: params.productType,
-    requirements: 'LISTING_OFFER_ONLY',
-    attributes,
+  if (params.channel === 'MFN' && shippingTemplateName) {
+    // Amazon requires the enum KEY (id) here, not the display name (error 90244).
+    const shippingTemplateValue = params.merchantShippingGroupValue?.trim() || shippingTemplateName;
+    attributes.merchant_shipping_group = [
+      { value: shippingTemplateValue, marketplace_id: credentials.marketplaceId },
+    ];
+  }
+
+  const buildBody = (includeTemplate: boolean) => {
+    const bodyAttributes = includeTemplate
+      ? attributes
+      : Object.fromEntries(
+          Object.entries(attributes).filter(([key]) => key !== 'merchant_shipping_group')
+        );
+    return {
+      productType: params.productType,
+      requirements: 'LISTING_OFFER_ONLY',
+      attributes: bodyAttributes,
+    };
   };
 
   const url = new URL(
@@ -394,26 +417,61 @@ export async function createOrUpdateListing(
   );
   url.searchParams.set('marketplaceIds', credentials.marketplaceId);
 
-  const response = await fetch(url.toString(), {
-    method: 'PUT',
-    headers: {
-      'x-amz-access-token': accessToken,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  async function send(includeTemplate: boolean): Promise<CreateListingResult> {
+    const response = await fetch(url.toString(), {
+      method: 'PUT',
+      headers: {
+        'x-amz-access-token': accessToken,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(buildBody(includeTemplate)),
+    });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`SP-API Listings Items ${response.status} on ${params.sku}: ${errorBody}`);
+    if (!response.ok) {
+      const errorBody = await response.text();
+      const err = new Error(`SP-API Listings Items ${response.status} on ${params.sku}: ${errorBody}`);
+      (err as Error & { templateIssue?: boolean }).templateIssue =
+        includeTemplate && isMerchantShippingGroupIssue({ message: errorBody });
+      throw err;
+    }
+
+    const data = await response.json();
+
+    return {
+      sku: data.sku || params.sku,
+      status: data.status || 'ACCEPTED',
+      submissionId: data.submissionId || null,
+      issues: data.issues || [],
+    };
   }
 
-  const data = await response.json();
+  if (!shippingTemplateName || params.channel !== 'MFN') return send(false);
+
+  // Fail closed on template rejection: never retry without the template. A
+  // live offer with the wrong shipping template charges the wrong shipping —
+  // the row stays INVALID with an actionable issue instead.
+  let firstResult: CreateListingResult;
+  try {
+    firstResult = await send(true);
+  } catch (err) {
+    if (!(err as Error & { templateIssue?: boolean }).templateIssue) throw err;
+    return {
+      sku: params.sku,
+      status: 'INVALID',
+      submissionId: null,
+      issues: [makeTemplateRejectedIssue(shippingTemplateName)],
+    };
+  }
+
+  const rejectedTemplateOnly =
+    firstResult.status === 'INVALID'
+    && firstResult.issues.length > 0
+    && firstResult.issues.every(isMerchantShippingGroupIssue);
+
+  if (!rejectedTemplateOnly) return firstResult;
 
   return {
-    sku: data.sku || params.sku,
-    status: data.status || 'ACCEPTED',
-    submissionId: data.submissionId || null,
-    issues: data.issues || [],
+    ...firstResult,
+    issues: [...firstResult.issues, makeTemplateRejectedIssue(shippingTemplateName)],
   };
 }

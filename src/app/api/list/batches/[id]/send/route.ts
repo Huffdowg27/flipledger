@@ -17,8 +17,7 @@
  * as Amazon verifies listings and processes the inbound plan operation.
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
+import type Database from 'better-sqlite3';
 import { clearTokenCache } from '@/lib/sp-api/auth';
 import {
   getSellerId,
@@ -26,14 +25,33 @@ import {
   getProductType,
   createOrUpdateListing,
 } from '@/lib/sp-api/listingsItems';
-import { createInboundPlan, setPrepDetails, getInboundOperation, type SourceAddress, type InboundPlanItem } from '@/lib/sp-api/inboundPlansV2';
+import {
+  createInboundPlan,
+  getInboundOperation,
+  listInboundPlanItems,
+  listInboundPlans,
+  setPrepDetails,
+  type InboundPlanItem,
+  type SourceAddress,
+} from '@/lib/sp-api/inboundPlansV2';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import { getUnpreparedFbaSkus } from '@/lib/listing-send-readiness';
+import {
+  buildInboundPlanName,
+  claimBatchForSend,
+  compareInboundPlanManifest,
+  selectRecoverableInboundPlan,
+} from '@/lib/inbound-plan-recovery';
+import { openFlipLedgerDb } from '@/lib/sqlite';
+import { refreshShippingTemplateCacheIfStale } from '@/lib/sp-api/shippingTemplates';
+import {
+  resolveAmazonShippingTemplateName,
+  resolveAmazonShippingTemplateKey,
+  shippingTemplateValidationError,
+} from '@/lib/amazonShippingTemplates';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 function getAmazonCredentials(db: Database.Database): SPAPICredentials | null {
@@ -50,11 +68,13 @@ function getAmazonCredentials(db: Database.Database): SPAPICredentials | null {
 }
 
 export async function POST(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
   const { id } = await params;
   const batchId = parseInt(id);
+  const { searchParams } = new URL(request.url);
+  const prepareListingsOnly = searchParams.get('prepareListings') === '1';
   if (!Number.isFinite(batchId)) {
     return NextResponse.json({ error: 'Invalid batch id' }, { status: 400 });
   }
@@ -93,7 +113,7 @@ export async function POST(
     // 2. Validate ship-from — all fields required for FBA (inbound plans need it).
     //    MFN listings don't need ship-from — the seller handles fulfillment and
     //    ship-from is set on individual shipments later when orders come in.
-    if (batch.channel === 'FBA') {
+    if (batch.channel === 'FBA' && !prepareListingsOnly) {
       // Fall back to Settings values for any fields the batch doesn't have
       // (batch was created before the address was configured in Settings).
       if (!batch.shipFromName || !batch.shipFromAddressLine1) {
@@ -128,10 +148,15 @@ export async function POST(
 
     // 3. Load items
     const items = db.prepare(`
-      SELECT id, asin, sku, product_name as productName, condition, quantity, list_price_cents as listPriceCents,
-             listing_mode as listingMode, fnsku
-      FROM listing_batch_items WHERE batch_id = ?
-      ORDER BY id ASC
+      SELECT item.id, item.asin, item.sku, item.product_name as productName,
+             item.condition, item.quantity, item.list_price_cents as listPriceCents,
+             item.listing_mode as listingMode, item.fnsku,
+             item.listing_status as listingStatus,
+             il.merchant_shipping_group_name as merchantShippingGroupName
+      FROM listing_batch_items item
+      LEFT JOIN inventory_ledger il ON il.id = item.inventory_ledger_id
+      WHERE item.batch_id = ?
+      ORDER BY item.id ASC
     `).all(batchId) as any[];
 
     if (items.length === 0) {
@@ -146,14 +171,85 @@ export async function POST(
       return NextResponse.json({ error: 'Amazon SP-API credentials not configured' }, { status: 400 });
     }
 
+    if (!prepareListingsOnly && batch.channel === 'FBA') {
+      const unpreparedSkus = getUnpreparedFbaSkus(items);
+      if (unpreparedSkus.length > 0) {
+        db.close();
+        return NextResponse.json({
+          error: `Prepare Amazon listings before sending this FBA batch. ${unpreparedSkus.length} new MSKU(s) still need an FNSKU: ${unpreparedSkus.join(', ')}`,
+          unpreparedSkus,
+        }, { status: 409 });
+      }
+    }
+
+    if (batch.channel === 'MFN') {
+      // Validate against a current template list: refresh the cache when it's
+      // older than 24h. A failed refresh keeps the cached list (Amazon still
+      // rejects unknown names and the push fails closed), it never blocks.
+      const templateRefresh = await refreshShippingTemplateCacheIfStale(db, creds);
+      const templateCache = templateRefresh.cache;
+      if (templateRefresh.refreshError) {
+        console.warn(
+          `[batch-send] shipping template refresh failed; validating against cache from ${templateCache.fetchedAt ?? 'unknown'}: ${templateRefresh.refreshError}`
+        );
+      }
+      const missingTemplateSkus: string[] = [];
+      const staleTemplateErrors: string[] = [];
+
+      for (const item of items) {
+        if (item.listingMode === 'REPLENISH_EXISTING') continue;
+        if (item.fnsku || item.listingStatus === 'ACTIVE') continue;
+
+        const requestedTemplate =
+          typeof item.merchantShippingGroupName === 'string'
+            ? item.merchantShippingGroupName.trim()
+            : '';
+        const error = shippingTemplateValidationError(requestedTemplate, templateCache.templates);
+        if (error) {
+          if (!requestedTemplate) {
+            missingTemplateSkus.push(item.sku);
+          } else {
+            staleTemplateErrors.push(`${item.sku}: ${error}`);
+          }
+          continue;
+        }
+        item.merchantShippingGroupName =
+          resolveAmazonShippingTemplateName(requestedTemplate, templateCache.templates);
+        // Amazon requires the enum KEY (id), not the display name, in the push.
+        item.merchantShippingGroupValue =
+          resolveAmazonShippingTemplateKey(requestedTemplate, templateCache.templates);
+      }
+
+      if (missingTemplateSkus.length > 0 || staleTemplateErrors.length > 0) {
+        db.close();
+        const parts = [];
+        if (missingTemplateSkus.length > 0) {
+          parts.push(`Select an Amazon shipping template for new MFN SKU(s): ${missingTemplateSkus.join(', ')}`);
+        }
+        if (staleTemplateErrors.length > 0) parts.push(staleTemplateErrors.join('; '));
+        return NextResponse.json({ error: parts.join('; ') }, { status: 400 });
+      }
+    }
+
     // Force a fresh token to avoid a stale one after a recent re-auth
     clearTokenCache();
 
-    // 5. Transition batch → sending (so any concurrent call is blocked)
-    db.prepare(`
-      UPDATE listing_batches SET status = 'sending', send_error = NULL, sent_at = ?, updated_at = ?
-      WHERE id = ?
-    `).run(new Date().toISOString(), new Date().toISOString(), batchId);
+    // 5. Transition batch → sending (so any concurrent call is blocked).
+    // Listing preparation is an explicit pre-send step and keeps the batch in
+    // draft; it may create Seller Central listings, but it must not create an
+    // inbound plan or make the batch look shipped.
+    if (!prepareListingsOnly) {
+      const now = new Date().toISOString();
+      if (!claimBatchForSend(db, batchId, now)) {
+        db.close();
+        return NextResponse.json({
+          error: 'This batch was already claimed by another send request.',
+        }, { status: 409 });
+      }
+    } else {
+      db.prepare('UPDATE listing_batches SET updated_at = ? WHERE id = ?')
+        .run(new Date().toISOString(), batchId);
+    }
 
     db.close();
     // From here on, use a fresh DB handle per write to avoid holding the connection
@@ -164,6 +260,9 @@ export async function POST(
     try {
       sellerId = await getSellerId(creds);
     } catch (err) {
+      if (prepareListingsOnly) {
+        return NextResponse.json({ error: `Could not resolve Amazon seller ID: ${err}` }, { status: 500 });
+      }
       return failBatch(batchId, `Could not resolve Amazon seller ID: ${err}`);
     }
 
@@ -187,7 +286,7 @@ export async function POST(
           if (fnsku) {
             console.log(`[send] REPLENISH_EXISTING ${item.sku}: FNSKU=${fnsku} — marking ACTIVE`);
             listingResults.push({ itemId: item.id, sku: item.sku, status: 'ACTIVE', submissionId: null, error: null });
-            saveListingState(batchId, item.id, { listing_status: 'ACTIVE', listing_submission_id: null, listing_error: null });
+            saveListingState(batchId, item.id, { listing_status: 'ACTIVE', listing_submission_id: null, listing_error: null, fnsku });
           } else {
             // Listing exists but has no FNSKU — treat as new (fall through).
             console.warn(`[send] REPLENISH_EXISTING ${item.sku}: no FNSKU found — treating as CREATE_NEW`);
@@ -198,6 +297,11 @@ export async function POST(
           item.listingMode = 'CREATE_NEW';
         }
         if (item.listingMode === 'REPLENISH_EXISTING') continue; // skip to next item
+      }
+
+      if (item.fnsku || (batch.channel !== 'FBA' && item.listingStatus === 'ACTIVE')) {
+        listingResults.push({ itemId: item.id, sku: item.sku, status: 'ACTIVE', submissionId: null, error: null });
+        continue;
       }
 
       // ── New listing path ─────────────────────────────────────────────────
@@ -215,6 +319,8 @@ export async function POST(
           listPriceCents: item.listPriceCents,
           channel: batch.channel,
           productType,
+          merchantShippingGroupName: batch.channel === 'MFN' ? item.merchantShippingGroupName : null,
+          merchantShippingGroupValue: batch.channel === 'MFN' ? item.merchantShippingGroupValue : null,
         });
 
         // CRITICAL: check the PUT response status BEFORE polling for live state.
@@ -257,6 +363,7 @@ export async function POST(
           listing_status: classification.status,
           listing_submission_id: result.submissionId,
           listing_error: classification.error,
+          fnsku: classification.fnsku,
         });
       } catch (err) {
         listingResults.push({
@@ -280,7 +387,37 @@ export async function POST(
     //    during classification. Soft issues are surfaced as PROCESSING.
     const failedListings = listingResults.filter((r) => r.status === 'FAILED');
     if (failedListings.length > 0) {
+      if (prepareListingsOnly) {
+        return NextResponse.json({
+          error: `${failedListings.length} listing(s) failed. First error: ${failedListings[0].error}`,
+          listings: listingResults,
+        }, { status: 500 });
+      }
       return failBatch(batchId, `${failedListings.length} listing(s) failed. First error: ${failedListings[0].error}`);
+    }
+
+    if (prepareListingsOnly) {
+      const newListingSkuSet = new Set(
+        items
+          .filter((i) => i.listingMode !== 'REPLENISH_EXISTING')
+          .map((i) => i.sku)
+      );
+      const totalNewListings = newListingSkuSet.size;
+      const fnskuReadyCount = listingResults.filter((r) =>
+        newListingSkuSet.has(r.sku) && r.status === 'ACTIVE'
+      ).length;
+      const prepared = totalNewListings === fnskuReadyCount;
+      return NextResponse.json({
+        success: prepared,
+        channel: 'FBA',
+        preparedListings: prepared,
+        fnskuReadyCount,
+        totalNewListings,
+        listings: listingResults,
+        message: prepared
+          ? 'Amazon listings are prepared. This batch can now be sent to Amazon.'
+          : 'Amazon accepted the listings. FlipLedger will keep checking for FNSKUs on this draft batch.',
+      }, { status: prepared ? 200 : 202 });
     }
 
     // 9. If FBA, create the inbound plan now that listings are in-flight.
@@ -292,6 +429,7 @@ export async function POST(
     //    MFN batches skip this step — the "ready" state is just "all listings
     //    ACTIVE". No inbound plan, no warehouse shipment.
     if (batch.channel === 'FBA') {
+      const inboundPlanName = buildInboundPlanName(batchId, batch.name);
       const sourceAddress: SourceAddress = {
         name: batch.shipFromName,
         addressLine1: batch.shipFromAddressLine1,
@@ -313,6 +451,52 @@ export async function POST(
         labelOwner: 'SELLER',
       }));
 
+      // A prior process may have died after Amazon accepted createInboundPlan
+      // but before FlipLedger saved the returned IDs. The stable plan name is
+      // our durable cross-system identity: recover one exact active match,
+      // fail closed on multiple matches, and only create when absence is
+      // established.
+      let recoveryMatch;
+      try {
+        recoveryMatch = selectRecoverableInboundPlan(
+          await listInboundPlans(creds, { status: 'ACTIVE' }),
+          inboundPlanName,
+        );
+      } catch (err) {
+        return failBatch(
+          batchId,
+          `Could not verify whether Amazon already has this inbound plan: ${err}`,
+        );
+      }
+      if (recoveryMatch.kind === 'ambiguous') {
+        return failBatch(
+          batchId,
+          `Amazon has multiple active plans named "${inboundPlanName}". `
+            + `Refusing to create another. Plan IDs: ${
+              recoveryMatch.plans.map((plan) => plan.inboundPlanId).join(', ')
+            }`,
+        );
+      }
+      if (recoveryMatch.kind === 'found') {
+        const remoteItems = await listInboundPlanItems(
+          creds,
+          recoveryMatch.plan.inboundPlanId,
+        );
+        const manifestCheck = compareInboundPlanManifest(planItems, remoteItems);
+        if (!manifestCheck.ok) {
+          return failBatch(batchId, manifestCheck.error);
+        }
+        saveInboundPlan(batchId, recoveryMatch.plan.inboundPlanId, null, 'SUCCESS');
+        return NextResponse.json({
+          success: true,
+          channel: 'FBA',
+          recovered: true,
+          inboundPlanId: recoveryMatch.plan.inboundPlanId,
+          operationId: null,
+          listings: listingResults,
+        });
+      }
+
       // Amazon's Listings Items API and Fulfillment Inbound API are different
       // services with separate caches. After PUTting a brand new MSKU, the
       // Listings service knows about it immediately, but the Inbound Plans
@@ -332,7 +516,10 @@ export async function POST(
       const FNSKU_MAX_ATTEMPTS = 30;    // 30 × 20s = 10 min total
       // Replenishment items already have FNSKUs — only wait on new listings.
       const skusNeedingFnsku = items
-        .filter((i) => i.listingMode !== 'REPLENISH_EXISTING')
+        .filter((i) =>
+          i.listingMode !== 'REPLENISH_EXISTING' &&
+          !i.fnsku
+        )
         .map((i) => i.sku);
       console.log(`[send] Waiting for FNSKUs on ${skusNeedingFnsku.length} MSKU(s) (${items.length - skusNeedingFnsku.length} replenishment items skipped)…`);
       let fnskuReadyCount = 0;
@@ -342,8 +529,10 @@ export async function POST(
         for (const sku of skusNeedingFnsku) {
           try {
             const listing = await getListing(creds, sellerId, sku);
-            if (listing?.summaries?.[0]?.fnSku) {
+            const fnsku = listing?.summaries?.[0]?.fnSku;
+            if (fnsku) {
               fnskuReadyCount++;
+              saveListingFnsku(batchId, sku, fnsku);
             } else {
               allReady = false;
             }
@@ -407,7 +596,7 @@ export async function POST(
           console.warn('[send] Prep classification did not finish within timeout — proceeding anyway');
         }
       } catch (err) {
-        console.warn('[send] setPrepDetails failed (non-fatal, continuing):', err);
+        return failBatch(batchId, `Prep classification failed: ${err}`);
       }
 
       let planResult;
@@ -421,7 +610,7 @@ export async function POST(
       for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
         try {
           planResult = await createInboundPlan(creds, {
-            name: batch.name,
+            name: inboundPlanName,
             sourceAddress,
             destinationMarketplaces: [creds.marketplaceId],
             items: itemsForPlan,
@@ -494,19 +683,12 @@ export async function POST(
       }
 
       // 10. Persist the plan ID and operation ID on the batch
-      const db3 = getDb();
-      try {
-        db3.prepare(`
-          UPDATE listing_batches SET
-            inbound_plan_id = ?,
-            inbound_operation_id = ?,
-            plan_status = 'IN_PROGRESS',
-            updated_at = ?
-          WHERE id = ?
-        `).run(planResult.inboundPlanId, planResult.operationId, new Date().toISOString(), batchId);
-      } finally {
-        db3.close();
-      }
+      saveInboundPlan(
+        batchId,
+        planResult.inboundPlanId,
+        planResult.operationId,
+        'IN_PROGRESS',
+      );
 
       return NextResponse.json({
         success: true,
@@ -526,6 +708,9 @@ export async function POST(
     });
   } catch (err) {
     try { db.close(); } catch {}
+    if (prepareListingsOnly) {
+      return NextResponse.json({ error: `Unexpected error: ${err}` }, { status: 500 });
+    }
     return failBatch(batchId, `Unexpected error: ${err}`);
   }
 }
@@ -535,7 +720,7 @@ export async function POST(
 function saveListingState(
   batchId: number,
   itemId: number,
-  state: { listing_status: string; listing_submission_id: string | null; listing_error: string | null }
+  state: { listing_status: string; listing_submission_id: string | null; listing_error: string | null; fnsku?: string | null }
 ) {
   const db = getDb();
   try {
@@ -544,15 +729,61 @@ function saveListingState(
         listing_status = ?,
         listing_submission_id = ?,
         listing_error = ?,
+        fnsku = COALESCE(?, fnsku),
         listing_updated_at = ?
       WHERE id = ? AND batch_id = ?
     `).run(
       state.listing_status,
       state.listing_submission_id,
       state.listing_error,
+      state.fnsku ?? null,
       new Date().toISOString(),
       itemId,
       batchId
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function saveListingFnsku(batchId: number, sku: string, fnsku: string) {
+  const db = getDb();
+  try {
+    db.prepare(`
+      UPDATE listing_batch_items SET
+        fnsku = ?,
+        listing_status = 'ACTIVE',
+        listing_error = NULL,
+        listing_updated_at = ?
+      WHERE batch_id = ? AND sku = ?
+    `).run(fnsku, new Date().toISOString(), batchId, sku);
+  } finally {
+    db.close();
+  }
+}
+
+function saveInboundPlan(
+  batchId: number,
+  inboundPlanId: string,
+  operationId: string | null,
+  planStatus: 'IN_PROGRESS' | 'SUCCESS',
+) {
+  const db = getDb();
+  try {
+    db.prepare(`
+      UPDATE listing_batches SET
+        inbound_plan_id = ?,
+        inbound_operation_id = ?,
+        plan_status = ?,
+        send_error = NULL,
+        updated_at = ?
+      WHERE id = ?
+    `).run(
+      inboundPlanId,
+      operationId,
+      planStatus,
+      new Date().toISOString(),
+      batchId,
     );
   } finally {
     db.close();
@@ -583,7 +814,7 @@ async function classifyListing(
   sellerId: string,
   sku: string,
   channel: 'FBA' | 'MFN' = 'FBA'
-): Promise<{ status: 'ACTIVE' | 'PROCESSING' | 'FAILED'; error: string | null }> {
+): Promise<{ status: 'ACTIVE' | 'PROCESSING' | 'FAILED'; error: string | null; fnsku?: string | null }> {
   try {
     const listing = await getListing(creds, sellerId, sku);
     if (!listing) {
@@ -609,7 +840,7 @@ async function classifyListing(
       // signal. The listing won't be BUYABLE until inventory arrives, but
       // it's ready in every sense the batch flow cares about.
       if (fnSku) {
-        return { status: 'ACTIVE', error: errorNote };
+        return { status: 'ACTIVE', error: errorNote, fnsku: fnSku };
       }
       // No fnSku yet AND there are ERROR-severity issues — likely a real
       // attribute problem (missing unit_count, size, etc.) that Amazon won't
@@ -619,7 +850,7 @@ async function classifyListing(
       if (errorIssues.length > 0) {
         return { status: 'FAILED', error: errorNote };
       }
-      return { status: 'PROCESSING', error: errorNote };
+      return { status: 'PROCESSING', error: errorNote, fnsku: null };
     }
 
     // MFN: BUYABLE is the right signal — seller manages stock so the listing

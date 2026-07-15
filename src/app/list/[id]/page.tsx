@@ -4,7 +4,8 @@ import { useEffect, useState, useRef, useCallback, use, useMemo } from 'react';
 import Link from 'next/link';
 import { formatCurrency } from '@/lib/formatters';
 import { generateMSKU } from '@/lib/listing-msku';
-import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown, Copy, FileUp } from 'lucide-react';
+import { getUnpreparedFbaSkus } from '@/lib/listing-send-readiness';
+import { ArrowLeft, Search, Plus, Trash2, Package, TrendingUp, DollarSign, Percent, Send, ExternalLink, CheckCircle, AlertCircle, Loader2, Archive, Box as BoxIcon, MapPin, Sparkles, Pencil, X as XIcon, Check, ChevronDown, Copy, FileUp, RefreshCw } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import type { MapShipmentMeta } from '@/components/PlacementMap';
 import MfnBatchReceiveWorkflow from '@/components/mfn/MfnBatchReceiveWorkflow';
@@ -334,6 +335,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   // Phase 2: Send to Amazon state
   const [showSendModal, setShowSendModal] = useState(false);
   const [sending, setSending] = useState(false);
+  const [preparingListings, setPreparingListings] = useState(false);
   const [debugItems, setDebugItems] = useState<Record<number, DebugItem>>({});
 
   // Existing Seller Central MSKU lookup — runs after every ASIN scan.
@@ -520,20 +522,6 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
     }
   }, [id]);
 
-  const handleForceReady = useCallback(async () => {
-    if (!batch) return;
-    try {
-      await fetch(`/api/list/batches/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'ready' }),
-      });
-      await pollStatus();
-    } catch (err) {
-      console.warn('force-ready error:', err);
-    }
-  }, [id, batch, pollStatus]);
-
   // Phase 2: poll /status while the batch is in 'sending' (or 'ready' briefly).
   // Cheap for other states — the backend short-circuits for draft/failed/ready.
   // Resilient to tab visibility: pauses polling when hidden, immediately re-polls
@@ -546,13 +534,20 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
   // the effect (and fire an immediate poll) after every setBatch/setItems,
   // turning the 6s interval into a continuous back-to-back poll loop.
   const batchStatus = batch?.status ?? null;
+  const batchChannel = batch?.channel ?? null;
   const anyItemProcessing = items.some((i) => i.listingStatus === 'PROCESSING');
+  const fbaUnpreparedSkus = useMemo(
+    () => (batch?.channel === 'FBA' ? getUnpreparedFbaSkus(items) : []),
+    [batch?.channel, items]
+  );
+  const needsFbaListingPrep = batch?.channel === 'FBA' && fbaUnpreparedSkus.length > 0;
   useEffect(() => {
     // Poll fast while sending; keep a slow poll on 'ready' batches that still
     // have PROCESSING listings (timeout-advanced before Amazon finished
     // verifying) so per-item state eventually reflects reality.
     const isSending = batchStatus === 'sending';
-    if (!isSending && !(batchStatus === 'ready' && anyItemProcessing)) return;
+    const isDraftListingPrep = batchStatus === 'draft' && batchChannel === 'FBA' && anyItemProcessing;
+    if (!isSending && !isDraftListingPrep && !(batchStatus === 'ready' && anyItemProcessing)) return;
     const pollMs = isSending ? 6000 : 30000;
 
     let cancelled = false;
@@ -597,7 +592,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       stopPolling();
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [id, batchStatus, anyItemProcessing, pollStatus]);
+  }, [id, batchStatus, batchChannel, anyItemProcessing, pollStatus]);
 
   async function handleSendToAmazon() {
     if (!batch) return;
@@ -615,6 +610,26 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
       alert(String(err));
     }
     setSending(false);
+  }
+
+  async function handlePrepareAmazonListings() {
+    if (!batch) return;
+    setPreparingListings(true);
+    try {
+      const res = await fetch(`/api/list/batches/${id}/send?prepareListings=1`, { method: 'POST' });
+      const data = await res.json();
+      await fetchBatch();
+      if (data.error) {
+        alert(`Listing preparation failed: ${data.error}`);
+      } else if (data.preparedListings === false) {
+        alert(data.message || 'Amazon accepted the listings. FlipLedger will keep checking for FNSKUs on this draft batch.');
+      } else {
+        alert(data.message || 'Amazon listings are prepared. This batch can now be sent to Amazon.');
+      }
+    } catch (err) {
+      alert(String(err));
+    }
+    setPreparingListings(false);
   }
 
   async function handleCancelAndEdit() {
@@ -791,8 +806,11 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
 
   async function handleSyncFromAmazon() {
     if (!batch) return;
+    const recoveringMissingPlan = !batch.inboundPlanId;
     if (!confirm(
-      'Pull the current batch state from Amazon? Use this if you finished packing/placement in Seller Central. The batch will move to "Shipping" if Amazon shows shipments are created.'
+      recoveringMissingPlan
+        ? 'Search Amazon for the inbound plan from this interrupted send and reconnect it to FlipLedger? No new plan will be created.'
+        : 'Pull the current batch state from Amazon? Use this if you finished packing/placement in Seller Central. The batch will move to "Shipping" if Amazon shows shipments are created.'
     )) return;
     setSyncingFromAmazon(true);
     try {
@@ -1538,7 +1556,18 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
               Import Buy List
             </Link>
           )}
-          {batch.status === 'draft' && items.length > 0 && (
+          {batch.status === 'draft' && items.length > 0 && needsFbaListingPrep && (
+            <button
+              onClick={handlePrepareAmazonListings}
+              disabled={preparingListings}
+              className="flex items-center gap-2 h-9 px-4 bg-amber-500 text-black rounded-md text-sm font-medium hover:bg-amber-400 disabled:opacity-50 transition-colors"
+              title="Create or verify new Amazon MSKUs and wait for FNSKUs. No inbound shipment plan is created yet."
+            >
+              {preparingListings ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {preparingListings ? 'Preparing listings...' : 'Prepare Amazon listings'}
+            </button>
+          )}
+          {batch.status === 'draft' && items.length > 0 && !needsFbaListingPrep && (
             <button
               onClick={() => setShowSendModal(true)}
               className="flex items-center gap-2 h-9 px-4 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent/90 transition-colors"
@@ -1599,6 +1628,19 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
               </a>
             </>
           )}
+          {batch.channel === 'FBA'
+            && !batch.inboundPlanId
+            && ['sending', 'failed'].includes(batch.status) && (
+            <button
+              onClick={handleSyncFromAmazon}
+              disabled={syncingFromAmazon}
+              className="flex items-center gap-2 h-9 px-3 bg-accent text-white rounded-md text-sm font-medium hover:bg-accent/90 disabled:opacity-50 transition-colors"
+              title="Search Amazon by FlipLedger's stable batch identity and reconnect an inbound plan created before the send was interrupted."
+            >
+              {syncingFromAmazon ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              {syncingFromAmazon ? 'Recovering…' : 'Recover from Amazon'}
+            </button>
+          )}
           {batch.status === 'ready' && batch.channel === 'MFN' && (
             <a
               href="https://sellercentral.amazon.com/inventory"
@@ -1655,8 +1697,33 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
           items={items}
           debugItems={debugItems}
           onRefresh={pollStatus}
-          onForceReady={handleForceReady}
         />
+      )}
+
+      {batch.status === 'draft' && needsFbaListingPrep && (
+        <div className="mb-5 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+          <div className="flex items-start gap-3">
+            <AlertCircle size={16} className="text-amber-400 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-text-primary">Prepare new FBA MSKUs before sending</div>
+              <p className="text-xs text-text-tertiary mt-1">
+                {fbaUnpreparedSkus.length} new MSKU{fbaUnpreparedSkus.length === 1 ? '' : 's'} still need Amazon FNSKU assignment. Preparing listings keeps this batch in draft and does not create the inbound shipment plan.
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {fbaUnpreparedSkus.slice(0, 6).map((unpreparedSku) => (
+                  <span key={unpreparedSku} className="rounded bg-bg-elevated border border-border-subtle px-2 py-1 text-[11px] font-mono text-text-secondary">
+                    {unpreparedSku}
+                  </span>
+                ))}
+                {fbaUnpreparedSkus.length > 6 && (
+                  <span className="rounded bg-bg-elevated border border-border-subtle px-2 py-1 text-[11px] text-text-tertiary">
+                    +{fbaUnpreparedSkus.length - 6} more
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Phase 3: Boxing workflow — visible while boxing/placement/shipping */}
@@ -2576,7 +2643,7 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
                 <p className="text-sm text-text-tertiary mt-1">
                   {batch.channel === 'FBA' ? (
                     <>
-                      This will create or update <b className="text-text-primary">{items.length}</b> listing{items.length === 1 ? '' : 's'} in your Seller Central account, and create a real inbound shipment plan for{' '}
+                      All Amazon MSKUs have been prepared. This will create a real inbound shipment plan for{' '}
                       <b className="text-text-primary">{totalUnits}</b> unit{totalUnits === 1 ? '' : 's'}. This action cannot be undone from FlipLedger — cancellation must happen in Seller Central.
                     </>
                   ) : (
@@ -2614,7 +2681,9 @@ export default function BatchDetailPage({ params }: { params: Promise<{ id: stri
             </div>
 
             <p className="text-[11px] text-text-tertiary mb-4">
-              Amazon will take ~10–15 minutes to verify any new MSKUs. FlipLedger will poll the status automatically — you can close this page and come back.
+              {batch.channel === 'FBA'
+                ? 'FlipLedger will create the inbound plan and poll Amazon until the batch is ready for boxing.'
+                : 'Amazon will take ~10-15 minutes to verify any new MSKUs. FlipLedger will poll the status automatically — you can close this page and come back.'}
             </p>
 
             <div className="flex items-center justify-end gap-2">
@@ -2686,13 +2755,11 @@ function SendStatusCard({
   items,
   debugItems,
   onRefresh,
-  onForceReady,
 }: {
   batch: Batch;
   items: BatchItem[];
   debugItems: Record<number, DebugItem>;
   onRefresh: () => void;
-  onForceReady: () => void;
 }) {
   const listingsReady = items.filter((i) => i.listingStatus === 'ACTIVE').length;
   const listingsFailed = items.filter((i) => i.listingStatus === 'FAILED').length;
@@ -2721,10 +2788,6 @@ function SendStatusCard({
     ? `${elapsedSec}s`
     : `${elapsedMin}m ${elapsedSec % 60}s`;
 
-  // "Continue anyway" is available after 5 min if the inbound plan exists
-  // (meaning the listing was accepted by Amazon — plan creation would have
-  // failed if the MSKU wasn't valid).
-  const canForceReady = isSending && !!batch.inboundPlanId && elapsedMin >= 5;
   const isTimedOut = elapsedMin >= 15;
 
   const [showDebug, setShowDebug] = useState(false);
@@ -2773,7 +2836,7 @@ function SendStatusCard({
       {isSending && isTimedOut && (
         <div className="text-[11px] text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded p-2 mb-3">
           Taking longer than expected ({elapsedStr}). Amazon MSKU verification can stall on new listings.
-          {canForceReady && ' The inbound plan was already created — you can proceed to boxing now.'}
+          {' FlipLedger will keep checking Amazon and advance only when the channel-specific readiness signal is confirmed.'}
         </div>
       )}
 
@@ -2807,18 +2870,6 @@ function SendStatusCard({
           </div>
         )}
       </div>
-
-      {/* Action buttons for stuck batches */}
-      {canForceReady && (
-        <div className="mt-3 flex gap-2">
-          <button
-            onClick={onForceReady}
-            className="text-xs bg-positive/10 hover:bg-positive/20 text-positive border border-positive/30 rounded px-3 py-1.5"
-          >
-            Continue to boxing anyway
-          </button>
-        </div>
-      )}
 
       {/* Per-item go-live tracker — visible whenever something is still in
           flight (sending, or ready with listings that haven't verified yet). */}
@@ -4768,7 +4819,6 @@ function BoxingWorkflow({
                         <ShipmentQtyAdjuster
                           batchId={batch.id}
                           shipmentId={s.shipmentId}
-                          syncLocal={shipments.length === 1}
                           onAdjusted={onRefetchBatch}
                         />
                       </div>
@@ -4805,13 +4855,10 @@ function BoxingWorkflow({
 function ShipmentQtyAdjuster({
   batchId,
   shipmentId,
-  syncLocal,
   onAdjusted,
 }: {
   batchId: number;
   shipmentId: string;
-  /** Sync listing_batch_items quantities after confirm — only safe when the batch has exactly one shipment. */
-  syncLocal: boolean;
   onAdjusted: () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
@@ -4881,7 +4928,7 @@ function ShipmentQtyAdjuster({
       const data = await post({
         action: 'confirm',
         contentUpdatePreviewId: preview.contentUpdatePreviewId,
-        ...(syncLocal ? { items: preview.requestedItems } : {}),
+        items: preview.requestedItems,
       });
       if (data.error) throw new Error(data.error);
       setPhase('done');
@@ -4965,7 +5012,7 @@ function ShipmentQtyAdjuster({
 
           {phase === 'done' && (
             <div className="text-[11px] text-positive flex items-center gap-1.5">
-              <CheckCircle size={12} /> Shipment contents updated{syncLocal ? ' — batch quantities synced' : ''}.
+              <CheckCircle size={12} /> Shipment contents updated — batch quantities synced.
             </div>
           )}
 

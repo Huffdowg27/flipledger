@@ -13,17 +13,18 @@
  * or 'ready' state. Cheap for draft batches (DB-only, no SP-API calls).
  */
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
+import type Database from 'better-sqlite3';
 import { getListing, getSellerId } from '@/lib/sp-api/listingsItems';
 import { getInboundOperation, getInboundPlan } from '@/lib/sp-api/inboundPlansV2';
 import type { SPAPICredentials } from '@/lib/sp-api/types';
+import {
+  getTimeoutFailureMessage,
+  shouldTimeoutAdvanceBatch,
+} from '@/lib/listing-batch-lifecycle';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
+  return openFlipLedgerDb();
 }
 
 function getAmazonCredentials(db: Database.Database): SPAPICredentials | null {
@@ -122,7 +123,8 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     // its listings polled so the per-item state eventually reflects reality.
     const hasProcessingItems = items.some((i) => i.listingStatus === 'PROCESSING');
     if (
-      batch.status === 'draft' || batch.status === 'failed' ||
+      (batch.status === 'draft' && !hasProcessingItems) ||
+      batch.status === 'failed' ||
       (batch.status === 'ready' && !hasProcessingItems)
     ) {
       db.close();
@@ -187,9 +189,10 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
             : null;
 
           if (isReady) {
-            saveListingState(batchId, item.id, { status: 'ACTIVE', error: errorNote });
+            saveListingState(batchId, item.id, { status: 'ACTIVE', error: errorNote, fnsku: fnSku || null });
             item.listingStatus = 'ACTIVE';
             item.listingError = errorNote;
+            item.fnsku = fnSku || item.fnsku;
           } else if (errorNote !== item.listingError) {
             saveListingState(batchId, item.id, { status: 'PROCESSING', error: errorNote });
             item.listingError = errorNote;
@@ -258,37 +261,53 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       batch.status = 'ready';
     }
 
-    // Timeout auto-advance: don't leave a batch in 'sending' forever.
-    //   FBA (>15 min, inbound plan exists): the listings were accepted —
-    //     advance to boxing even if verification polling hasn't confirmed yet.
-    //   MFN (>30 min): fresh listings can take 30+ min to reach BUYABLE, but
-    //     past that point keeping the batch wedged helps nobody — advance to
-    //     'ready' with a warning. Per-item listing_status stays PROCESSING so
-    //     the UI still shows which listings haven't gone live.
-    // Without the MFN branch, an MFN batch whose listing never verified had no
-    // exit from 'sending' at all (the FBA branch requires inboundPlanId).
-    const FBA_SENDING_TIMEOUT_MS = 15 * 60 * 1000;
-    const MFN_SENDING_TIMEOUT_MS = 30 * 60 * 1000;
-    if (batch.status === 'sending' && !anyListingFailed && !opFailed) {
+    const timeoutFailure = getTimeoutFailureMessage({
+      status: batch.status,
+      channel: batch.channel,
+      elapsedMs,
+      unverifiedSkus: batch.channel === 'MFN'
+        ? items.filter((i) => i.listingStatus !== 'ACTIVE').map((i) => i.sku)
+        : [],
+      anyListingFailed,
+      operationFailed: opFailed,
+    });
+    if (timeoutFailure) {
+      console.warn(`[batch status] timeout failure: ${timeoutFailure}`);
+      const dbT = getDb();
+      try {
+        dbT.prepare(`UPDATE listing_batches SET status = 'failed', send_error = ?, updated_at = ? WHERE id = ?`)
+          .run(timeoutFailure, new Date().toISOString(), batchId);
+      } finally {
+        dbT.close();
+      }
+      batch.status = 'failed';
+      batch.sendError = timeoutFailure;
+    }
+
+    // FBA timeout fallback: an FBA offer cannot become BUYABLE until Amazon
+    // receives inventory, so an already-created inbound plan is sufficient to
+    // continue after the verification window. MFN never advances to ready on
+    // timeout; it fails with the unverified SKUs listed in send_error.
+    if (shouldTimeoutAdvanceBatch({
+      status: batch.status,
+      channel: batch.channel,
+      elapsedMs,
+      inboundPlanId: batch.inboundPlanId,
+      anyListingFailed,
+      operationFailed: opFailed,
+    })) {
       const mins = Math.round(elapsedMs / 60_000);
-      let timeoutNote: string | null = null;
-      if (batch.channel === 'FBA' && batch.inboundPlanId && elapsedMs > FBA_SENDING_TIMEOUT_MS) {
-        timeoutNote = `Listing verification timed out after ${mins} min — inbound plan was already created, advancing to boxing.`;
-      } else if (batch.channel === 'MFN' && elapsedMs > MFN_SENDING_TIMEOUT_MS) {
-        timeoutNote = `Listing verification timed out after ${mins} min — advancing anyway. Listings still marked Processing may take longer to go live; check them in Seller Central if they don't clear.`;
+      const timeoutNote = `Listing verification timed out after ${mins} min — inbound plan was already created, advancing to boxing.`;
+      console.warn(`[batch status] timeout advance: ${timeoutNote}`);
+      const dbT = getDb();
+      try {
+        dbT.prepare(`UPDATE listing_batches SET status = 'ready', send_error = ?, updated_at = ? WHERE id = ?`)
+          .run(timeoutNote, new Date().toISOString(), batchId);
+      } finally {
+        dbT.close();
       }
-      if (timeoutNote) {
-        console.warn(`[batch status] timeout advance: ${timeoutNote}`);
-        const dbT = getDb();
-        try {
-          dbT.prepare(`UPDATE listing_batches SET status = 'ready', send_error = ?, updated_at = ? WHERE id = ?`)
-            .run(timeoutNote, new Date().toISOString(), batchId);
-        } finally {
-          dbT.close();
-        }
-        batch.status = 'ready';
-        batch.sendError = timeoutNote;
-      }
+      batch.status = 'ready';
+      batch.sendError = timeoutNote;
     }
 
     // Optionally fetch a fresh inbound plan snapshot for display
@@ -318,7 +337,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
 function saveListingState(
   batchId: number,
   itemId: number,
-  state: { status: string; error: string | null }
+  state: { status: string; error: string | null; fnsku?: string | null }
 ) {
   const db = getDb();
   try {
@@ -326,9 +345,10 @@ function saveListingState(
       UPDATE listing_batch_items SET
         listing_status = ?,
         listing_error = ?,
+        fnsku = COALESCE(?, fnsku),
         listing_updated_at = ?
       WHERE id = ? AND batch_id = ?
-    `).run(state.status, state.error, new Date().toISOString(), itemId, batchId);
+    `).run(state.status, state.error, state.fnsku ?? null, new Date().toISOString(), itemId, batchId);
   } finally {
     db.close();
   }

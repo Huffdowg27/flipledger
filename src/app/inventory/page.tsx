@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { Search, RefreshCw, Boxes, ImageOff, Copy, X, Package, Truck, Store, BarChart3 } from 'lucide-react';
+import { Search, RefreshCw, Boxes, ImageOff, X, Package, Truck, Store, BarChart3 } from 'lucide-react';
+import { IdentifierChip } from '@/components/ui/IdentifierLinks';
+import { PrintLabelIcon } from '@/components/ui/PrintLabel';
 
 interface InvRow {
   asin: string | null;
@@ -61,26 +63,6 @@ const SUB_TONE: Record<SubTone, string> = {
   neutral:  'border-border-subtle bg-bg-elevated text-text-secondary',
 };
 
-function sellerCentralSkuUrl(sku: string | null | undefined): string | null {
-  const v = (sku ?? '').trim();
-  return v ? `https://sellercentral.amazon.com/myinventory/inventory?searchField=all&searchTerm=${encodeURIComponent(v)}` : null;
-}
-
-function IdentifierChip({ label, value, href }: { label: string; value: string | null | undefined; href?: string | null }) {
-  if (!value) return null;
-  return (
-    <div className="flex items-center gap-1 min-w-0">
-      <span className="text-text-tertiary/60 uppercase tracking-wide shrink-0">{label}</span>
-      {href
-        ? <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="text-accent truncate hover:underline" title={`Open ${label} in Seller Central: ${value}`}>{value}</a>
-        : <span className="text-text-secondary truncate" title={value}>{value}</span>}
-      <button onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(value); }} title={`Copy ${label}`} className="shrink-0 text-text-tertiary/40 hover:text-text-tertiary transition-colors">
-        <Copy size={10} />
-      </button>
-    </div>
-  );
-}
-
 function MerchantStatusBadge({ status }: { status: string | null }) {
   if (!status) return <span className="text-text-tertiary text-xs">—</span>;
   const tone = status === 'active'
@@ -104,9 +86,10 @@ function ProductCell({ row, onImage }: { row: { asin: string | null; sku: string
         {row.asin
           ? <a href={`https://www.amazon.com/dp/${row.asin}`} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} className="line-clamp-2 text-sm font-medium leading-snug text-accent hover:underline" title={row.productName || row.asin}>{row.productName || row.asin}</a>
           : <span className="line-clamp-2 text-sm font-medium leading-snug text-text-primary" title={row.productName || ''}>{row.productName || '—'}</span>}
-        <div className="mt-1.5 grid grid-cols-2 gap-x-4 gap-y-0.5 text-[11px] font-mono">
-          <IdentifierChip label="ASIN" value={row.asin} />
-          <IdentifierChip label="MSKU" value={row.sku} href={sellerCentralSkuUrl(row.sku)} />
+        <div className="mt-1.5 flex items-center gap-x-4 gap-y-0.5 text-[11px] font-mono flex-wrap">
+          <IdentifierChip label="ASIN" value={row.asin} kind="asin" />
+          <IdentifierChip label="MSKU" value={row.sku} kind="sku" />
+          <PrintLabelIcon item={{ title: row.productName, asin: row.asin, sku: row.sku }} />
         </div>
       </div>
     </div>
@@ -155,6 +138,16 @@ export default function InventoryHubPage() {
   const [lightbox, setLightbox] = useState<{ src: string; title: string; asin: string | null; sku: string | null } | null>(null);
 
   const isMerchant = channel === 'merchant';
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get('search');
+    const queryChannel = params.get('channel');
+    if (q) setSearch(q);
+    if (queryChannel === 'amazon' || queryChannel === 'walmart' || queryChannel === 'merchant') {
+      setChannel(queryChannel);
+    }
+  }, []);
 
   async function load() {
     setLoading(true);
@@ -347,10 +340,8 @@ export default function InventoryHubPage() {
               <div className="min-w-0">
                 <div className="line-clamp-2 text-base font-semibold leading-snug text-text-primary">{lightbox.title}</div>
                 <div className="mt-1 flex gap-4 text-[11px] font-mono text-text-tertiary">
-                  {lightbox.asin && <span>ASIN {lightbox.asin}</span>}
-                  {lightbox.sku && (sellerCentralSkuUrl(lightbox.sku)
-                    ? <a href={sellerCentralSkuUrl(lightbox.sku)!} target="_blank" rel="noopener noreferrer" className="text-accent hover:underline">MSKU {lightbox.sku}</a>
-                    : <span>MSKU {lightbox.sku}</span>)}
+                  <IdentifierChip label="ASIN" value={lightbox.asin} kind="asin" />
+                  <IdentifierChip label="MSKU" value={lightbox.sku} kind="sku" />
                 </div>
               </div>
               <button onClick={() => setLightbox(null)} className="ml-auto flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-text-tertiary hover:bg-bg-hover hover:text-text-primary" title="Close (Esc)">

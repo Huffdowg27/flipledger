@@ -1,49 +1,34 @@
 import { NextRequest, NextResponse } from 'next/server';
-import Database from 'better-sqlite3';
-import path from 'path';
-
-function getDb() {
-  const dbPath = path.join(process.cwd(), 'data', 'flipledger.db');
-  const db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
-  return db;
-}
+import { redactSettings, resolveSettingsUpdates } from '@/lib/settings-policy';
+import { readSettings, upsertSettings } from '@/lib/settings';
+import { openFlipLedgerDb } from '@/lib/sqlite';
 
 export async function GET() {
-  const db = getDb();
+  const db = openFlipLedgerDb({ readonly: true });
   try {
-    const rows = db.prepare('SELECT key, value FROM settings').all() as { key: string; value: string }[];
-    const settings: Record<string, string> = {};
-    for (const row of rows) {
-      settings[row.key] = row.value;
-    }
-    db.close();
-    return NextResponse.json({ settings });
+    // Never return stored secrets to the client — only a "set" sentinel.
+    return NextResponse.json({ settings: redactSettings(readSettings(db)) });
   } catch {
-    db.close();
     return NextResponse.json({ settings: {} });
+  } finally {
+    db.close();
   }
 }
 
 export async function POST(request: NextRequest) {
   const body = await request.json();
-  const db = getDb();
-  const upsert = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
+  const db = openFlipLedgerDb();
 
-  const saveSettings = db.transaction(() => {
-    for (const [key, value] of Object.entries(body)) {
-      if (typeof value === 'string') {
-        upsert.run(key, value);
-      }
-    }
-  });
+  // Allowlist known keys and preserve secrets submitted as the redaction
+  // sentinel (unedited fields). See src/lib/settings-policy.ts.
+  const updates = resolveSettingsUpdates(body);
 
   try {
-    saveSettings();
-    db.close();
+    upsertSettings(db, updates);
     return NextResponse.json({ success: true });
   } catch (err) {
-    db.close();
     return NextResponse.json({ success: false, error: String(err) }, { status: 500 });
+  } finally {
+    db.close();
   }
 }
